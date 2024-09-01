@@ -1,6 +1,8 @@
 use clap::Parser;
 use std::path::PathBuf;
 
+pub mod lexer;
+
 #[derive(Parser, Debug)]
 #[clap(name = "C Compiler")]
 #[clap(author = "Nikhil Thomas")]
