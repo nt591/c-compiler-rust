@@ -4,6 +4,8 @@ use thiserror::Error;
 pub enum LexerError {
     #[error("Got an unexpected token: {0}")]
     UnexpectedToken(String),
+    #[error("Got an unexpected character: {0}")]
+    UnexpectedChar(char),
 }
 
 // todo: let's stop carrying the entire text around
@@ -62,7 +64,7 @@ impl<'a> Lexer<'a> {
                     if let Some(keyword_token) = Self::parse_keyword(&source[start..end]) {
                         tokens.push(keyword_token);
                     } else {
-                        todo!();
+                        return Err(Self::error_string(&bytes[start..end]));
                     }
                     idx = end - 1; //since we're incrementing at the end
                 }
@@ -79,11 +81,7 @@ impl<'a> Lexer<'a> {
                     // is not an alphabetic character.
                     // This does not support floats!
                     if end < len && bytes[end].is_ascii_alphabetic() {
-                        return Err(LexerError::UnexpectedToken(
-                            String::from_utf8(bytes[start..=idx].to_vec()).expect(
-                                "Got invalid UTF-8 when addressing byte range from source string",
-                            ),
-                        ));
+                        return Err(Self::error_string(&bytes[start..=end]));
                     }
 
                     // todo: is this the best I can do?
@@ -94,7 +92,7 @@ impl<'a> Lexer<'a> {
                     tokens.push(Token::Constant(constant));
                     idx = end - 1;
                 }
-                _ => todo!(),
+                _ => return Err(LexerError::UnexpectedChar(bytes[idx].into()))
             }
             idx += 1;
         }
@@ -114,6 +112,13 @@ impl<'a> Lexer<'a> {
             "void" => Some(Token::Void),
             _ => None,
         }
+    }
+
+    fn error_string(v: &[u8]) -> LexerError {
+        LexerError::UnexpectedToken(
+            String::from_utf8(v.to_vec())
+                .expect("got invalid utf-8 when addressing byte range from source string"),
+        )
     }
 }
 
@@ -156,5 +161,12 @@ mod tests {
         assert_eq!(Some(&Token::Semicolon), tokens.next());
         assert_eq!(Some(&Token::RightBrace), tokens.next());
         assert_eq!(None, tokens.next());
+    }
+
+    #[test]
+    fn error_backtick() {
+        let source = "`";
+        let lexer = Lexer::lex(source);
+        assert!(lexer.is_err());
     }
 }
