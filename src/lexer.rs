@@ -41,6 +41,22 @@ pub fn lex<'a>(source: &'a str) -> Result<Lexer<'a>, LexerError> {
             b'(' => tokens.push(Token::LeftParen),
             b')' => tokens.push(Token::RightParen),
             b';' => tokens.push(Token::Semicolon),
+            b'a'..=b'z' | b'A'..=b'Z' => {
+                // starts with a letter, just walk until the end.
+                let mut end = idx;
+                while end < len && is_valid_identifier_character(bytes[end]) {
+                    end += 1;
+                }
+
+                // scoop up whatever's in the range, 
+                // check for known keywords, else just
+                // return an identifier? Or just ignore.
+                if let Some(keyword_token) = parse_keyword(&source[idx..end]) {
+                    tokens.push(keyword_token);
+                } else {
+                    todo!();
+                }
+            }
             c if c.is_ascii_digit() => {
                 // advance while we see digits
                 let mut end = idx;
@@ -76,4 +92,19 @@ pub fn lex<'a>(source: &'a str) -> Result<Lexer<'a>, LexerError> {
     }
 
     Ok(Lexer { tokens })
+}
+
+
+fn is_valid_identifier_character(c: u8) -> bool {
+    matches!(c, b'a'..=b'z' | b'A'..=b'Z'|b'0'..=b'9')
+}
+
+fn parse_keyword(s: &str) -> Option<Token> {
+    match s {
+        "int" => Some(Token::Int),
+        "main" => Some(Token::Main),
+        "return" => Some(Token::Return),
+        "void" => Some(Token::Void),
+        _ => None
+    }
 }
