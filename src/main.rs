@@ -1,7 +1,11 @@
 use clap::Parser;
+use std::fs::File;
+use std::io::BufRead;
+use std::io::BufReader;
 use std::path::PathBuf;
 
 pub mod lexer;
+use lexer::Lexer;
 
 #[derive(Parser, Debug)]
 #[clap(name = "C Compiler")]
@@ -22,10 +26,14 @@ struct Args {
     codegen: bool,
 }
 
-fn main() {
+fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let _input = args.input.canonicalize().expect("Not a valid input file");
+    let input = args.input.canonicalize().expect("Not a valid input file");
     if args.lex {
+        let f = File::open(input)?;
+        let reader = BufReader::new(f);
+        let contents: String = reader.lines().collect::<Result<Vec<_>, _>>()?.join("\n");
+        Lexer::lex(&contents)?;
         println!("lexing");
     } else if args.parse {
         println!("parsing");
@@ -34,5 +42,5 @@ fn main() {
     } else {
         println!("full run");
     }
-    ()
+    Ok(())
 }

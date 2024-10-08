@@ -6,6 +6,8 @@ pub enum LexerError {
     UnexpectedToken(String),
     #[error("Got an unexpected character: {0}")]
     UnexpectedChar(char),
+    #[error("Never closed a block comment")]
+    UnclosedBlockComment,
 }
 
 // todo: let's stop carrying the entire text around
@@ -18,6 +20,8 @@ pub struct Lexer<'a> {
 pub enum Token<'a> {
     Identifier(&'a str),
     Constant(usize),
+    SingleLineComment(&'a str),
+    BlockComment(&'a str),
     // keywords
     Int,
     Main,
@@ -50,6 +54,45 @@ impl<'a> Lexer<'a> {
                 b'(' => tokens.push(Token::LeftParen),
                 b')' => tokens.push(Token::RightParen),
                 b';' => tokens.push(Token::Semicolon),
+                b'/' if idx < len - 1 && bytes[idx + 1] == b'/' => {
+                    // single line comment handler
+                    // Scoop up until we see a newline or end of index, stuff into token
+                    // Start after the slashes
+                    let start = idx + 2;
+                    let mut end = start;
+                    while end < len && bytes[end] != b'\n' {
+                        end += 1;
+                    }
+                    let comment =
+                        std::str::from_utf8(&bytes[start..end]).expect("We know this is UTF8");
+                    tokens.push(Token::SingleLineComment(comment));
+                    idx = end - 1;
+                }
+                b'/' if idx < len - 1 && bytes[idx + 1] == b'*' => {
+                    // block comment. This is tricky.
+                    // Let's just scoop up until we see *
+                    // and check if the character after is a slash.
+                    // Once we see this, we'll capture the inside.
+                    // We'll sanity check that we actually closed the comment.
+                    let start = idx + 2;
+                    let mut end = start;
+                    while end < len {
+                        // annoying, but we check if we're looking at *, if the next
+                        // index is in range AND it's a slash. Gotta tighten this up.
+                        if bytes[end] == b'*' && end + 1 < len && bytes[end + 1] == b'/' {
+                            break;
+                        }
+                        end += 1;
+                    }
+                    if end >= len {
+                        // we never closed the comment!
+                        return Err(LexerError::UnclosedBlockComment);
+                    }
+                    let comment =
+                        std::str::from_utf8(&bytes[start..end]).expect("We know this is UTF8");
+                    tokens.push(Token::BlockComment(comment));
+                    idx = end + 1; // move to the closing slash, we'll incr again 
+                }
                 b'a'..=b'z' | b'A'..=b'Z' => {
                     // starts with a letter, just walk until the end.
                     let start = idx;
@@ -64,7 +107,9 @@ impl<'a> Lexer<'a> {
                     if let Some(keyword_token) = Self::parse_keyword(&source[start..end]) {
                         tokens.push(keyword_token);
                     } else {
-                        return Err(Self::error_string(&bytes[start..end]));
+                        let content =
+                            std::str::from_utf8(&bytes[start..end]).expect("We know this is UTF8");
+                        tokens.push(Token::Identifier(content));
                     }
                     idx = end - 1; //since we're incrementing at the end
                 }
@@ -92,7 +137,7 @@ impl<'a> Lexer<'a> {
                     tokens.push(Token::Constant(constant));
                     idx = end - 1;
                 }
-                _ => return Err(LexerError::UnexpectedChar(bytes[idx].into()))
+                _ => return Err(LexerError::UnexpectedChar(bytes[idx].into())),
             }
             idx += 1;
         }
@@ -168,5 +213,58 @@ mod tests {
         let source = "`";
         let lexer = Lexer::lex(source);
         assert!(lexer.is_err());
+    }
+
+    #[test]
+    fn error_at() {
+        let source = r#"
+        int main(void) {
+            return 0@1;
+        };"#;
+        let lexer = Lexer::lex(source);
+        assert!(lexer.is_err());
+    }
+
+    #[test]
+    fn success_multi_digit_constant() {
+        let source = r#"
+        int main(void) {
+            // test case w/ multi-digit constant
+            return 100;
+        }"#;
+        let lexer = Lexer::lex(source);
+        assert!(lexer.is_ok());
+    }
+
+    #[test]
+    fn success_single_line_comment() {
+        let source = r#"
+        // lorem ipsum
+        "#;
+        let lexer = Lexer::lex(source);
+        assert!(lexer.is_ok());
+        let lexer = lexer.unwrap();
+        let mut tokens = lexer.tokens();
+        assert_eq!(
+            Some(&Token::SingleLineComment(" lorem ipsum")),
+            tokens.next()
+        );
+        assert_eq!(None, tokens.next());
+    }
+    #[test]
+    fn success_block_comment() {
+        let source = r#"
+/* lorem ipsum
+bloop blorp */
+        "#;
+        let lexer = Lexer::lex(source);
+        assert!(lexer.is_ok());
+        let lexer = lexer.unwrap();
+        let mut tokens = lexer.tokens();
+        assert_eq!(
+            Some(&Token::BlockComment(" lorem ipsum\nbloop blorp ")),
+            tokens.next()
+        );
+        assert_eq!(None, tokens.next());
     }
 }
