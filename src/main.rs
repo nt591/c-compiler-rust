@@ -5,6 +5,7 @@ use std::io::BufReader;
 use std::path::PathBuf;
 
 pub mod lexer;
+pub mod parser;
 use lexer::Lexer;
 
 #[derive(Parser, Debug)]
