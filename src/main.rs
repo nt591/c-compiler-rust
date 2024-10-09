@@ -58,7 +58,6 @@ fn main() -> anyhow::Result<()> {
         let ast = parser.into_ast()?;
         let asm = Asm::new(ast);
         let ast = asm.into_ast()?;
-        println!("{ast:?}");
         println!("codegen");
     } else {
         println!("full run");
