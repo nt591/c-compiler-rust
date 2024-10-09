@@ -61,9 +61,11 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn as_syntactic_tokens(&self) -> Vec<Token<'a>> {
-        self.tokens.iter().filter(|x| !matches!(x, 
-            Token::SingleLineComment(_) | Token::BlockComment(_) 
-        )).copied().collect::<Vec<_>>()
+        self.tokens
+            .iter()
+            .filter(|x| !matches!(x, Token::SingleLineComment(_) | Token::BlockComment(_)))
+            .copied()
+            .collect::<Vec<_>>()
     }
 
     pub fn lex(source: &'a str) -> Result<Lexer<'a>, LexerError> {

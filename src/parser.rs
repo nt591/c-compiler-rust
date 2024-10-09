@@ -1,7 +1,7 @@
 use std::iter::Peekable;
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, PartialEq)]
 pub enum ParserError {
     #[error("Unexpected token: wanted {0} but got {1}")]
     UnexpectedToken(String, String),
@@ -18,7 +18,7 @@ pub enum ParserError {
 // super basic AST model
 // borrows tokens, bound to lifetime of source text
 use crate::lexer::Token;
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum AST<'a> {
     Program(Box<AST<'a>>),
     Function { name: &'a str, body: Box<AST<'a>> },
@@ -92,8 +92,74 @@ impl<'a> Parser<'a> {
             Some(token) if std::mem::discriminant(token) == std::mem::discriminant(&expected) => {
                 Ok(())
             }
-            Some(token) => Err(ParserError::UnexpectedToken(expected.into_string(), token.into_string())),
+            Some(token) => Err(ParserError::UnexpectedToken(
+                expected.into_string(),
+                token.into_string(),
+            )),
             None => Err(ParserError::OutOfTokens),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::Token;
+    #[test]
+    fn basic_parse() {
+        /*
+         int main(void) {
+           return 100;
+         }
+        */
+        let tokens = vec![
+            Token::Int,
+            Token::Main,
+            Token::LeftParen,
+            Token::Void,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Return,
+            Token::Constant(100),
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_ok());
+        let ast = ast.unwrap();
+        let expected = AST::Program(Box::new(AST::Function {
+            name: "main",
+            body: Box::new(AST::Return(Box::new(AST::Constant(100)))),
+        }));
+        assert_eq!(expected, ast);
+    }
+
+    #[test]
+    fn failed_parse() {
+        /* MISSING THE VOID PARAM
+        int main() { return 200; }
+        */
+        let tokens = vec![
+            Token::Int,
+            Token::Main,
+            Token::LeftParen,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Return,
+            Token::Constant(100),
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_err());
+        assert_eq!(
+            Err(ParserError::UnexpectedToken(
+                String::from("Void"),
+                String::from("RightParen")
+            )),
+            ast
+        );
     }
 }
