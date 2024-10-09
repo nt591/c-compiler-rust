@@ -162,4 +162,26 @@ mod tests {
             ast
         );
     }
+
+    #[test]
+    fn unclosed_braces_fails() {
+        /*
+        int main(void) { return 200; 
+        */
+        let tokens = vec![
+            Token::Int,
+            Token::Main,
+            Token::LeftParen,
+            Token::Void,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Return,
+            Token::Constant(100),
+            Token::Semicolon,
+        ];
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_err());
+        assert_eq!(Err(ParserError::OutOfTokens), ast);
+    }
 }

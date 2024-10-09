@@ -57,7 +57,8 @@ fn main() -> anyhow::Result<()> {
         let parser = Parser::new(&tokens);
         let ast = parser.into_ast()?;
         let asm = Asm::new(ast);
-        let _ast = asm.into_ast()?;
+        let ast = asm.into_ast()?;
+        println!("{ast:?}");
         println!("codegen");
     } else {
         println!("full run");
