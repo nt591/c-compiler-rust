@@ -166,7 +166,7 @@ mod tests {
     #[test]
     fn unclosed_braces_fails() {
         /*
-        int main(void) { return 200; 
+        int main(void) { return 200;
         */
         let tokens = vec![
             Token::Int,

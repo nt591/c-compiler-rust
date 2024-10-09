@@ -56,6 +56,7 @@ impl<'a> Token<'a> {
 }
 
 impl<'a> Lexer<'a> {
+    #[cfg(test)] // maybe prefer allow dead code
     pub fn tokens(&self) -> std::slice::Iter<'a, Token> {
         self.tokens.iter()
     }
