@@ -4,8 +4,10 @@ use std::io::BufRead;
 use std::io::BufReader;
 use std::path::PathBuf;
 
+pub mod asm;
 pub mod lexer;
 pub mod parser;
+use asm::Asm;
 use lexer::Lexer;
 use parser::Parser;
 
@@ -47,6 +49,15 @@ fn main() -> anyhow::Result<()> {
         let _ast = parser.into_ast()?;
         println!("parsing");
     } else if args.codegen {
+        let f = File::open(input)?;
+        let reader = BufReader::new(f);
+        let contents: String = reader.lines().collect::<Result<Vec<_>, _>>()?.join("\n");
+        let lexer = Lexer::lex(&contents)?;
+        let tokens = lexer.as_syntactic_tokens();
+        let parser = Parser::new(&tokens);
+        let ast = parser.into_ast()?;
+        let asm = Asm::new(ast);
+        let _ast = asm.into_ast()?;
         println!("codegen");
     } else {
         println!("full run");
