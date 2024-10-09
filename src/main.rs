@@ -2,6 +2,8 @@ use clap::Parser as ClapParser;
 use std::fs::File;
 use std::io::BufRead;
 use std::io::BufReader;
+use std::io::BufWriter;
+use std::io::Write;
 use std::path::PathBuf;
 
 mod asm;
@@ -40,7 +42,6 @@ fn main() -> anyhow::Result<()> {
         let reader = BufReader::new(f);
         let contents: String = reader.lines().collect::<Result<Vec<_>, _>>()?.join("\n");
         Lexer::lex(&contents)?;
-        println!("lexing");
     } else if args.parse {
         let f = File::open(input)?;
         let reader = BufReader::new(f);
@@ -49,7 +50,6 @@ fn main() -> anyhow::Result<()> {
         let tokens = lexer.as_syntactic_tokens();
         let parser = Parser::new(&tokens);
         let _ast = parser.into_ast()?;
-        println!("parsing");
     } else if args.codegen {
         let f = File::open(input)?;
         let reader = BufReader::new(f);
@@ -60,9 +60,8 @@ fn main() -> anyhow::Result<()> {
         let ast = parser.into_ast()?;
         let asm = Asm::new(ast);
         let _ast = asm.into_ast()?;
-        println!("codegen");
     } else {
-        let f = File::open(input)?;
+        let f = File::open(&input)?;
         let reader = BufReader::new(f);
         let contents: String = reader.lines().collect::<Result<Vec<_>, _>>()?.join("\n");
         let lexer = Lexer::lex(&contents)?;
@@ -73,8 +72,20 @@ fn main() -> anyhow::Result<()> {
         let ast = asm.into_ast()?;
         let emitter = Emitter::new(ast);
         let code = emitter.emit();
+        
+        let output_path = input.with_extension("s");
+        let output_file = File::create(&output_path)?;
 
-        println!("full run");
+        let mut writer = BufWriter::new(output_file);
+        writer.write_all(code.as_bytes())?;
+
+        let target = output_path.with_extension("");
+            
+        // defer to GCC to assemble and link
+        let path_to_str = |p: PathBuf| p.into_os_string().into_string().expect("Should be valid string");
+        let _cmd = std::process::Command::new("gcc")
+            .args([path_to_str(output_path), "-o".into(), path_to_str(target)])
+            .spawn()?;
     }
     Ok(())
 }

@@ -16,7 +16,9 @@ impl<'a> Emitter<'a> {
 
     // todo: write to a file
     pub fn emit(self) -> String {
-        Self::emit_code(&self.0).join("\n")
+        let mut code = Self::emit_code(&self.0).join("\n");
+        code.push('\n');
+        code
     }
 
     fn emit_code(ast: &AST<'a>) -> Vec<String> {
@@ -24,8 +26,8 @@ impl<'a> Emitter<'a> {
             AST::Program(func) => Self::emit_code(func),
             AST::Function { name, instructions } => {
                 let mut codegen = vec![];
-                codegen.push(format!("  .globl {name}"));
-                codegen.push(format!("{name}:"));
+                codegen.push(format!("  .globl _{name}"));
+                codegen.push(format!("_{name}:"));
                 for instruction in instructions {
                     let instruction = Self::emit_instruction(instruction);
                     codegen.push(format!("  {instruction}"));
@@ -63,11 +65,11 @@ impl<'a> Emitter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::AST as ParserAST;
+    use crate::asm::AST as AsmAST;
 
     #[test]
     fn basic_emit() {
-        let ast = AST::Program(Box::new(AST::Function {
+        let ast = AsmAST::Program(Box::new(AsmAST::Function {
             name: "main",
             instructions: vec![
                 Instruction::Mov(Operand::Imm(100), Operand::Reg(Register::EAX)),
@@ -75,10 +77,11 @@ mod tests {
             ],
         }));
 
-        let expected = r#"  .globl main
-main:
+        let expected = r#"  .globl _main
+_main:
   movl $100, %eax
-  ret"#;
+  ret
+"#;
         
     let emitter = Emitter::new(ast);
     let actual = emitter.emit();
