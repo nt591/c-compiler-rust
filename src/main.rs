@@ -42,7 +42,8 @@ fn main() -> anyhow::Result<()> {
         let reader = BufReader::new(f);
         let contents: String = reader.lines().collect::<Result<Vec<_>, _>>()?.join("\n");
         let lexer = Lexer::lex(&contents)?;
-        let parser = Parser::new(lexer.as_tokens());
+        let tokens = lexer.as_syntactic_tokens();
+        let parser = Parser::new(&tokens);
         let _ast = parser.into_ast()?;
         println!("parsing");
     } else if args.codegen {

@@ -16,7 +16,7 @@ pub struct Lexer<'a> {
     tokens: Vec<Token<'a>>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum Token<'a> {
     Identifier(&'a str),
     Constant(usize),
@@ -34,13 +34,36 @@ pub enum Token<'a> {
     Semicolon,
 }
 
+impl<'a> Token<'a> {
+    pub fn into_string(&self) -> String {
+        use Token::*;
+        match self {
+            Identifier(s) => format!("Identifier {s}"),
+            Constant(c) => format!("Constant {c}"),
+            SingleLineComment(c) => format!("SingleLineComment {c}"),
+            BlockComment(c) => format!("BlockComment {c}"),
+            Int => format!("Int"),
+            Main => format!("Main"),
+            Void => format!("Void"),
+            Return => format!("Return"),
+            LeftParen => format!("LeftParen"),
+            RightParen => format!("RightParen"),
+            LeftBrace => format!("LeftBrace"),
+            RightBrace => format!("RightBrace"),
+            Semicolon => format!("Semicolon"),
+        }
+    }
+}
+
 impl<'a> Lexer<'a> {
     pub fn tokens(&self) -> std::slice::Iter<'a, Token> {
         self.tokens.iter()
     }
 
-    pub fn as_tokens(&self) -> &[Token<'a>] {
-        &self.tokens
+    pub fn as_syntactic_tokens(&self) -> Vec<Token<'a>> {
+        self.tokens.iter().filter(|x| !matches!(x, 
+            Token::SingleLineComment(_) | Token::BlockComment(_) 
+        )).copied().collect::<Vec<_>>()
     }
 
     pub fn lex(source: &'a str) -> Result<Lexer<'a>, LexerError> {

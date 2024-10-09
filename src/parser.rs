@@ -3,8 +3,16 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ParserError {
-    #[error("Unexpected token")]
-    UnexpectedToken,
+    #[error("Unexpected token: wanted {0} but got {1}")]
+    UnexpectedToken(String, String),
+    #[error("Unexpected token when parsing expression")]
+    UnexpectedExpressionToken,
+    #[error("Unexpected function name")]
+    UnexpectedName,
+    #[error("Got leftover tokens after parsing program")]
+    LeftoverTokens,
+    #[error("Out of tokens when trying to get next")]
+    OutOfTokens,
 }
 
 // super basic AST model
@@ -31,7 +39,12 @@ impl<'a> Parser<'a> {
     }
 
     pub fn into_ast(mut self) -> Result<AST<'a>, ParserError> {
-        Ok(self.parse_program()?)
+        let program = self.parse_program()?;
+        match self.tokens.next() {
+            // ensure no leftover tokens
+            None => Ok(program),
+            Some(_) => Err(ParserError::LeftoverTokens),
+        }
     }
 
     fn parse_program(&mut self) -> Result<AST<'a>, ParserError> {
@@ -42,8 +55,10 @@ impl<'a> Parser<'a> {
     fn parse_function(&mut self) -> Result<AST<'a>, ParserError> {
         // todo: set return type?
         self.expect(Token::Int)?;
-        let Some(Token::Identifier(name)) = self.tokens.next() else {
-            return Err(ParserError::UnexpectedToken);
+        let name = match self.tokens.next() {
+            Some(Token::Main) => "main",
+            Some(Token::Identifier(ident)) => ident,
+            _ => return Err(ParserError::UnexpectedName),
         };
         self.expect(Token::LeftParen)?;
         self.expect(Token::Void)?;
@@ -68,7 +83,7 @@ impl<'a> Parser<'a> {
     fn parse_expression(&mut self) -> Result<AST<'a>, ParserError> {
         match self.tokens.next() {
             Some(Token::Constant(c)) => Ok(AST::Constant(*c)),
-            _ => Err(ParserError::UnexpectedToken),
+            _ => Err(ParserError::UnexpectedExpressionToken),
         }
     }
 
@@ -77,7 +92,8 @@ impl<'a> Parser<'a> {
             Some(token) if std::mem::discriminant(token) == std::mem::discriminant(&expected) => {
                 Ok(())
             }
-            _ => Err(ParserError::UnexpectedToken),
+            Some(token) => Err(ParserError::UnexpectedToken(expected.into_string(), token.into_string())),
+            None => Err(ParserError::OutOfTokens),
         }
     }
 }
