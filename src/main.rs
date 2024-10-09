@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::Parser as ClapParser;
 use std::fs::File;
 use std::io::BufRead;
 use std::io::BufReader;
@@ -7,8 +7,9 @@ use std::path::PathBuf;
 pub mod lexer;
 pub mod parser;
 use lexer::Lexer;
+use parser::Parser;
 
-#[derive(Parser, Debug)]
+#[derive(ClapParser, Debug)]
 #[clap(name = "C Compiler")]
 #[clap(author = "Nikhil Thomas")]
 struct Args {
@@ -37,6 +38,12 @@ fn main() -> anyhow::Result<()> {
         Lexer::lex(&contents)?;
         println!("lexing");
     } else if args.parse {
+        let f = File::open(input)?;
+        let reader = BufReader::new(f);
+        let contents: String = reader.lines().collect::<Result<Vec<_>, _>>()?.join("\n");
+        let lexer = Lexer::lex(&contents)?;
+        let parser = Parser::new(lexer.as_tokens());
+        let _ast = parser.into_ast()?;
         println!("parsing");
     } else if args.codegen {
         println!("codegen");

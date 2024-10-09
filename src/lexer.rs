@@ -39,6 +39,10 @@ impl<'a> Lexer<'a> {
         self.tokens.iter()
     }
 
+    pub fn as_tokens(&self) -> &[Token<'a>] {
+        &self.tokens
+    }
+
     pub fn lex(source: &'a str) -> Result<Lexer<'a>, LexerError> {
         let mut tokens = Vec::new();
         let mut idx = 0;
@@ -91,7 +95,7 @@ impl<'a> Lexer<'a> {
                     let comment =
                         std::str::from_utf8(&bytes[start..end]).expect("We know this is UTF8");
                     tokens.push(Token::BlockComment(comment));
-                    idx = end + 1; // move to the closing slash, we'll incr again 
+                    idx = end + 1; // move to the closing slash, we'll incr again
                 }
                 b'a'..=b'z' | b'A'..=b'Z' => {
                     // starts with a letter, just walk until the end.
