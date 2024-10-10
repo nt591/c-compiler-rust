@@ -72,7 +72,7 @@ fn main() -> anyhow::Result<()> {
         let ast = asm.into_ast()?;
         let emitter = Emitter::new(ast);
         let code = emitter.emit();
-        
+
         let output_path = input.with_extension("s");
         let output_file = File::create(&output_path)?;
 
@@ -80,9 +80,13 @@ fn main() -> anyhow::Result<()> {
         writer.write_all(code.as_bytes())?;
 
         let target = output_path.with_extension("");
-            
+
         // defer to GCC to assemble and link
-        let path_to_str = |p: PathBuf| p.into_os_string().into_string().expect("Should be valid string");
+        let path_to_str = |p: PathBuf| {
+            p.into_os_string()
+                .into_string()
+                .expect("Should be valid string")
+        };
         let _cmd = std::process::Command::new("gcc")
             .args([path_to_str(output_path), "-o".into(), path_to_str(target)])
             .spawn()?;

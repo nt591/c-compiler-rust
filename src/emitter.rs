@@ -82,9 +82,9 @@ _main:
   movl $100, %eax
   ret
 "#;
-        
-    let emitter = Emitter::new(ast);
-    let actual = emitter.emit();
-    assert_eq!(expected, actual);
+
+        let emitter = Emitter::new(ast);
+        let actual = emitter.emit();
+        assert_eq!(expected, actual);
     }
 }

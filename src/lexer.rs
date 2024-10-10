@@ -32,6 +32,9 @@ pub enum Token<'a> {
     LeftBrace,
     RightBrace,
     Semicolon,
+    Tilde,
+    Hyphen,
+    DoubleHyphen,
 }
 
 impl<'a> Token<'a> {
@@ -51,6 +54,9 @@ impl<'a> Token<'a> {
             LeftBrace => format!("LeftBrace"),
             RightBrace => format!("RightBrace"),
             Semicolon => format!("Semicolon"),
+            Tilde => format!("Tilde"),
+            Hyphen => format!("Hyphen"),
+            DoubleHyphen => format!("DoubleHyphen"),
         }
     }
 }
@@ -84,6 +90,16 @@ impl<'a> Lexer<'a> {
                 b'(' => tokens.push(Token::LeftParen),
                 b')' => tokens.push(Token::RightParen),
                 b';' => tokens.push(Token::Semicolon),
+                b'~' => tokens.push(Token::Tilde),
+                b'-' => {
+                    // first, check if we could be processing a double hyphen
+                    if idx < len - 1 && bytes[idx + 1] == b'-' {
+                        idx += 1;
+                        tokens.push(Token::DoubleHyphen);
+                    } else {
+                        tokens.push(Token::Hyphen);
+                    }
+                }
                 b'/' if idx < len - 1 && bytes[idx + 1] == b'/' => {
                     // single line comment handler
                     // Scoop up until we see a newline or end of index, stuff into token
@@ -295,6 +311,39 @@ bloop blorp */
             Some(&Token::BlockComment(" lorem ipsum\nbloop blorp ")),
             tokens.next()
         );
+        assert_eq!(None, tokens.next());
+    }
+
+    #[test]
+    fn lexes_double_hyphen() {
+        let source = r#"
+    return --2;
+"#;
+        let lexer = Lexer::lex(source);
+        assert!(lexer.is_ok());
+        let lexer = lexer.unwrap();
+        let mut tokens = lexer.tokens();
+        assert_eq!(Some(&Token::Return), tokens.next());
+        assert_eq!(Some(&Token::DoubleHyphen), tokens.next());
+        assert_eq!(Some(&Token::Constant(2)), tokens.next());
+        assert_eq!(Some(&Token::Semicolon), tokens.next());
+        assert_eq!(None, tokens.next());
+    }
+    #[test]
+    fn lexes_tilde_and_hyphen() {
+        let source = r#"
+    ~(-2);
+"#;
+        let lexer = Lexer::lex(source);
+        assert!(lexer.is_ok());
+        let lexer = lexer.unwrap();
+        let mut tokens = lexer.tokens();
+        assert_eq!(Some(&Token::Tilde), tokens.next());
+        assert_eq!(Some(&Token::LeftParen), tokens.next());
+        assert_eq!(Some(&Token::Hyphen), tokens.next());
+        assert_eq!(Some(&Token::Constant(2)), tokens.next());
+        assert_eq!(Some(&Token::RightParen), tokens.next());
+        assert_eq!(Some(&Token::Semicolon), tokens.next());
         assert_eq!(None, tokens.next());
     }
 }
