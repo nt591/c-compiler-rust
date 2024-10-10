@@ -1,6 +1,7 @@
 // Responsible for taking a TACKY AST
 // and converting to an assembly AST
 use crate::tacky;
+use std::collections::HashMap;
 use thiserror::Error;
 
 #[derive(Debug, PartialEq, Error)]
@@ -26,7 +27,7 @@ pub struct Function<'a> {
     pub instructions: Vec<Instruction>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum UnaryOp {
     Not,
     Neg,
@@ -40,7 +41,9 @@ pub enum Instruction {
     Ret,
 }
 
-#[derive(Debug, PartialEq)]
+// implement clone so our mapping of Tacky Var
+// to Pseudo can always return an owned value
+#[derive(Debug, PartialEq, Clone)]
 pub enum Operand {
     Imm(usize),
     Reg(Register),
@@ -48,15 +51,23 @@ pub enum Operand {
     Stack(i32),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Register {
     EAX,
     R10,
 }
 
+#[derive(Debug, Default)]
+struct AsmGenerator {
+    stack_offset: i32,     
+    identifiers: HashMap<String, Operand>, // Tacky var ident -> Pseudo(string)
+}
+
 impl<'a> Asm<'a> {
     pub fn from_tacky(tacky: tacky::AST<'a>) -> Asm<'a> {
-        Self::parse_program(&tacky)
+        let asm = Self::parse_program(&tacky);
+        let mut generator = AsmGenerator::default();
+        Self::fixup_pseudos(asm, &mut generator)
     }
 
     fn parse_program(tacky: &tacky::AST<'a>) -> Asm<'a> {
@@ -87,6 +98,58 @@ impl<'a> Asm<'a> {
                 ],
             })
             .collect::<Vec<_>>()
+    }
+
+    fn fixup_pseudos(asm: Asm<'a>, gen: &mut AsmGenerator) -> Asm<'a> {
+        match asm {
+            Asm::Program(func) => Asm::Program(Self::fixup_pseudos_in_function(&func, gen)),
+        }
+    }
+    fn fixup_pseudos_in_function(
+        func: &Function<'a>,
+        gen: &mut AsmGenerator,
+    ) -> Function<'a> {
+        let Function { name, instructions } = func;
+        let instructions = Self::fixup_pseudos_in_instructions(instructions, gen);
+        Function { name, instructions }
+    }
+
+    fn fixup_pseudos_in_instructions(
+        ins: &[Instruction],
+        gen: &mut AsmGenerator,
+    ) -> Vec<Instruction> {
+        ins.iter()
+            .map(|instruction| match instruction {
+                Instruction::Mov(src, dst) => {
+                    let src = Self::replace_pseudo_in_op(src, gen);
+                    let dst = Self::replace_pseudo_in_op(dst, gen);
+                    Instruction::Mov(src, dst)
+                }
+                Instruction::Unary(op, dst) => {
+                    let dst = Self::replace_pseudo_in_op(dst, gen);
+                    Instruction::Unary(op.clone(), dst)
+                }
+                Instruction::AllocateStack(n) => Instruction::AllocateStack(*n),
+                Instruction::Ret => Instruction::Ret,
+            })
+            .collect::<Vec<_>>()
+    }
+
+    fn replace_pseudo_in_op(op: &Operand, gen: &mut AsmGenerator) -> Operand {
+        match op {
+            Operand::Pseudo(var) => gen
+                .identifiers
+                .entry(var.clone())
+                .or_insert_with(|| {
+                    let next_offset = gen.stack_offset - 4;
+                    gen.stack_offset = next_offset;
+                    Operand::Stack(
+                        next_offset
+                    )
+                })
+                .clone(),
+            o => o.clone(), //no transformation otherwise
+        }
     }
 }
 
@@ -130,9 +193,9 @@ mod tests {
         let expected = Asm::Program(Function {
             name: "main",
             instructions: vec![
-                Instruction::Mov(Operand::Imm(100), Operand::Pseudo("tmp.0".into())),
-                Instruction::Unary(UnaryOp::Neg, Operand::Pseudo("tmp.0".into())),
-                Instruction::Mov(Operand::Pseudo("tmp.0".into()), Operand::Reg(Register::EAX)),
+                Instruction::Mov(Operand::Imm(100), Operand::Stack(-4)),
+                Instruction::Unary(UnaryOp::Neg, Operand::Stack(-4)),
+                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::EAX)),
                 Instruction::Ret,
             ],
         });
