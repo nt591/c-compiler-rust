@@ -43,7 +43,7 @@ struct Args {
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let input = args.input.canonicalize().expect("Not a valid input file");
-    let f = File::open(input)?;
+    let f = File::open(&input)?;
     let reader = BufReader::new(f);
     let contents: String = reader.lines().collect::<Result<Vec<_>, _>>()?.join("\n");
     if args.lex {
@@ -58,8 +58,7 @@ fn main() -> anyhow::Result<()> {
         let tokens = lexer.as_syntactic_tokens();
         let parser = Parser::new(&tokens);
         let ast = parser.into_ast()?;
-        let asm = Asm::new(ast);
-        let _ast = asm.into_ast()?;
+        let _asm = Asm::from_parser(ast);
     } else if args.tacky {
         let lexer = Lexer::lex(&contents)?;
         let tokens = lexer.as_syntactic_tokens();
@@ -72,9 +71,8 @@ fn main() -> anyhow::Result<()> {
         let tokens = lexer.as_syntactic_tokens();
         let parser = Parser::new(&tokens);
         let ast = parser.into_ast()?;
-        let asm = Asm::new(ast);
-        let ast = asm.into_ast()?;
-        let emitter = Emitter::new(ast);
+        let asm = Asm::from_parser(ast)?;
+        let emitter = Emitter::new(asm);
         let code = emitter.emit();
 
         let output_path = input.with_extension("s");

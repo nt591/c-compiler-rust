@@ -17,8 +17,8 @@ pub enum AsmError {
 // Lifetime of source test, since we need
 // names. TODO: Figure out how to remove this dep.
 #[derive(Debug, PartialEq)]
-pub enum AST<'a> {
-    Program(Box<AST<'a>>),
+pub enum Asm<'a> {
+    Program(Box<Asm<'a>>),
     Function {
         name: &'a str,
         instructions: Vec<Instruction>,
@@ -42,41 +42,32 @@ pub enum Register {
     EAX,
 }
 
-#[derive(Debug, PartialEq)]
-pub struct Asm<'a> {
-    parser: ParserAST<'a>,
-}
-
 impl<'a> Asm<'a> {
-    pub fn new(parser: ParserAST<'a>) -> Self {
-        Self { parser }
+    pub fn from_parser(parser: ParserAST<'a>) -> Result<Asm<'a>, AsmError> {
+        Self::parse_program(&parser)
     }
 
-    pub fn into_ast(self) -> Result<AST<'a>, AsmError> {
-        self.parse_program(&self.parser)
-    }
-
-    fn parse_program(&self, parser: &ParserAST<'a>) -> Result<AST<'a>, AsmError> {
+    fn parse_program(parser: &ParserAST<'a>) -> Result<Asm<'a>, AsmError> {
         match parser {
             ParserAST::Program(func) => {
-                let func = self.parse_function(func)?;
-                Ok(AST::Program(Box::new(func)))
+                let func = Self::parse_function(func)?;
+                Ok(Asm::Program(Box::new(func)))
             }
             _ => Err(AsmError::MissingProgram),
         }
     }
 
-    fn parse_function(&self, parser: &ParserAST<'a>) -> Result<AST<'a>, AsmError> {
+    fn parse_function(parser: &ParserAST<'a>) -> Result<Asm<'a>, AsmError> {
         match parser {
             ParserAST::Function { name, body } => {
-                let instructions = self.parse_instructions(&*body)?;
-                Ok(AST::Function { name, instructions })
+                let instructions = Self::parse_instructions(&*body)?;
+                Ok(Asm::Function { name, instructions })
             }
             _ => Err(AsmError::MissingFunction),
         }
     }
 
-    fn parse_expression(&self, expr: &Expression) -> Result<Vec<Instruction>, AsmError> {
+    fn parse_expression(expr: &Expression) -> Result<Vec<Instruction>, AsmError> {
         match expr {
             Expression::Constant(imm) => {
                 let src = Operand::Imm(*imm);
@@ -88,11 +79,11 @@ impl<'a> Asm<'a> {
         }
     }
 
-    fn parse_instructions(&self, parser: &ParserAST<'a>) -> Result<Vec<Instruction>, AsmError> {
+    fn parse_instructions(parser: &ParserAST<'a>) -> Result<Vec<Instruction>, AsmError> {
         match parser {
             ParserAST::Return(body) => {
                 let mut instructions = vec![];
-                for instruction in self.parse_expression(body)? {
+                for instruction in Self::parse_expression(body)? {
                     instructions.push(instruction);
                 }
                 instructions.push(Instruction::Ret);
@@ -114,7 +105,7 @@ mod tests {
             body: Box::new(ParserAST::Return(Expression::Constant(100))),
         }));
 
-        let expected = AST::Program(Box::new(AST::Function {
+        let expected = Asm::Program(Box::new(Asm::Function {
             name: "main",
             instructions: vec![
                 Instruction::Mov(Operand::Imm(100), Operand::Reg(Register::EAX)),
@@ -122,8 +113,7 @@ mod tests {
             ],
         }));
 
-        let asm = Asm::new(ast);
-        let assembly = asm.into_ast();
+        let assembly = Asm::from_parser(ast);
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);

@@ -1,17 +1,17 @@
 // takes the asm parser and emits X64
 // only works on my Mac, so do with that what you will.
 
+use crate::asm::Asm;
 use crate::asm::Instruction;
 use crate::asm::Operand;
 use crate::asm::Register;
-use crate::asm::AST;
 
 // lifetime bound to source text.
-pub struct Emitter<'a>(AST<'a>);
+pub struct Emitter<'a>(Asm<'a>);
 
 impl<'a> Emitter<'a> {
-    pub fn new(ast: AST<'a>) -> Self {
-        Self(ast)
+    pub fn new(asm: Asm<'a>) -> Self {
+        Self(asm)
     }
 
     // todo: write to a file
@@ -21,10 +21,10 @@ impl<'a> Emitter<'a> {
         code
     }
 
-    fn emit_code(ast: &AST<'a>) -> Vec<String> {
-        match ast {
-            AST::Program(func) => Self::emit_code(func),
-            AST::Function { name, instructions } => {
+    fn emit_code(asm: &Asm<'a>) -> Vec<String> {
+        match asm {
+            Asm::Program(func) => Self::emit_code(func),
+            Asm::Function { name, instructions } => {
                 let mut codegen = vec![];
                 codegen.push(format!("  .globl _{name}"));
                 codegen.push(format!("_{name}:"));
@@ -65,11 +65,11 @@ impl<'a> Emitter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::asm::AST as AsmAST;
+    use crate::asm::Asm;
 
     #[test]
     fn basic_emit() {
-        let ast = AsmAST::Program(Box::new(AsmAST::Function {
+        let ast = Asm::Program(Box::new(Asm::Function {
             name: "main",
             instructions: vec![
                 Instruction::Mov(Operand::Imm(100), Operand::Reg(Register::EAX)),
