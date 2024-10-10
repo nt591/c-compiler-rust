@@ -58,7 +58,9 @@ fn main() -> anyhow::Result<()> {
         let tokens = lexer.as_syntactic_tokens();
         let parser = Parser::new(&tokens);
         let ast = parser.into_ast()?;
-        let _asm = Asm::from_parser(ast);
+        let asm = Tacky::new(ast);
+        let ast = asm.into_ast()?;
+        let _asm = Asm::from_tacky(ast);
     } else if args.tacky {
         let lexer = Lexer::lex(&contents)?;
         let tokens = lexer.as_syntactic_tokens();
@@ -71,7 +73,9 @@ fn main() -> anyhow::Result<()> {
         let tokens = lexer.as_syntactic_tokens();
         let parser = Parser::new(&tokens);
         let ast = parser.into_ast()?;
-        let asm = Asm::from_parser(ast)?;
+        let asm = Tacky::new(ast);
+        let ast = asm.into_ast()?;
+        let asm = Asm::from_tacky(ast);
         let emitter = Emitter::new(asm);
         let code = emitter.emit();
 

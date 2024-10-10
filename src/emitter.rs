@@ -48,6 +48,7 @@ impl<'a> Emitter<'a> {
                 let dst = Self::emit_op(dst);
                 format!("movl {src}, {dst}")
             }
+            _ => todo!(),
         }
     }
 
@@ -55,12 +56,14 @@ impl<'a> Emitter<'a> {
         match op {
             Operand::Reg(reg) => Self::emit_register(reg),
             Operand::Imm(imm) => format!("${imm}"),
+            _ => todo!(),
         }
     }
 
     fn emit_register(reg: &Register) -> String {
         match reg {
             Register::EAX => "%eax".to_string(),
+            Register::R10 => "%r10".to_string(),
         }
     }
 }

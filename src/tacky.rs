@@ -20,11 +20,13 @@ pub enum TackyError {
 // names. TODO: Figure out how to remove this dep.
 #[derive(Debug, PartialEq)]
 pub enum AST<'a> {
-    Program(Box<AST<'a>>),
-    Function {
-        name: &'a str,
-        instructions: Vec<Instruction>,
-    },
+    Program(Function<'a>),
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Function<'a> {
+    pub name: &'a str,
+    pub instructions: Vec<Instruction>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -70,17 +72,17 @@ impl<'a> Tacky<'a> {
         match parser {
             ParserAST::Program(func) => {
                 let func = self.parse_function(func)?;
-                Ok(AST::Program(Box::new(func)))
+                Ok(AST::Program(func))
             }
             _ => Err(TackyError::MissingProgram),
         }
     }
 
-    fn parse_function(&mut self, parser: &ParserAST<'a>) -> Result<AST<'a>, TackyError> {
+    fn parse_function(&mut self, parser: &ParserAST<'a>) -> Result<Function<'a>, TackyError> {
         match parser {
             ParserAST::Function { name, body } => {
                 let instructions = self.parse_instructions(&*body)?;
-                Ok(AST::Function { name, instructions })
+                Ok(Function { name, instructions })
             }
             _ => Err(TackyError::MissingFunction),
         }
@@ -146,10 +148,10 @@ mod tests {
             body: Box::new(ParserAST::Return(Expression::Constant(100))),
         }));
 
-        let expected = AST::Program(Box::new(AST::Function {
+        let expected = AST::Program(Function {
             name: "main",
             instructions: vec![Instruction::Ret(Val::Constant(100))],
-        }));
+        });
 
         let tacky = Tacky::new(ast);
         let assembly = tacky.into_ast();
@@ -168,7 +170,7 @@ mod tests {
             ))),
         }));
 
-        let expected = AST::Program(Box::new(AST::Function {
+        let expected = AST::Program(Function {
             name: "main",
             instructions: vec![
                 Instruction::Unary {
@@ -178,7 +180,7 @@ mod tests {
                 },
                 Instruction::Ret(Val::Var("tmp.0".into())),
             ],
-        }));
+        });
 
         let tacky = Tacky::new(ast);
         let assembly = tacky.into_ast();
@@ -203,7 +205,7 @@ mod tests {
             ))),
         }));
 
-        let expected = AST::Program(Box::new(AST::Function {
+        let expected = AST::Program(Function {
             name: "main",
             instructions: vec![
                 Instruction::Unary {
@@ -223,7 +225,7 @@ mod tests {
                 },
                 Instruction::Ret(Val::Var("tmp.2".into())),
             ],
-        }));
+        });
 
         let tacky = Tacky::new(ast);
         let assembly = tacky.into_ast();

@@ -1,7 +1,6 @@
-// Responsible for taking a parser AST
+// Responsible for taking a TACKY AST
 // and converting to an assembly AST
-use crate::parser::Expression;
-use crate::parser::AST as ParserAST;
+use crate::tacky;
 use thiserror::Error;
 
 #[derive(Debug, PartialEq, Error)]
@@ -28,8 +27,16 @@ pub struct Function<'a> {
 }
 
 #[derive(Debug, PartialEq)]
+pub enum UnaryOp {
+    Not,
+    Neg,
+}
+
+#[derive(Debug, PartialEq)]
 pub enum Instruction {
     Mov(Operand, Operand),
+    Unary(UnaryOp, Operand),
+    AllocateStack(usize),
     Ret,
 }
 
@@ -37,75 +44,62 @@ pub enum Instruction {
 pub enum Operand {
     Imm(usize),
     Reg(Register),
+    Pseudo(String),
+    Stack(i32),
 }
 
 #[derive(Debug, PartialEq)]
 pub enum Register {
     EAX,
+    R10,
 }
 
 impl<'a> Asm<'a> {
-    pub fn from_parser(parser: ParserAST<'a>) -> Result<Asm<'a>, AsmError> {
-        Self::parse_program(&parser)
+    pub fn from_tacky(tacky: tacky::AST<'a>) -> Asm<'a> {
+        Self::parse_program(&tacky)
     }
 
-    fn parse_program(parser: &ParserAST<'a>) -> Result<Asm<'a>, AsmError> {
-        match parser {
-            ParserAST::Program(func) => {
-                let func = Self::parse_function(func)?;
-                Ok(Asm::Program(func))
+    fn parse_program(tacky: &tacky::AST<'a>) -> Asm<'a> {
+        match tacky {
+            tacky::AST::Program(func) => {
+                let func = Self::parse_function(func);
+                Asm::Program(func)
             }
-            _ => Err(AsmError::MissingProgram),
         }
     }
 
-    fn parse_function(parser: &ParserAST<'a>) -> Result<Function<'a>, AsmError> {
-        match parser {
-            ParserAST::Function { name, body } => {
-                let instructions = Self::parse_instructions(&*body)?;
-                Ok(Function { name, instructions })
-            }
-            _ => Err(AsmError::MissingFunction),
-        }
+    fn parse_function(func: &tacky::Function<'a>) -> Function<'a> {
+        let tacky::Function { name, instructions } = func;
+        let instructions = Self::parse_instructions(&instructions);
+        Function { name, instructions }
     }
 
-    fn parse_expression(expr: &Expression) -> Result<Vec<Instruction>, AsmError> {
-        match expr {
-            Expression::Constant(imm) => {
-                let src = Operand::Imm(*imm);
-                let dst = Operand::Reg(Register::EAX);
-                let instructions = vec![Instruction::Mov(src, dst)];
-                Ok(instructions)
-            }
-            Expression::Unary(_op, _exp) => todo!(),
-        }
-    }
-
-    fn parse_instructions(parser: &ParserAST<'a>) -> Result<Vec<Instruction>, AsmError> {
-        match parser {
-            ParserAST::Return(body) => {
-                let mut instructions = vec![];
-                for instruction in Self::parse_expression(body)? {
-                    instructions.push(instruction);
-                }
-                instructions.push(Instruction::Ret);
-                Ok(instructions)
-            }
-            _ => Err(AsmError::InvalidInstruction),
-        }
+    fn parse_instructions(ins: &[tacky::Instruction]) -> Vec<Instruction> {
+        ins.iter()
+            .flat_map(|instruction| match instruction {
+                tacky::Instruction::Ret(val) => vec![
+                    Instruction::Mov(val.into(), Operand::Reg(Register::EAX)),
+                    Instruction::Ret,
+                ],
+                tacky::Instruction::Unary { op, src, dst } => vec![
+                    Instruction::Mov(src.into(), dst.into()),
+                    Instruction::Unary(op.into(), dst.into()),
+                ],
+            })
+            .collect::<Vec<_>>()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::AST as ParserAST;
+    use crate::tacky;
     #[test]
     fn basic_parse() {
-        let ast = ParserAST::Program(Box::new(ParserAST::Function {
+        let ast = tacky::AST::Program(tacky::Function {
             name: "main",
-            body: Box::new(ParserAST::Return(Expression::Constant(100))),
-        }));
+            instructions: vec![tacky::Instruction::Ret(tacky::Val::Constant(100))],
+        });
 
         let expected = Asm::Program(Function {
             name: "main",
@@ -115,9 +109,44 @@ mod tests {
             ],
         });
 
-        let assembly = Asm::from_parser(ast);
-        assert!(assembly.is_ok());
-        let assembly = assembly.unwrap();
+        let assembly = Asm::from_tacky(ast);
         assert_eq!(assembly, expected);
+    }
+}
+
+// some niceties. Maybe move to a from.rs
+impl From<tacky::UnaryOp> for UnaryOp {
+    fn from(op: tacky::UnaryOp) -> Self {
+        match op {
+            tacky::UnaryOp::Complement => UnaryOp::Not,
+            tacky::UnaryOp::Negate => UnaryOp::Neg,
+        }
+    }
+}
+
+impl From<tacky::Val> for Operand {
+    fn from(v: tacky::Val) -> Self {
+        match v {
+            tacky::Val::Constant(imm) => Operand::Imm(imm),
+            tacky::Val::Var(ident) => Operand::Pseudo(ident),
+        }
+    }
+}
+
+impl From<&tacky::UnaryOp> for UnaryOp {
+    fn from(op: &tacky::UnaryOp) -> Self {
+        match op {
+            &tacky::UnaryOp::Complement => UnaryOp::Not,
+            &tacky::UnaryOp::Negate => UnaryOp::Neg,
+        }
+    }
+}
+
+impl From<&tacky::Val> for Operand {
+    fn from(v: &tacky::Val) -> Self {
+        match v {
+            tacky::Val::Constant(imm) => Operand::Imm(*imm),
+            tacky::Val::Var(ident) => Operand::Pseudo(ident.clone()),
+        }
     }
 }
