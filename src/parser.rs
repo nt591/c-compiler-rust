@@ -22,7 +22,11 @@ use crate::lexer::Token;
 pub enum AST<'a> {
     Program(Box<AST<'a>>),
     Function { name: &'a str, body: Box<AST<'a>> },
-    Return(Box<AST<'a>>),
+    Return(Expression),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Expression {
     Constant(usize),
 }
 
@@ -77,12 +81,12 @@ impl<'a> Parser<'a> {
         self.expect(Token::Return)?;
         let val = self.parse_expression()?;
         self.expect(Token::Semicolon)?;
-        Ok(AST::Return(Box::new(val)))
+        Ok(AST::Return(val))
     }
 
-    fn parse_expression(&mut self) -> Result<AST<'a>, ParserError> {
+    fn parse_expression(&mut self) -> Result<Expression, ParserError> {
         match self.tokens.next() {
-            Some(Token::Constant(c)) => Ok(AST::Constant(*c)),
+            Some(Token::Constant(c)) => Ok(Expression::Constant(*c)),
             _ => Err(ParserError::UnexpectedExpressionToken),
         }
     }
@@ -130,7 +134,7 @@ mod tests {
         let ast = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: Box::new(AST::Return(Box::new(AST::Constant(100)))),
+            body: Box::new(AST::Return(Expression::Constant(100))),
         }));
         assert_eq!(expected, ast);
     }

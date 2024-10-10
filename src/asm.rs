@@ -1,5 +1,6 @@
 // Responsible for taking a parser AST
 // and converting to an assembly AST
+use crate::parser::Expression;
 use crate::parser::AST as ParserAST;
 use thiserror::Error;
 
@@ -75,20 +76,25 @@ impl<'a> Asm<'a> {
         }
     }
 
+    fn parse_expression(&self, expr: &Expression) -> Result<Vec<Instruction>, AsmError> {
+        match expr {
+            Expression::Constant(imm) => {
+                let src = Operand::Imm(*imm);
+                let dst = Operand::Reg(Register::EAX);
+                let instructions = vec![Instruction::Mov(src, dst)];
+                Ok(instructions)
+            }
+        }
+    }
+
     fn parse_instructions(&self, parser: &ParserAST<'a>) -> Result<Vec<Instruction>, AsmError> {
         match parser {
             ParserAST::Return(body) => {
                 let mut instructions = vec![];
-                for instruction in self.parse_instructions(body)? {
+                for instruction in self.parse_expression(body)? {
                     instructions.push(instruction);
                 }
                 instructions.push(Instruction::Ret);
-                Ok(instructions)
-            }
-            ParserAST::Constant(imm) => {
-                let src = Operand::Imm(*imm);
-                let dst = Operand::Reg(Register::EAX);
-                let instructions = vec![Instruction::Mov(src, dst)];
                 Ok(instructions)
             }
             _ => Err(AsmError::InvalidInstruction),
@@ -104,7 +110,7 @@ mod tests {
     fn basic_parse() {
         let ast = ParserAST::Program(Box::new(ParserAST::Function {
             name: "main",
-            body: Box::new(ParserAST::Return(Box::new(ParserAST::Constant(100)))),
+            body: Box::new(ParserAST::Return(Expression::Constant(100))),
         }));
 
         let expected = AST::Program(Box::new(AST::Function {
