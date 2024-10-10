@@ -112,6 +112,34 @@ mod tests {
         let assembly = Asm::from_tacky(ast);
         assert_eq!(assembly, expected);
     }
+
+    #[test]
+    fn parse_with_pseudos() {
+        let ast = tacky::AST::Program(tacky::Function {
+            name: "main",
+            instructions: vec![
+                tacky::Instruction::Unary {
+                    op: tacky::UnaryOp::Negate,
+                    src: tacky::Val::Constant(100),
+                    dst: tacky::Val::Var("tmp.0".into()),
+                },
+                tacky::Instruction::Ret(tacky::Val::Var("tmp.0".into())),
+            ],
+        });
+
+        let expected = Asm::Program(Function {
+            name: "main",
+            instructions: vec![
+                Instruction::Mov(Operand::Imm(100), Operand::Pseudo("tmp.0".into())),
+                Instruction::Unary(UnaryOp::Neg, Operand::Pseudo("tmp.0".into())),
+                Instruction::Mov(Operand::Pseudo("tmp.0".into()), Operand::Reg(Register::EAX)),
+                Instruction::Ret,
+            ],
+        });
+
+        let assembly = Asm::from_tacky(ast);
+        assert_eq!(assembly, expected);
+    }
 }
 
 // some niceties. Maybe move to a from.rs
