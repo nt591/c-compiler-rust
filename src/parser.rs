@@ -277,7 +277,7 @@ mod tests {
         assert_eq!(expected, ast);
     }
 
-#[test]
+    #[test]
     fn fails_if_missing_right_paren_closing_expression() {
         let tokens = vec![
             Token::Int,
