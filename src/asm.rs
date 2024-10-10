@@ -84,6 +84,7 @@ impl<'a> Asm<'a> {
                 let instructions = vec![Instruction::Mov(src, dst)];
                 Ok(instructions)
             }
+            Expression::Unary(_op, _exp) => todo!(),
         }
     }
 

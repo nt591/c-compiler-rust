@@ -28,6 +28,13 @@ pub enum AST<'a> {
 #[derive(Debug, PartialEq)]
 pub enum Expression {
     Constant(usize),
+    Unary(UnaryOp, Box<Expression>),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum UnaryOp {
+    Negate,
+    Complement,
 }
 
 pub struct Parser<'a> {
@@ -87,6 +94,20 @@ impl<'a> Parser<'a> {
     fn parse_expression(&mut self) -> Result<Expression, ParserError> {
         match self.tokens.next() {
             Some(Token::Constant(c)) => Ok(Expression::Constant(*c)),
+            Some(Token::Hyphen) => {
+                let inner_exp = self.parse_expression()?;
+                Ok(Expression::Unary(UnaryOp::Negate, Box::new(inner_exp)))
+            }
+            Some(Token::Tilde) => {
+                let inner_exp = self.parse_expression()?;
+                Ok(Expression::Unary(UnaryOp::Complement, Box::new(inner_exp)))
+            }
+            Some(Token::LeftParen) => {
+                // throw away parens and use just inner expression
+                let inner_expr = self.parse_expression()?;
+                self.expect(Token::RightParen)?;
+                Ok(inner_expr)
+            }
             _ => Err(ParserError::UnexpectedExpressionToken),
         }
     }
@@ -162,6 +183,123 @@ mod tests {
             Err(ParserError::UnexpectedToken(
                 String::from("Void"),
                 String::from("RightParen")
+            )),
+            ast
+        );
+    }
+
+    #[test]
+    fn parses_tilde() {
+        let tokens = vec![
+            Token::Int,
+            Token::Main,
+            Token::LeftParen,
+            Token::Void,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Return,
+            Token::Tilde,
+            Token::Constant(100),
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_ok());
+        let ast = ast.unwrap();
+        let expected = AST::Program(Box::new(AST::Function {
+            name: "main",
+            body: Box::new(AST::Return(Expression::Unary(
+                UnaryOp::Complement,
+                Box::new(Expression::Constant(100)),
+            ))),
+        }));
+        assert_eq!(expected, ast);
+    }
+
+    #[test]
+    fn parses_hyphen() {
+        let tokens = vec![
+            Token::Int,
+            Token::Main,
+            Token::LeftParen,
+            Token::Void,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Return,
+            Token::Hyphen,
+            Token::Constant(100),
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_ok());
+        let ast = ast.unwrap();
+        let expected = AST::Program(Box::new(AST::Function {
+            name: "main",
+            body: Box::new(AST::Return(Expression::Unary(
+                UnaryOp::Negate,
+                Box::new(Expression::Constant(100)),
+            ))),
+        }));
+        assert_eq!(expected, ast);
+    }
+
+    #[test]
+    fn removes_extra_parens_on_expression() {
+        let tokens = vec![
+            Token::Int,
+            Token::Main,
+            Token::LeftParen,
+            Token::Void,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Return,
+            Token::LeftParen,
+            Token::Hyphen,
+            Token::Constant(100),
+            Token::RightParen,
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_ok());
+        let ast = ast.unwrap();
+        let expected = AST::Program(Box::new(AST::Function {
+            name: "main",
+            body: Box::new(AST::Return(Expression::Unary(
+                UnaryOp::Negate,
+                Box::new(Expression::Constant(100)),
+            ))),
+        }));
+        assert_eq!(expected, ast);
+    }
+
+#[test]
+    fn fails_if_missing_right_paren_closing_expression() {
+        let tokens = vec![
+            Token::Int,
+            Token::Main,
+            Token::LeftParen,
+            Token::Void,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Return,
+            Token::LeftParen,
+            Token::Hyphen,
+            Token::Constant(100), // should have right paren after this
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_err());
+        assert_eq!(
+            Err(ParserError::UnexpectedToken(
+                String::from("RightParen"),
+                String::from("Semicolon")
             )),
             ast
         );
