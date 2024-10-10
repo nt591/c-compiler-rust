@@ -2,6 +2,7 @@
 // only works on my Mac, so do with that what you will.
 
 use crate::asm::Asm;
+use crate::asm::Function;
 use crate::asm::Instruction;
 use crate::asm::Operand;
 use crate::asm::Register;
@@ -23,18 +24,20 @@ impl<'a> Emitter<'a> {
 
     fn emit_code(asm: &Asm<'a>) -> Vec<String> {
         match asm {
-            Asm::Program(func) => Self::emit_code(func),
-            Asm::Function { name, instructions } => {
-                let mut codegen = vec![];
-                codegen.push(format!("  .globl _{name}"));
-                codegen.push(format!("_{name}:"));
-                for instruction in instructions {
-                    let instruction = Self::emit_instruction(instruction);
-                    codegen.push(format!("  {instruction}"));
-                }
-                codegen
-            }
+            Asm::Program(func) => Self::emit_function(func),
         }
+    }
+
+    fn emit_function(func: &Function<'a>) -> Vec<String> {
+        let Function { name, instructions } = func;
+        let mut codegen = vec![];
+        codegen.push(format!("  .globl _{name}"));
+        codegen.push(format!("_{name}:"));
+        for instruction in instructions {
+            let instruction = Self::emit_instruction(instruction);
+            codegen.push(format!("  {instruction}"));
+        }
+        codegen
     }
 
     fn emit_instruction(instruction: &Instruction) -> String {
@@ -66,16 +69,17 @@ impl<'a> Emitter<'a> {
 mod tests {
     use super::*;
     use crate::asm::Asm;
+    use crate::asm::Function;
 
     #[test]
     fn basic_emit() {
-        let ast = Asm::Program(Box::new(Asm::Function {
+        let ast = Asm::Program(Function {
             name: "main",
             instructions: vec![
                 Instruction::Mov(Operand::Imm(100), Operand::Reg(Register::EAX)),
                 Instruction::Ret,
             ],
-        }));
+        });
 
         let expected = r#"  .globl _main
 _main:

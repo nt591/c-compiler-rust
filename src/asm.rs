@@ -18,11 +18,13 @@ pub enum AsmError {
 // names. TODO: Figure out how to remove this dep.
 #[derive(Debug, PartialEq)]
 pub enum Asm<'a> {
-    Program(Box<Asm<'a>>),
-    Function {
-        name: &'a str,
-        instructions: Vec<Instruction>,
-    },
+    Program(Function<'a>),
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Function<'a> {
+    pub name: &'a str,
+    pub instructions: Vec<Instruction>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -51,17 +53,17 @@ impl<'a> Asm<'a> {
         match parser {
             ParserAST::Program(func) => {
                 let func = Self::parse_function(func)?;
-                Ok(Asm::Program(Box::new(func)))
+                Ok(Asm::Program(func))
             }
             _ => Err(AsmError::MissingProgram),
         }
     }
 
-    fn parse_function(parser: &ParserAST<'a>) -> Result<Asm<'a>, AsmError> {
+    fn parse_function(parser: &ParserAST<'a>) -> Result<Function<'a>, AsmError> {
         match parser {
             ParserAST::Function { name, body } => {
                 let instructions = Self::parse_instructions(&*body)?;
-                Ok(Asm::Function { name, instructions })
+                Ok(Function { name, instructions })
             }
             _ => Err(AsmError::MissingFunction),
         }
@@ -105,13 +107,13 @@ mod tests {
             body: Box::new(ParserAST::Return(Expression::Constant(100))),
         }));
 
-        let expected = Asm::Program(Box::new(Asm::Function {
+        let expected = Asm::Program(Function {
             name: "main",
             instructions: vec![
                 Instruction::Mov(Operand::Imm(100), Operand::Reg(Register::EAX)),
                 Instruction::Ret,
             ],
-        }));
+        });
 
         let assembly = Asm::from_parser(ast);
         assert!(assembly.is_ok());
