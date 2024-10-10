@@ -65,9 +65,10 @@ struct AsmGenerator {
 
 impl<'a> Asm<'a> {
     pub fn from_tacky(tacky: tacky::AST<'a>) -> Asm<'a> {
-        let asm = Self::parse_program(&tacky);
+        let mut asm = Self::parse_program(&tacky);
         let mut generator = AsmGenerator::default();
-        Self::fixup_pseudos(asm, &mut generator)
+        Self::fixup_pseudos(&mut asm, &mut generator);
+        asm
     }
 
     fn parse_program(tacky: &tacky::AST<'a>) -> Asm<'a> {
@@ -100,39 +101,36 @@ impl<'a> Asm<'a> {
             .collect::<Vec<_>>()
     }
 
-    fn fixup_pseudos(asm: Asm<'a>, gen: &mut AsmGenerator) -> Asm<'a> {
+    fn fixup_pseudos(asm: &mut Asm<'a>, gen: &mut AsmGenerator) {
         match asm {
-            Asm::Program(func) => Asm::Program(Self::fixup_pseudos_in_function(&func, gen)),
-        }
+            Asm::Program(ref mut func) => Self::fixup_pseudos_in_function(func, gen),
+        };
     }
     fn fixup_pseudos_in_function(
-        func: &Function<'a>,
+        func: &mut Function<'a>,
         gen: &mut AsmGenerator,
-    ) -> Function<'a> {
-        let Function { name, instructions } = func;
-        let instructions = Self::fixup_pseudos_in_instructions(instructions, gen);
-        Function { name, instructions }
+    ) {
+        let Function { name: _name, ref mut instructions } = func;
+        Self::fixup_pseudos_in_instructions(instructions, gen);
     }
 
     fn fixup_pseudos_in_instructions(
-        ins: &[Instruction],
+        ins: &mut [Instruction],
         gen: &mut AsmGenerator,
-    ) -> Vec<Instruction> {
-        ins.iter()
-            .map(|instruction| match instruction {
+    ) {
+        ins.iter_mut()
+            .for_each(|instruction| match instruction {
                 Instruction::Mov(src, dst) => {
-                    let src = Self::replace_pseudo_in_op(src, gen);
-                    let dst = Self::replace_pseudo_in_op(dst, gen);
-                    Instruction::Mov(src, dst)
+                    *src = Self::replace_pseudo_in_op(src, gen);
+                    *dst = Self::replace_pseudo_in_op(dst, gen);
+                    // *instruction = Instruction::Mov(src, dst);
                 }
-                Instruction::Unary(op, dst) => {
-                    let dst = Self::replace_pseudo_in_op(dst, gen);
-                    Instruction::Unary(op.clone(), dst)
+                Instruction::Unary(_op, dst) => {
+                    *dst = Self::replace_pseudo_in_op(dst, gen);
+                    //*instruction = Instruction::Unary(op.clone(), dst);
                 }
-                Instruction::AllocateStack(n) => Instruction::AllocateStack(*n),
-                Instruction::Ret => Instruction::Ret,
+                _ => {}
             })
-            .collect::<Vec<_>>()
     }
 
     fn replace_pseudo_in_op(op: &Operand, gen: &mut AsmGenerator) -> Operand {
