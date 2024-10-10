@@ -37,7 +37,7 @@ pub enum UnaryOp {
 pub enum Instruction {
     Mov(Operand, Operand),
     Unary(UnaryOp, Operand),
-    AllocateStack(usize),
+    AllocateStack(i32),
     Ret,
 }
 
@@ -59,7 +59,7 @@ pub enum Register {
 
 #[derive(Debug, Default)]
 struct AsmGenerator {
-    stack_offset: i32,     
+    stack_offset: i32,
     identifiers: HashMap<String, Operand>, // Tacky var ident -> Pseudo(string)
 }
 
@@ -68,6 +68,7 @@ impl<'a> Asm<'a> {
         let mut asm = Self::parse_program(&tacky);
         let mut generator = AsmGenerator::default();
         Self::fixup_pseudos(&mut asm, &mut generator);
+        Self::insert_allocate_stack(&mut asm, &generator);
         asm
     }
 
@@ -106,31 +107,25 @@ impl<'a> Asm<'a> {
             Asm::Program(ref mut func) => Self::fixup_pseudos_in_function(func, gen),
         };
     }
-    fn fixup_pseudos_in_function(
-        func: &mut Function<'a>,
-        gen: &mut AsmGenerator,
-    ) {
-        let Function { name: _name, ref mut instructions } = func;
+    fn fixup_pseudos_in_function(func: &mut Function<'a>, gen: &mut AsmGenerator) {
+        let Function {
+            name: _name,
+            ref mut instructions,
+        } = func;
         Self::fixup_pseudos_in_instructions(instructions, gen);
     }
 
-    fn fixup_pseudos_in_instructions(
-        ins: &mut [Instruction],
-        gen: &mut AsmGenerator,
-    ) {
-        ins.iter_mut()
-            .for_each(|instruction| match instruction {
-                Instruction::Mov(src, dst) => {
-                    *src = Self::replace_pseudo_in_op(src, gen);
-                    *dst = Self::replace_pseudo_in_op(dst, gen);
-                    // *instruction = Instruction::Mov(src, dst);
-                }
-                Instruction::Unary(_op, dst) => {
-                    *dst = Self::replace_pseudo_in_op(dst, gen);
-                    //*instruction = Instruction::Unary(op.clone(), dst);
-                }
-                _ => {}
-            })
+    fn fixup_pseudos_in_instructions(ins: &mut [Instruction], gen: &mut AsmGenerator) {
+        ins.iter_mut().for_each(|instruction| match instruction {
+            Instruction::Mov(src, dst) => {
+                *src = Self::replace_pseudo_in_op(src, gen);
+                *dst = Self::replace_pseudo_in_op(dst, gen);
+            }
+            Instruction::Unary(_op, dst) => {
+                *dst = Self::replace_pseudo_in_op(dst, gen);
+            }
+            _ => {}
+        })
     }
 
     fn replace_pseudo_in_op(op: &Operand, gen: &mut AsmGenerator) -> Operand {
@@ -141,13 +136,31 @@ impl<'a> Asm<'a> {
                 .or_insert_with(|| {
                     let next_offset = gen.stack_offset - 4;
                     gen.stack_offset = next_offset;
-                    Operand::Stack(
-                        next_offset
-                    )
+                    Operand::Stack(next_offset)
                 })
                 .clone(),
             o => o.clone(), //no transformation otherwise
         }
+    }
+
+    fn insert_allocate_stack(asm: &mut Asm<'a>, gen: &AsmGenerator) {
+        match asm {
+            Asm::Program(ref mut func) => Self::insert_alloc_stack_func(func, gen),
+        };
+    }
+
+    fn insert_alloc_stack_func(func: &mut Function<'a>, gen: &AsmGenerator) {
+        let old_ins = std::mem::take(&mut func.instructions);
+        let new_instructions = Self::insert_alloc_stack_ins(old_ins, gen);
+        func.instructions = new_instructions;
+    }
+
+    fn insert_alloc_stack_ins(ins: Vec<Instruction>, gen: &AsmGenerator) -> Vec<Instruction> {
+        let mut v = vec![Instruction::AllocateStack(gen.stack_offset)];
+        for i in ins.into_iter() {
+            v.push(i);
+        }
+        v
     }
 }
 
@@ -165,6 +178,7 @@ mod tests {
         let expected = Asm::Program(Function {
             name: "main",
             instructions: vec![
+                Instruction::AllocateStack(0),
                 Instruction::Mov(Operand::Imm(100), Operand::Reg(Register::EAX)),
                 Instruction::Ret,
             ],
@@ -191,6 +205,7 @@ mod tests {
         let expected = Asm::Program(Function {
             name: "main",
             instructions: vec![
+                Instruction::AllocateStack(-4),
                 Instruction::Mov(Operand::Imm(100), Operand::Stack(-4)),
                 Instruction::Unary(UnaryOp::Neg, Operand::Stack(-4)),
                 Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::EAX)),
