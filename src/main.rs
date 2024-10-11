@@ -3,7 +3,6 @@ use std::fs::File;
 use std::io::BufRead;
 use std::io::BufReader;
 use std::io::BufWriter;
-use std::io::Write;
 use std::path::PathBuf;
 
 mod asm;
@@ -77,13 +76,10 @@ fn main() -> anyhow::Result<()> {
         let ast = asm.into_ast()?;
         let asm = Asm::from_tacky(ast);
         let emitter = Emitter::new(asm);
-        let code = emitter.emit();
-
         let output_path = input.with_extension("s");
         let output_file = File::create(&output_path)?;
-
         let mut writer = BufWriter::new(output_file);
-        writer.write_all(code.as_bytes())?;
+        emitter.emit(&mut writer)?;
 
         let target = output_path.with_extension("");
 
