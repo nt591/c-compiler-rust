@@ -35,6 +35,9 @@ pub enum Token<'a> {
     Tilde,
     Hyphen,
     DoubleHyphen,
+    Plus,
+    Star,
+    Slash,
 }
 
 impl<'a> Token<'a> {
@@ -57,6 +60,9 @@ impl<'a> Token<'a> {
             Tilde => format!("Tilde"),
             Hyphen => format!("Hyphen"),
             DoubleHyphen => format!("DoubleHyphen"),
+            Plus => format!("Plus"),
+            Star => format!("Star"),
+            Slash => format!("Slash"),
         }
     }
 }
@@ -91,6 +97,8 @@ impl<'a> Lexer<'a> {
                 b')' => tokens.push(Token::RightParen),
                 b';' => tokens.push(Token::Semicolon),
                 b'~' => tokens.push(Token::Tilde),
+                b'+' => tokens.push(Token::Plus),
+                b'*' => tokens.push(Token::Star),
                 b'-' => {
                     // first, check if we could be processing a double hyphen
                     if idx < len - 1 && bytes[idx + 1] == b'-' {
@@ -139,6 +147,7 @@ impl<'a> Lexer<'a> {
                     tokens.push(Token::BlockComment(comment));
                     idx = end + 1; // move to the closing slash, we'll incr again
                 }
+                b'/' => tokens.push(Token::Slash),
                 b'a'..=b'z' | b'A'..=b'Z' => {
                     // starts with a letter, just walk until the end.
                     let start = idx;
@@ -344,6 +353,18 @@ bloop blorp */
         assert_eq!(Some(&Token::Constant(2)), tokens.next());
         assert_eq!(Some(&Token::RightParen), tokens.next());
         assert_eq!(Some(&Token::Semicolon), tokens.next());
+        assert_eq!(None, tokens.next());
+    }
+    #[test]
+    fn test_binary_operators() {
+        let source = "+*/";
+        let lexer = Lexer::lex(source);
+        assert!(lexer.is_ok());
+        let lexer = lexer.unwrap();
+        let mut tokens = lexer.tokens();
+        assert_eq!(Some(&Token::Plus), tokens.next());
+        assert_eq!(Some(&Token::Star), tokens.next());
+        assert_eq!(Some(&Token::Slash), tokens.next());
         assert_eq!(None, tokens.next());
     }
 }
