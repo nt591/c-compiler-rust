@@ -25,10 +25,15 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
+    fn emit_comment<W: Write>(comment: &str, output: &mut W) -> std::io::Result<()> {
+        writeln!(output, "                       ; {}", comment)
+    }
+
     fn emit_function<W: Write>(func: &asm::Function<'a>, output: &mut W) -> std::io::Result<()> {
         let asm::Function { name, instructions } = func;
         writeln!(output, "  .globl _{}", name)?;
         writeln!(output, "_{}:", name)?;
+        Self::emit_comment("FUNCTION PROLOGUE", output)?;
         writeln!(output, "{}", "  pushq  %rbp")?;
         writeln!(output, "{}", "  movq   %rsp, %rbp")?;
         for instruction in instructions {
@@ -37,9 +42,13 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
-    fn emit_instructions<W: Write>(instruction: &asm::Instruction, output: &mut W) -> std::io::Result<()> {
+    fn emit_instructions<W: Write>(
+        instruction: &asm::Instruction,
+        output: &mut W,
+    ) -> std::io::Result<()> {
         match instruction {
             asm::Instruction::Ret => {
+                Self::emit_comment("RESET REGISTERS", output)?;
                 writeln!(output, "  movq   %rbp, %rsp")?;
                 writeln!(output, "  popq   %rbp")?;
                 writeln!(output, "  ret")?;
@@ -52,8 +61,9 @@ impl<'a> Emitter<'a> {
                 write!(output, "\n")?;
             }
             asm::Instruction::Unary(unary, operand) => {
-                Self::emit_unary(unary, output)?;
                 write!(output, "  ")?;
+                Self::emit_unary(unary, output)?;
+                write!(output, "   ")?;
                 Self::emit_op(operand, output)?;
                 write!(output, "\n")?;
             }
@@ -110,9 +120,11 @@ mod tests {
 
         let expected = r#"  .globl _main
 _main:
+                       ; FUNCTION PROLOGUE
   pushq  %rbp
   movq   %rsp, %rbp
   movl   $100, %eax
+                       ; RESET REGISTERS
   movq   %rbp, %rsp
   popq   %rbp
   ret
@@ -123,7 +135,68 @@ _main:
         emitter.emit(&mut vec).expect("Could not write to string");
         let actual = String::from_utf8(vec).expect("Got invalid UTF-8");
 
-        // annoying, but gotta 
+        // annoying, but gotta
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn complex_emit() {
+        let ast = asm::Asm::Program(asm::Function {
+            name: "main",
+            instructions: vec![
+                asm::Instruction::AllocateStack(-12),
+                asm::Instruction::Mov(asm::Operand::Imm(100), asm::Operand::Stack(-4)),
+                asm::Instruction::Unary(asm::UnaryOp::Neg, asm::Operand::Stack(-4)),
+                asm::Instruction::Mov(
+                    asm::Operand::Stack(-4),
+                    asm::Operand::Reg(asm::Register::R10),
+                ),
+                asm::Instruction::Mov(
+                    asm::Operand::Reg(asm::Register::R10),
+                    asm::Operand::Stack(-8),
+                ),
+                asm::Instruction::Unary(asm::UnaryOp::Not, asm::Operand::Stack(-8)),
+                asm::Instruction::Mov(
+                    asm::Operand::Stack(-8),
+                    asm::Operand::Reg(asm::Register::R10),
+                ),
+                asm::Instruction::Mov(
+                    asm::Operand::Reg(asm::Register::R10),
+                    asm::Operand::Stack(-12),
+                ),
+                asm::Instruction::Unary(asm::UnaryOp::Neg, asm::Operand::Stack(-12)),
+                asm::Instruction::Mov(
+                    asm::Operand::Stack(-12),
+                    asm::Operand::Reg(asm::Register::EAX),
+                ),
+                asm::Instruction::Ret,
+            ],
+        });
+        let expected = r#"  .globl _main
+_main:
+                       ; FUNCTION PROLOGUE
+  pushq  %rbp
+  movq   %rsp, %rbp
+  subq   $-12, %rsp
+  movl   $100, -4(%rbp)
+  negl   -4(%rbp)
+  movl   -4(%rbp), %r10d
+  movl   %r10d, -8(%rbp)
+  notl   -8(%rbp)
+  movl   -8(%rbp), %r10d
+  movl   %r10d, -12(%rbp)
+  negl   -12(%rbp)
+  movl   -12(%rbp), %eax
+                       ; RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+"#;
+        let emitter = Emitter::new(ast);
+        let mut vec = Vec::new();
+        emitter.emit(&mut vec).expect("Could not write to string");
+        let actual = String::from_utf8(vec).expect("Got invalid UTF-8");
+
         assert_eq!(expected, actual);
     }
 }
