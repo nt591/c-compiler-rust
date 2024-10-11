@@ -53,7 +53,7 @@ impl<'a> Emitter<'a> {
             }
             asm::Instruction::Unary(unary, operand) => {
                 Self::emit_unary(unary, output)?;
-                write!(output, ", ")?;
+                write!(output, "  ")?;
                 Self::emit_op(operand, output)?;
                 write!(output, "\n")?;
             }
@@ -68,6 +68,7 @@ impl<'a> Emitter<'a> {
         match op {
             asm::Operand::Reg(reg) => Self::emit_register(reg, output)?,
             asm::Operand::Imm(imm) => write!(output, "${}", imm)?,
+            asm::Operand::Stack(n) => write!(output, "{}(%rbp)", n)?,
             _ => todo!(),
         }
 
@@ -85,7 +86,7 @@ impl<'a> Emitter<'a> {
     fn emit_register<W: Write>(reg: &asm::Register, output: &mut W) -> std::io::Result<()> {
         match reg {
             asm::Register::EAX => write!(output, "{}", "%eax"),
-            asm::Register::R10 => write!(output, "{}", "%r10"),
+            asm::Register::R10 => write!(output, "{}", "%r10d"),
         }
     }
 }
