@@ -38,6 +38,7 @@ pub enum Token<'a> {
     Plus,
     Star,
     Slash,
+    Percent,
 }
 
 impl<'a> Token<'a> {
@@ -63,6 +64,7 @@ impl<'a> Token<'a> {
             Plus => format!("Plus"),
             Star => format!("Star"),
             Slash => format!("Slash"),
+            Percent => format!("Percent"),
         }
     }
 }
@@ -99,6 +101,7 @@ impl<'a> Lexer<'a> {
                 b'~' => tokens.push(Token::Tilde),
                 b'+' => tokens.push(Token::Plus),
                 b'*' => tokens.push(Token::Star),
+                b'%' => tokens.push(Token::Percent),
                 b'-' => {
                     // first, check if we could be processing a double hyphen
                     if idx < len - 1 && bytes[idx + 1] == b'-' {
@@ -357,7 +360,7 @@ bloop blorp */
     }
     #[test]
     fn test_binary_operators() {
-        let source = "+*/";
+        let source = "+*/%";
         let lexer = Lexer::lex(source);
         assert!(lexer.is_ok());
         let lexer = lexer.unwrap();
@@ -365,6 +368,7 @@ bloop blorp */
         assert_eq!(Some(&Token::Plus), tokens.next());
         assert_eq!(Some(&Token::Star), tokens.next());
         assert_eq!(Some(&Token::Slash), tokens.next());
+        assert_eq!(Some(&Token::Percent), tokens.next());
         assert_eq!(None, tokens.next());
     }
 }
