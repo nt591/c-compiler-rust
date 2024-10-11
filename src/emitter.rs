@@ -26,7 +26,7 @@ impl<'a> Emitter<'a> {
     }
 
     fn emit_comment<W: Write>(comment: &str, output: &mut W) -> std::io::Result<()> {
-        writeln!(output, "                       ; {}", comment)
+        writeln!(output, "                       # {}", comment)
     }
 
     fn emit_function<W: Write>(func: &asm::Function<'a>, output: &mut W) -> std::io::Result<()> {
@@ -120,11 +120,11 @@ mod tests {
 
         let expected = r#"  .globl _main
 _main:
-                       ; FUNCTION PROLOGUE
+                       # FUNCTION PROLOGUE
   pushq  %rbp
   movq   %rsp, %rbp
   movl   $100, %eax
-                       ; RESET REGISTERS
+                       # RESET REGISTERS
   movq   %rbp, %rsp
   popq   %rbp
   ret
@@ -174,7 +174,7 @@ _main:
         });
         let expected = r#"  .globl _main
 _main:
-                       ; FUNCTION PROLOGUE
+                       # FUNCTION PROLOGUE
   pushq  %rbp
   movq   %rsp, %rbp
   subq   $-12, %rsp
@@ -187,7 +187,7 @@ _main:
   movl   %r10d, -12(%rbp)
   negl   -12(%rbp)
   movl   -12(%rbp), %eax
-                       ; RESET REGISTERS
+                       # RESET REGISTERS
   movq   %rbp, %rsp
   popq   %rbp
   ret
