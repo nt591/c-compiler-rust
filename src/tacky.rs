@@ -179,8 +179,8 @@ impl<'a> Tacky<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::UnaryOp as ParserUnaryOp;
     use crate::parser::BinaryOp as ParserBinaryOp;
+    use crate::parser::UnaryOp as ParserUnaryOp;
     use crate::parser::AST as ParserAST;
 
     #[test]
@@ -334,6 +334,5 @@ mod tests {
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
-
     }
 }

@@ -23,9 +23,19 @@ pub enum UnaryOp {
 }
 
 #[derive(Debug, PartialEq)]
+pub enum BinaryOp {
+    Add,
+    Sub,
+    Mult,
+}
+
+#[derive(Debug, PartialEq)]
 pub enum Instruction {
     Mov(Operand, Operand),
     Unary(UnaryOp, Operand),
+    Binary(BinaryOp, Operand, Operand),
+    Idiv(Operand),
+    Cdq,
     AllocateStack(i32),
     Ret,
 }
@@ -43,7 +53,9 @@ pub enum Operand {
 #[derive(Debug, PartialEq, Clone)]
 pub enum Register {
     EAX,
+    EDX,
     R10,
+    R11,
 }
 
 #[derive(Debug, Default)]
@@ -86,7 +98,47 @@ impl<'a> Asm<'a> {
                     Instruction::Mov(src.into(), dst.into()),
                     Instruction::Unary(op.into(), dst.into()),
                 ],
-                tacky::Instruction::Binary { op: _, src1: _, src2: _, dst: _} => todo!(),
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::Divide,
+                    src1,
+                    src2,
+                    dst,
+                } => vec![
+                    Instruction::Mov(src1.into(), Operand::Reg(Register::EAX)),
+                    Instruction::Cdq,
+                    Instruction::Idiv(src2.into()),
+                    Instruction::Mov(Operand::Reg(Register::EAX), dst.into()),
+                ],
+
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::Remainder,
+                    src1,
+                    src2,
+                    dst,
+                } => vec![
+                    Instruction::Mov(src1.into(), Operand::Reg(Register::EDX)),
+                    Instruction::Cdq,
+                    Instruction::Idiv(src2.into()),
+                    Instruction::Mov(Operand::Reg(Register::EDX), dst.into()),
+                ],
+                tacky::Instruction::Binary {
+                    op,
+                    src1,
+                    src2,
+                    dst,
+                } => {
+                    let o = match op {
+                        tacky::BinaryOp::Add => BinaryOp::Add,
+                        tacky::BinaryOp::Multiply => BinaryOp::Mult,
+                        tacky::BinaryOp::Subtract => BinaryOp::Sub,
+                        tacky::BinaryOp::Remainder | tacky::BinaryOp::Divide => unreachable!(),
+                    };
+
+                    vec![
+                        Instruction::Mov(src1.into(), dst.into()),
+                        Instruction::Binary(o, src2.into(), dst.into()),
+                    ]
+                }
             })
             .collect::<Vec<_>>()
     }
@@ -114,6 +166,13 @@ impl<'a> Asm<'a> {
             }
             Instruction::Unary(_op, dst) => {
                 *dst = Self::replace_pseudo_in_op(dst, gen);
+            }
+            Instruction::Binary(_op, src1, src2) => {
+                *src1 = Self::replace_pseudo_in_op(src1, gen);
+                *src2 = Self::replace_pseudo_in_op(src2, gen);
+            }
+            Instruction::Idiv(src) => {
+                *src = Self::replace_pseudo_in_op(src, gen);
             }
             _ => {}
         })
@@ -145,18 +204,41 @@ impl<'a> Asm<'a> {
 
     fn fixup_invalid_memory_accesses(func: &mut Function<'a>) {
         let old_ins = std::mem::take(&mut func.instructions);
-        let mut v = vec![];
+        let mut v = Vec::with_capacity(old_ins.len());
         for ins in old_ins.into_iter() {
             match ins {
-                Instruction::Mov(Operand::Stack(src), Operand::Stack(dst)) => {
-                    v.push(Instruction::Mov(
-                        Operand::Stack(src),
-                        Operand::Reg(Register::R10),
+                Instruction::Mov(src @ Operand::Stack(_), dst @ Operand::Stack(_)) => {
+                    // movl can't move from two memory addrs, so
+                    // use a temporary variable along the way in %r10d
+                    v.push(Instruction::Mov(src, Operand::Reg(Register::R10)));
+                    v.push(Instruction::Mov(Operand::Reg(Register::R10), dst));
+                }
+                Instruction::Binary(binop, src @ Operand::Stack(_), dst @ Operand::Stack(_))
+                    if matches!(binop, BinaryOp::Add | BinaryOp::Sub) =>
+                {
+                    // addl and subl can't operate from two memory addrs, so
+                    // use a temporary variable along the way in %r10d
+                    v.push(Instruction::Mov(src, Operand::Reg(Register::R10)));
+                    v.push(Instruction::Binary(binop, Operand::Reg(Register::R10), dst));
+                }
+                Instruction::Binary(BinaryOp::Mult, src, dst @ Operand::Stack(_)) => {
+                    // imul cannot take an addr as a destination, regardless of src.
+                    // Rewrite via register %r11d
+                    // Move dst into r11d
+                    // Multiply src and r11d, store in r11d
+                    // Move r11d into dst
+                    v.push(Instruction::Mov(dst.clone(), Operand::Reg(Register::R11)));
+                    v.push(Instruction::Binary(
+                        BinaryOp::Mult,
+                        src,
+                        Operand::Reg(Register::R11),
                     ));
-                    v.push(Instruction::Mov(
-                        Operand::Reg(Register::R10),
-                        Operand::Stack(dst),
-                    ));
+                    v.push(Instruction::Mov(Operand::Reg(Register::R11), dst));
+                }
+                Instruction::Idiv(imm @ Operand::Imm(_)) => {
+                    // idiv cannot operate on immediates, so move to a scratch register
+                    v.push(Instruction::Mov(imm, Operand::Reg(Register::R10)));
+                    v.push(Instruction::Idiv(Operand::Reg(Register::R10)));
                 }
                 i => v.push(i),
             }
@@ -261,6 +343,75 @@ mod tests {
 
         let assembly = Asm::from_tacky(ast);
         assert_eq!(assembly, expected);
+    }
+
+    #[test]
+    fn generate_binary_expressions() {
+        let ast = tacky::AST::Program(tacky::Function {
+            name: "main",
+            instructions: vec![
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::Multiply,
+                    src1: tacky::Val::Constant(1),
+                    src2: tacky::Val::Constant(2),
+                    dst: tacky::Val::Var("tmp.0".into()),
+                },
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::Add,
+                    src1: tacky::Val::Constant(4),
+                    src2: tacky::Val::Constant(5),
+                    dst: tacky::Val::Var("tmp.1".into()),
+                },
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::Remainder,
+                    src1: tacky::Val::Constant(3),
+                    src2: tacky::Val::Var("tmp.1".into()),
+                    dst: tacky::Val::Var("tmp.2".into()),
+                },
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::Divide,
+                    src1: tacky::Val::Var("tmp.0".into()),
+                    src2: tacky::Val::Var("tmp.2".into()),
+                    dst: tacky::Val::Var("tmp.3".into()),
+                },
+                tacky::Instruction::Ret(tacky::Val::Var("tmp.3".into())),
+            ],
+        });
+        let expected = Asm::Program(Function {
+            name: "main",
+            instructions: vec![
+                Instruction::AllocateStack(-16),
+                // tmp0 = 1 * 2
+                Instruction::Mov(Operand::Imm(1), Operand::Stack(-4)),
+                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R11)),
+                Instruction::Binary(BinaryOp::Mult, Operand::Imm(2), Operand::Reg(Register::R11)),
+                Instruction::Mov(Operand::Reg(Register::R11), Operand::Stack(-4)),
+
+                // tmp1 = 4 + 5
+                Instruction::Mov(Operand::Imm(4), Operand::Stack(-8)),
+                Instruction::Binary(BinaryOp::Add, Operand::Imm(5), Operand::Stack(-8)),
+
+                // tmp2 = 3 % tmp1
+                Instruction::Mov(Operand::Imm(3), Operand::Reg(Register::EDX)),
+                Instruction::Cdq,
+                Instruction::Idiv(Operand::Stack(-8)),
+                Instruction::Mov(Operand::Reg(Register::EDX), Operand::Stack(-12)),
+
+                // tmp3 = tmp0 / tmp2
+                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::EAX)),
+                Instruction::Cdq,
+                Instruction::Idiv(Operand::Stack(-12)),
+                Instruction::Mov(Operand::Reg(Register::EAX), Operand::Stack(-16)),
+
+                // return
+                Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::EAX)),
+                Instruction::Ret,
+            ],
+        });
+
+        let assembly = Asm::from_tacky(ast);
+        assert_eq!(assembly, expected);
+
     }
 }
 
