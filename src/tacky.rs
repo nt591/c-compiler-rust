@@ -1,6 +1,7 @@
 // implements a Parser AST -> TACKY AST for the IR
 // Mostly copied from asm.rs
 //
+use crate::parser::BinaryOp as ParserBinaryOp;
 use crate::parser::Expression;
 use crate::parser::UnaryOp as ParserUnaryOp;
 use crate::parser::AST as ParserAST;
@@ -32,7 +33,17 @@ pub struct Function<'a> {
 #[derive(Debug, PartialEq)]
 pub enum Instruction {
     Ret(Val),
-    Unary { op: UnaryOp, src: Val, dst: Val },
+    Unary {
+        op: UnaryOp,
+        src: Val,
+        dst: Val,
+    },
+    Binary {
+        op: BinaryOp,
+        src1: Val,
+        src2: Val,
+        dst: Val,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -45,6 +56,15 @@ pub enum Val {
 pub enum UnaryOp {
     Complement,
     Negate,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum BinaryOp {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Remainder,
 }
 
 #[derive(Debug, PartialEq)]
@@ -110,7 +130,26 @@ impl<'a> Tacky<'a> {
                 });
                 Ok(dst)
             }
-            Expression::Binary(_, _, _) => todo!(),
+            Expression::Binary(op, left, right) => {
+                let src1 = self.parse_expression(left, instructions)?;
+                let src2 = self.parse_expression(right, instructions)?;
+                let dst_name = self.make_temporary();
+                let dst = Val::Var(dst_name);
+                let binop = match op {
+                    ParserBinaryOp::Add => BinaryOp::Add,
+                    ParserBinaryOp::Subtract => BinaryOp::Subtract,
+                    ParserBinaryOp::Multiply => BinaryOp::Multiply,
+                    ParserBinaryOp::Divide => BinaryOp::Divide,
+                    ParserBinaryOp::Remainder => BinaryOp::Remainder,
+                };
+                instructions.push(Instruction::Binary {
+                    op: binop,
+                    src1,
+                    src2,
+                    dst: dst.clone(),
+                });
+                Ok(dst)
+            }
         }
     }
 
@@ -141,7 +180,9 @@ impl<'a> Tacky<'a> {
 mod tests {
     use super::*;
     use crate::parser::UnaryOp as ParserUnaryOp;
+    use crate::parser::BinaryOp as ParserBinaryOp;
     use crate::parser::AST as ParserAST;
+
     #[test]
     fn basic_parse() {
         let ast = ParserAST::Program(Box::new(ParserAST::Function {
@@ -233,5 +274,66 @@ mod tests {
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
+    }
+
+    #[test]
+    fn complex_binary_parse() {
+        let ast = ParserAST::Program(Box::new(ParserAST::Function {
+            name: "main",
+            body: Box::new(ParserAST::Return(Expression::Binary(
+                ParserBinaryOp::Subtract,
+                Box::new(Expression::Binary(
+                    ParserBinaryOp::Multiply,
+                    Box::new(Expression::Constant(1)),
+                    Box::new(Expression::Constant(2)),
+                )),
+                Box::new(Expression::Binary(
+                    ParserBinaryOp::Multiply,
+                    Box::new(Expression::Constant(3)),
+                    Box::new(Expression::Binary(
+                        ParserBinaryOp::Add,
+                        Box::new(Expression::Constant(4)),
+                        Box::new(Expression::Constant(5)),
+                    )),
+                )),
+            ))),
+        }));
+        let expected = AST::Program(Function {
+            name: "main",
+            instructions: vec![
+                Instruction::Binary {
+                    op: BinaryOp::Multiply,
+                    src1: Val::Constant(1),
+                    src2: Val::Constant(2),
+                    dst: Val::Var("tmp.0".into()),
+                },
+                Instruction::Binary {
+                    op: BinaryOp::Add,
+                    src1: Val::Constant(4),
+                    src2: Val::Constant(5),
+                    dst: Val::Var("tmp.1".into()),
+                },
+                Instruction::Binary {
+                    op: BinaryOp::Multiply,
+                    src1: Val::Constant(3),
+                    src2: Val::Var("tmp.1".into()),
+                    dst: Val::Var("tmp.2".into()),
+                },
+                Instruction::Binary {
+                    op: BinaryOp::Subtract,
+                    src1: Val::Var("tmp.0".into()),
+                    src2: Val::Var("tmp.2".into()),
+                    dst: Val::Var("tmp.3".into()),
+                },
+                Instruction::Ret(Val::Var("tmp.3".into())),
+            ],
+        });
+
+        let tacky = Tacky::new(ast);
+        let assembly = tacky.into_ast();
+        assert!(assembly.is_ok());
+        let assembly = assembly.unwrap();
+        assert_eq!(assembly, expected);
+
     }
 }

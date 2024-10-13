@@ -86,6 +86,7 @@ impl<'a> Asm<'a> {
                     Instruction::Mov(src.into(), dst.into()),
                     Instruction::Unary(op.into(), dst.into()),
                 ],
+                tacky::Instruction::Binary { op: _, src1: _, src2: _, dst: _} => todo!(),
             })
             .collect::<Vec<_>>()
     }
