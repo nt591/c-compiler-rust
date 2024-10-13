@@ -27,6 +27,7 @@ pub enum Token<'a> {
     Main,
     Void,
     Return,
+    // special symbols
     LeftParen,
     RightParen,
     LeftBrace,
@@ -39,6 +40,10 @@ pub enum Token<'a> {
     Star,
     Slash,
     Percent,
+    // bitwise
+    Ampersand,
+    Pipe,
+    Caret,
 }
 
 impl<'a> Token<'a> {
@@ -65,6 +70,9 @@ impl<'a> Token<'a> {
             Star => format!("Star"),
             Slash => format!("Slash"),
             Percent => format!("Percent"),
+            Ampersand => format!("Ampersand"),
+            Pipe => format!("Pipe"),
+            Caret => format!("Caret"),
         }
     }
 }
@@ -102,6 +110,9 @@ impl<'a> Lexer<'a> {
                 b'+' => tokens.push(Token::Plus),
                 b'*' => tokens.push(Token::Star),
                 b'%' => tokens.push(Token::Percent),
+                b'&' => tokens.push(Token::Ampersand),
+                b'|' => tokens.push(Token::Pipe),
+                b'^' => tokens.push(Token::Caret),
                 b'-' => {
                     // first, check if we could be processing a double hyphen
                     if idx < len - 1 && bytes[idx + 1] == b'-' {
@@ -369,6 +380,19 @@ bloop blorp */
         assert_eq!(Some(&Token::Star), tokens.next());
         assert_eq!(Some(&Token::Slash), tokens.next());
         assert_eq!(Some(&Token::Percent), tokens.next());
+        assert_eq!(None, tokens.next());
+    }
+
+    #[test]
+    fn test_simple_bitwise_operators() {
+        let source = "^ | &";
+        let lexer = Lexer::lex(source);
+        assert!(lexer.is_ok());
+        let lexer = lexer.unwrap();
+        let mut tokens = lexer.tokens();
+        assert_eq!(Some(&Token::Caret), tokens.next());
+        assert_eq!(Some(&Token::Pipe), tokens.next());
+        assert_eq!(Some(&Token::Ampersand), tokens.next());
         assert_eq!(None, tokens.next());
     }
 }

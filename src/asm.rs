@@ -27,6 +27,9 @@ pub enum BinaryOp {
     Add,
     Sub,
     Mult,
+    And,
+    Or,
+    Xor,
 }
 
 #[derive(Debug, PartialEq)]
@@ -131,6 +134,9 @@ impl<'a> Asm<'a> {
                         tacky::BinaryOp::Add => BinaryOp::Add,
                         tacky::BinaryOp::Multiply => BinaryOp::Mult,
                         tacky::BinaryOp::Subtract => BinaryOp::Sub,
+                        tacky::BinaryOp::And => BinaryOp::And,
+                        tacky::BinaryOp::Or => BinaryOp::Or,
+                        tacky::BinaryOp::Xor => BinaryOp::Xor,
                         tacky::BinaryOp::Remainder | tacky::BinaryOp::Divide => unreachable!(),
                     };
 
@@ -214,10 +220,18 @@ impl<'a> Asm<'a> {
                     v.push(Instruction::Mov(Operand::Reg(Register::R10), dst));
                 }
                 Instruction::Binary(binop, src @ Operand::Stack(_), dst @ Operand::Stack(_))
-                    if matches!(binop, BinaryOp::Add | BinaryOp::Sub) =>
+                    if matches!(
+                        binop,
+                        BinaryOp::Add
+                            | BinaryOp::Sub
+                            | BinaryOp::And
+                            | BinaryOp::Xor
+                            | BinaryOp::Or
+                    ) =>
                 {
                     // addl and subl can't operate from two memory addrs, so
                     // use a temporary variable along the way in %r10d
+                    // According to AT&T syntax links, this is also true for andl, xorl, orl
                     v.push(Instruction::Mov(src, Operand::Reg(Register::R10)));
                     v.push(Instruction::Binary(binop, Operand::Reg(Register::R10), dst));
                 }
@@ -463,23 +477,23 @@ mod tests {
                 Instruction::Mov(Operand::Imm(2), Operand::Reg(Register::R10)),
                 Instruction::Idiv(Operand::Reg(Register::R10)),
                 Instruction::Mov(Operand::Reg(Register::EAX), Operand::Stack(-8)),
-
                 // tmp2 = 2 + 1  = 3
                 Instruction::Mov(Operand::Imm(2), Operand::Stack(-12)),
                 Instruction::Binary(BinaryOp::Add, Operand::Imm(1), Operand::Stack(-12)),
-                
                 // tmp3 = 3 % tmp2 = 0
                 Instruction::Mov(Operand::Imm(3), Operand::Reg(Register::EAX)),
                 Instruction::Cdq,
                 Instruction::Idiv(Operand::Stack(-12)),
                 Instruction::Mov(Operand::Reg(Register::EDX), Operand::Stack(-16)),
-
                 // tmp3 = tmp1 - tmp3 = 10
                 Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::R10)),
                 Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-20)),
                 Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::R10)),
-                Instruction::Binary(BinaryOp::Sub, Operand::Reg(Register::R10), Operand::Stack(-20)),
-                
+                Instruction::Binary(
+                    BinaryOp::Sub,
+                    Operand::Reg(Register::R10),
+                    Operand::Stack(-20),
+                ),
                 // return
                 Instruction::Mov(Operand::Stack(-20), Operand::Reg(Register::EAX)),
                 Instruction::Ret,
@@ -488,7 +502,72 @@ mod tests {
 
         let assembly = Asm::from_tacky(ast);
         assert_eq!(assembly, expected);
+    }
 
+    #[test]
+    fn simple_bitwise() {
+        let ast = tacky::AST::Program(tacky::Function {
+            name: "main",
+            instructions: vec![
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::Multiply,
+                    src1: tacky::Val::Constant(5),
+                    src2: tacky::Val::Constant(4),
+                    dst: tacky::Val::Var("tmp.0".into()),
+                },
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::Subtract,
+                    src1: tacky::Val::Constant(4),
+                    src2: tacky::Val::Constant(5),
+                    dst: tacky::Val::Var("tmp.1".into()),
+                },
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::And,
+                    src1: tacky::Val::Var("tmp.1".into()),
+                    src2: tacky::Val::Constant(6),
+                    dst: tacky::Val::Var("tmp.2".into()),
+                },
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::Or,
+                    src1: tacky::Val::Var("tmp.0".into()),
+                    src2: tacky::Val::Var("tmp.2".into()),
+                    dst: tacky::Val::Var("tmp.3".into()),
+                },
+                tacky::Instruction::Ret(tacky::Val::Var("tmp.3".into())),
+            ],
+        });
+        let expected = Asm::Program(Function {
+            name: "main",
+            instructions: vec![
+                Instruction::AllocateStack(-16),
+                // tmp0 = 5 * 4
+                Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),
+                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R11)),
+                Instruction::Binary(BinaryOp::Mult, Operand::Imm(4), Operand::Reg(Register::R11)),
+                Instruction::Mov(Operand::Reg(Register::R11), Operand::Stack(-4)),
+                // tmp1 = 4 - 5
+                Instruction::Mov(Operand::Imm(4), Operand::Stack(-8)),
+                Instruction::Binary(BinaryOp::Sub, Operand::Imm(5), Operand::Stack(-8)),
+                // tmp2 = tmp1 & 6
+                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::R10)),
+                Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-12)),
+                Instruction::Binary(BinaryOp::And, Operand::Imm(6), Operand::Stack(-12)),
+                // tmp3 = tmp0 | tmp2
+                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R10)),
+                Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-16)),
+                Instruction::Mov(Operand::Stack(-12), Operand::Reg(Register::R10)),
+                Instruction::Binary(
+                    BinaryOp::Or,
+                    Operand::Reg(Register::R10),
+                    Operand::Stack(-16),
+                ),
+                // return
+                Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::EAX)),
+                Instruction::Ret,
+            ],
+        });
+        let assembly = Asm::from_tacky(ast);
+        assert_eq!(assembly, expected);
     }
 }
 

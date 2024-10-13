@@ -65,6 +65,9 @@ pub enum BinaryOp {
     Multiply,
     Divide,
     Remainder,
+    And,
+    Or,
+    Xor,
 }
 
 #[derive(Debug, PartialEq)]
@@ -141,6 +144,10 @@ impl<'a> Tacky<'a> {
                     ParserBinaryOp::Multiply => BinaryOp::Multiply,
                     ParserBinaryOp::Divide => BinaryOp::Divide,
                     ParserBinaryOp::Remainder => BinaryOp::Remainder,
+
+                    ParserBinaryOp::And => BinaryOp::And,
+                    ParserBinaryOp::Xor => BinaryOp::Xor,
+                    ParserBinaryOp::Or => BinaryOp::Or,
                 };
                 instructions.push(Instruction::Binary {
                     op: binop,
@@ -338,7 +345,7 @@ mod tests {
 
     #[test]
     fn complex_binary_parse2() {
-    let ast = ParserAST::Program(Box::new(ParserAST::Function {
+        let ast = ParserAST::Program(Box::new(ParserAST::Function {
             name: "main",
             body: Box::new(ParserAST::Return(Expression::Binary(
                 ParserBinaryOp::Subtract,
@@ -405,6 +412,66 @@ mod tests {
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
+    }
 
+    #[test]
+    fn simple_bitwise() {
+        let ast = ParserAST::Program(Box::new(ParserAST::Function {
+            name: "main",
+            body: Box::new(ParserAST::Return(Expression::Binary(
+                ParserBinaryOp::Or,
+                Box::new(Expression::Binary(
+                    ParserBinaryOp::Multiply,
+                    Box::new(Expression::Constant(5)),
+                    Box::new(Expression::Constant(4)),
+                )),
+                Box::new(Expression::Binary(
+                    ParserBinaryOp::And,
+                    Box::new(Expression::Binary(
+                        ParserBinaryOp::Subtract,
+                        Box::new(Expression::Constant(4)),
+                        Box::new(Expression::Constant(5)),
+                    )),
+                    Box::new(Expression::Constant(6)),
+                )),
+            ))),
+        }));
+
+        let expected = AST::Program(Function {
+            name: "main",
+            instructions: vec![
+                Instruction::Binary {
+                    op: BinaryOp::Multiply,
+                    src1: Val::Constant(5),
+                    src2: Val::Constant(4),
+                    dst: Val::Var("tmp.0".into()),
+                },
+                Instruction::Binary {
+                    op: BinaryOp::Subtract,
+                    src1: Val::Constant(4),
+                    src2: Val::Constant(5),
+                    dst: Val::Var("tmp.1".into()),
+                },
+                Instruction::Binary {
+                    op: BinaryOp::And,
+                    src1: Val::Var("tmp.1".into()),
+                    src2: Val::Constant(6),
+                    dst: Val::Var("tmp.2".into()),
+                },
+                Instruction::Binary {
+                    op: BinaryOp::Or,
+                    src1: Val::Var("tmp.0".into()),
+                    src2: Val::Var("tmp.2".into()),
+                    dst: Val::Var("tmp.3".into()),
+                },
+                Instruction::Ret(Val::Var("tmp.3".into())),
+            ],
+        });
+
+        let tacky = Tacky::new(ast);
+        let assembly = tacky.into_ast();
+        assert!(assembly.is_ok());
+        let assembly = assembly.unwrap();
+        assert_eq!(assembly, expected);
     }
 }

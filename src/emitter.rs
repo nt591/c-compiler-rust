@@ -70,12 +70,7 @@ impl<'a> Emitter<'a> {
             asm::Instruction::Binary(binop, src, dst) => {
                 write!(output, "  ")?;
                 Self::emit_binary(binop, output)?;
-                // little formatting annoyance, imull has one extra char
-                if binop == &asm::BinaryOp::Mult {
-                    write!(output, "  ")?;
-                } else {
-                    write!(output, "   ")?;
-                }
+                // assume emit_binary handles proper space formatting!
                 Self::emit_op(src, output)?;
                 write!(output, ", ")?;
                 Self::emit_op(dst, output)?;
@@ -117,9 +112,12 @@ impl<'a> Emitter<'a> {
 
     fn emit_binary<W: Write>(binop: &asm::BinaryOp, output: &mut W) -> std::io::Result<()> {
         match binop {
-            asm::BinaryOp::Add => write!(output, "addl")?,
-            asm::BinaryOp::Mult => write!(output, "imull")?,
-            asm::BinaryOp::Sub => write!(output, "subl")?,
+            asm::BinaryOp::Add => write!(output, "addl   ")?,
+            asm::BinaryOp::Mult => write!(output, "imull  ")?,
+            asm::BinaryOp::Sub => write!(output, "subl   ")?,
+            asm::BinaryOp::And => write!(output, "andl   ")?,
+            asm::BinaryOp::Or => write!(output, "orl    ")?,
+            asm::BinaryOp::Xor => write!(output, "xorl   ")?,
         }
         Ok(())
     }
@@ -309,6 +307,108 @@ _main:
   cdq
   idivl  -12(%rbp)
   movl   %eax, -16(%rbp)
+  movl   -16(%rbp), %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+"#;
+        let emitter = Emitter::new(ast);
+        let mut vec = Vec::new();
+        emitter.emit(&mut vec).expect("Could not write to string");
+        let actual = String::from_utf8(vec).expect("Got invalid UTF-8");
+
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn simple_bitwise() {
+        let ast = asm::Asm::Program(asm::Function {
+            name: "main",
+            instructions: vec![
+                asm::Instruction::AllocateStack(-16),
+                // tmp0 = 5 * 4
+                asm::Instruction::Mov(asm::Operand::Imm(5), asm::Operand::Stack(-4)),
+                asm::Instruction::Mov(
+                    asm::Operand::Stack(-4),
+                    asm::Operand::Reg(asm::Register::R11),
+                ),
+                asm::Instruction::Binary(
+                    asm::BinaryOp::Mult,
+                    asm::Operand::Imm(4),
+                    asm::Operand::Reg(asm::Register::R11),
+                ),
+                asm::Instruction::Mov(
+                    asm::Operand::Reg(asm::Register::R11),
+                    asm::Operand::Stack(-4),
+                ),
+                // tmp1 = 4 - 5
+                asm::Instruction::Mov(asm::Operand::Imm(4), asm::Operand::Stack(-8)),
+                asm::Instruction::Binary(
+                    asm::BinaryOp::Sub,
+                    asm::Operand::Imm(5),
+                    asm::Operand::Stack(-8),
+                ),
+                // tmp2 = tmp1 & 6
+                asm::Instruction::Mov(
+                    asm::Operand::Stack(-8),
+                    asm::Operand::Reg(asm::Register::R10),
+                ),
+                asm::Instruction::Mov(
+                    asm::Operand::Reg(asm::Register::R10),
+                    asm::Operand::Stack(-12),
+                ),
+                asm::Instruction::Binary(
+                    asm::BinaryOp::And,
+                    asm::Operand::Imm(6),
+                    asm::Operand::Stack(-12),
+                ),
+                // tmp3 = tmp0 | tmp2
+                asm::Instruction::Mov(
+                    asm::Operand::Stack(-4),
+                    asm::Operand::Reg(asm::Register::R10),
+                ),
+                asm::Instruction::Mov(
+                    asm::Operand::Reg(asm::Register::R10),
+                    asm::Operand::Stack(-16),
+                ),
+                asm::Instruction::Mov(
+                    asm::Operand::Stack(-12),
+                    asm::Operand::Reg(asm::Register::R10),
+                ),
+                asm::Instruction::Binary(
+                    asm::BinaryOp::Or,
+                    asm::Operand::Reg(asm::Register::R10),
+                    asm::Operand::Stack(-16),
+                ),
+                // return
+                asm::Instruction::Mov(
+                    asm::Operand::Stack(-16),
+                    asm::Operand::Reg(asm::Register::EAX),
+                ),
+                asm::Instruction::Ret,
+            ],
+        });
+
+        let expected = r#"  .globl _main
+_main:
+                       # FUNCTION PROLOGUE
+  pushq  %rbp
+  movq   %rsp, %rbp
+  subq   $-16, %rsp
+  movl   $5, -4(%rbp)
+  movl   -4(%rbp), %r11d
+  imull  $4, %r11d
+  movl   %r11d, -4(%rbp)
+  movl   $4, -8(%rbp)
+  subl   $5, -8(%rbp)
+  movl   -8(%rbp), %r10d
+  movl   %r10d, -12(%rbp)
+  andl   $6, -12(%rbp)
+  movl   -4(%rbp), %r10d
+  movl   %r10d, -16(%rbp)
+  movl   -12(%rbp), %r10d
+  orl    %r10d, -16(%rbp)
   movl   -16(%rbp), %eax
                        # RESET REGISTERS
   movq   %rbp, %rsp

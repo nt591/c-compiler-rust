@@ -49,6 +49,9 @@ pub enum BinaryOp {
     Multiply,
     Divide,
     Remainder,
+    And,
+    Or,
+    Xor,
 }
 
 pub struct Parser<'a> {
@@ -112,6 +115,9 @@ impl<'a> Parser<'a> {
             Some(Token::Star) => Ok(BinaryOp::Multiply),
             Some(Token::Slash) => Ok(BinaryOp::Divide),
             Some(Token::Percent) => Ok(BinaryOp::Remainder),
+            Some(Token::Ampersand) => Ok(BinaryOp::And),
+            Some(Token::Pipe) => Ok(BinaryOp::Or),
+            Some(Token::Caret) => Ok(BinaryOp::Xor),
             Some(t) => Err(ParserError::MissingBinop(t.into_string())),
             None => Err(ParserError::OutOfTokens),
         }
@@ -126,7 +132,10 @@ impl<'a> Parser<'a> {
                 | Some(t @ Token::Hyphen)
                 | Some(t @ Token::Star)
                 | Some(t @ Token::Slash)
-                | Some(t @ Token::Percent) => {
+                | Some(t @ Token::Percent)
+                | Some(t @ Token::Ampersand)
+                | Some(t @ Token::Caret)
+                | Some(t @ Token::Pipe) => {
                     let new_prec = Self::precedence(*t)?;
                     if new_prec < min_precedence {
                         break;
@@ -176,10 +185,15 @@ impl<'a> Parser<'a> {
         }
     }
 
+    // https://en.cppreference.com/w/c/language/operator_precedence
+    // List below must be high-to-low precedence to match link above
     fn precedence(token: &Token) -> Result<u8, ParserError> {
         match token {
-            Token::Plus | Token::Hyphen => Ok(45),
             Token::Star | Token::Slash | Token::Percent => Ok(50),
+            Token::Plus | Token::Hyphen => Ok(45),
+            Token::Ampersand => Ok(32),
+            Token::Caret => Ok(31),
+            Token::Pipe => Ok(30),
             t => Err(ParserError::NoPrecedenceForToken(t.into_string())),
         }
     }
@@ -499,6 +513,61 @@ mod tests {
                         Box::new(Expression::Constant(2)),
                         Box::new(Expression::Constant(1)),
                     )),
+                )),
+            ))),
+        }));
+
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn handles_bitwise_precedence() {
+        /*
+         * int main(void) {
+         *   return 5 * 4 | 4 - 5 & 6;
+         * }
+         */
+        let tokens = vec![
+            Token::Int,
+            Token::Main,
+            Token::LeftParen,
+            Token::Void,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Return,
+            Token::Constant(5),
+            Token::Star,
+            Token::Constant(4),
+            Token::Pipe,
+            Token::Constant(4),
+            Token::Hyphen,
+            Token::Constant(5),
+            Token::Ampersand,
+            Token::Constant(6),
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_ok());
+        let actual = ast.unwrap();
+        let expected = AST::Program(Box::new(AST::Function {
+            name: "main",
+            body: Box::new(AST::Return(Expression::Binary(
+                BinaryOp::Or,
+                Box::new(Expression::Binary(
+                    BinaryOp::Multiply,
+                    Box::new(Expression::Constant(5)),
+                    Box::new(Expression::Constant(4)),
+                )),
+                Box::new(Expression::Binary(
+                    BinaryOp::And,
+                    Box::new(Expression::Binary(
+                        BinaryOp::Subtract,
+                        Box::new(Expression::Constant(4)),
+                        Box::new(Expression::Constant(5)),
+                    )),
+                    Box::new(Expression::Constant(6)),
                 )),
             ))),
         }));
