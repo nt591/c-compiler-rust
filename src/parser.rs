@@ -121,12 +121,13 @@ impl<'a> Parser<'a> {
         let mut left = self.parse_factor()?;
         // while next token is a binary operator, and precedence is climbing, keep parsing
         loop {
-            let Some(token) = self.tokens.peek() else {
-                break;
-            };
-            match token {
-                Token::Plus | Token::Hyphen | Token::Star | Token::Slash | Token::Percent => {
-                    let new_prec = Self::precedence(*token)?;
+            match self.tokens.peek() {
+                Some(t @ Token::Plus)
+                | Some(t @ Token::Hyphen)
+                | Some(t @ Token::Star)
+                | Some(t @ Token::Slash)
+                | Some(t @ Token::Percent) => {
+                    let new_prec = Self::precedence(*t)?;
                     if new_prec < min_precedence {
                         break;
                     }
