@@ -116,7 +116,7 @@ impl<'a> Asm<'a> {
                     src2,
                     dst,
                 } => vec![
-                    Instruction::Mov(src1.into(), Operand::Reg(Register::EDX)),
+                    Instruction::Mov(src1.into(), Operand::Reg(Register::EAX)),
                     Instruction::Cdq,
                     Instruction::Idiv(src2.into()),
                     Instruction::Mov(Operand::Reg(Register::EDX), dst.into()),
@@ -390,7 +390,7 @@ mod tests {
                 Instruction::Mov(Operand::Imm(4), Operand::Stack(-8)),
                 Instruction::Binary(BinaryOp::Add, Operand::Imm(5), Operand::Stack(-8)),
                 // tmp2 = 3 % tmp1
-                Instruction::Mov(Operand::Imm(3), Operand::Reg(Register::EDX)),
+                Instruction::Mov(Operand::Imm(3), Operand::Reg(Register::EAX)),
                 Instruction::Cdq,
                 Instruction::Idiv(Operand::Stack(-8)),
                 Instruction::Mov(Operand::Reg(Register::EDX), Operand::Stack(-12)),
@@ -469,7 +469,7 @@ mod tests {
                 Instruction::Binary(BinaryOp::Add, Operand::Imm(1), Operand::Stack(-12)),
                 
                 // tmp3 = 3 % tmp2 = 0
-                Instruction::Mov(Operand::Imm(3), Operand::Reg(Register::EDX)),
+                Instruction::Mov(Operand::Imm(3), Operand::Reg(Register::EAX)),
                 Instruction::Cdq,
                 Instruction::Idiv(Operand::Stack(-12)),
                 Instruction::Mov(Operand::Reg(Register::EDX), Operand::Stack(-16)),
