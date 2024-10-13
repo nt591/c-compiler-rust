@@ -442,4 +442,67 @@ mod tests {
 
         assert_eq!(expected, actual);
     }
+
+    #[test]
+    fn handles_precedence2() {
+        /*
+         * int main(void) {
+         *   return 5 * 4 / 2 - 3 % (2 + 1);
+         * }
+         */
+        let tokens = vec![
+            Token::Int,
+            Token::Main,
+            Token::LeftParen,
+            Token::Void,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Return,
+            Token::Constant(5),
+            Token::Star,
+            Token::Constant(4),
+            Token::Slash,
+            Token::Constant(2),
+            Token::Hyphen,
+            Token::Constant(3),
+            Token::Percent,
+            Token::LeftParen,
+            Token::Constant(2),
+            Token::Plus,
+            Token::Constant(1),
+            Token::RightParen,
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_ok());
+        let actual = ast.unwrap();
+        let expected = AST::Program(Box::new(AST::Function {
+            name: "main",
+            body: Box::new(AST::Return(Expression::Binary(
+                BinaryOp::Subtract,
+                Box::new(Expression::Binary(
+                    BinaryOp::Divide,
+                    Box::new(Expression::Binary(
+                        BinaryOp::Multiply,
+                        Box::new(Expression::Constant(5)),
+                        Box::new(Expression::Constant(4)),
+                    )),
+                    Box::new(Expression::Constant(2)),
+                )),
+                Box::new(Expression::Binary(
+                    BinaryOp::Remainder,
+                    Box::new(Expression::Constant(3)),
+                    Box::new(Expression::Binary(
+                        BinaryOp::Add,
+                        Box::new(Expression::Constant(2)),
+                        Box::new(Expression::Constant(1)),
+                    )),
+                )),
+            ))),
+        }));
+
+        assert_eq!(expected, actual);
+    }
 }

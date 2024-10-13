@@ -335,4 +335,76 @@ mod tests {
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
     }
+
+    #[test]
+    fn complex_binary_parse2() {
+    let ast = ParserAST::Program(Box::new(ParserAST::Function {
+            name: "main",
+            body: Box::new(ParserAST::Return(Expression::Binary(
+                ParserBinaryOp::Subtract,
+                Box::new(Expression::Binary(
+                    ParserBinaryOp::Divide,
+                    Box::new(Expression::Binary(
+                        ParserBinaryOp::Multiply,
+                        Box::new(Expression::Constant(5)),
+                        Box::new(Expression::Constant(4)),
+                    )),
+                    Box::new(Expression::Constant(2)),
+                )),
+                Box::new(Expression::Binary(
+                    ParserBinaryOp::Remainder,
+                    Box::new(Expression::Constant(3)),
+                    Box::new(Expression::Binary(
+                        ParserBinaryOp::Add,
+                        Box::new(Expression::Constant(2)),
+                        Box::new(Expression::Constant(1)),
+                    )),
+                )),
+            ))),
+        }));
+
+        let expected = AST::Program(Function {
+            name: "main",
+            instructions: vec![
+                Instruction::Binary {
+                    op: BinaryOp::Multiply,
+                    src1: Val::Constant(5),
+                    src2: Val::Constant(4),
+                    dst: Val::Var("tmp.0".into()),
+                },
+                Instruction::Binary {
+                    op: BinaryOp::Divide,
+                    src1: Val::Var("tmp.0".into()),
+                    src2: Val::Constant(2),
+                    dst: Val::Var("tmp.1".into()),
+                },
+                Instruction::Binary {
+                    op: BinaryOp::Add,
+                    src1: Val::Constant(2),
+                    src2: Val::Constant(1),
+                    dst: Val::Var("tmp.2".into()),
+                },
+                Instruction::Binary {
+                    op: BinaryOp::Remainder,
+                    src1: Val::Constant(3),
+                    src2: Val::Var("tmp.2".into()),
+                    dst: Val::Var("tmp.3".into()),
+                },
+                Instruction::Binary {
+                    op: BinaryOp::Subtract,
+                    src1: Val::Var("tmp.1".into()),
+                    src2: Val::Var("tmp.3".into()),
+                    dst: Val::Var("tmp.4".into()),
+                },
+                Instruction::Ret(Val::Var("tmp.4".into())),
+            ],
+        });
+
+        let tacky = Tacky::new(ast);
+        let assembly = tacky.into_ast();
+        assert!(assembly.is_ok());
+        let assembly = assembly.unwrap();
+        assert_eq!(assembly, expected);
+
+    }
 }

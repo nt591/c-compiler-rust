@@ -408,6 +408,88 @@ mod tests {
         let assembly = Asm::from_tacky(ast);
         assert_eq!(assembly, expected);
     }
+
+    #[test]
+    fn complex_binary_expressions() {
+        let ast = tacky::AST::Program(tacky::Function {
+            name: "main",
+            instructions: vec![
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::Multiply,
+                    src1: tacky::Val::Constant(5),
+                    src2: tacky::Val::Constant(4),
+                    dst: tacky::Val::Var("tmp.0".into()),
+                },
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::Divide,
+                    src1: tacky::Val::Var("tmp.0".into()),
+                    src2: tacky::Val::Constant(2),
+                    dst: tacky::Val::Var("tmp.1".into()),
+                },
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::Add,
+                    src1: tacky::Val::Constant(2),
+                    src2: tacky::Val::Constant(1),
+                    dst: tacky::Val::Var("tmp.2".into()),
+                },
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::Remainder,
+                    src1: tacky::Val::Constant(3),
+                    src2: tacky::Val::Var("tmp.2".into()),
+                    dst: tacky::Val::Var("tmp.3".into()),
+                },
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::Subtract,
+                    src1: tacky::Val::Var("tmp.1".into()),
+                    src2: tacky::Val::Var("tmp.3".into()),
+                    dst: tacky::Val::Var("tmp.4".into()),
+                },
+                tacky::Instruction::Ret(tacky::Val::Var("tmp.4".into())),
+            ],
+        });
+
+        let expected = Asm::Program(Function {
+            name: "main",
+            instructions: vec![
+                Instruction::AllocateStack(-20),
+                // tmp0 = 5 * 4 = 20
+                Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),
+                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R11)),
+                Instruction::Binary(BinaryOp::Mult, Operand::Imm(4), Operand::Reg(Register::R11)),
+                Instruction::Mov(Operand::Reg(Register::R11), Operand::Stack(-4)),
+                // tmp1 = tmp0 / 2 = 10
+                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::EAX)),
+                Instruction::Cdq,
+                Instruction::Mov(Operand::Imm(2), Operand::Reg(Register::R10)),
+                Instruction::Idiv(Operand::Reg(Register::R10)),
+                Instruction::Mov(Operand::Reg(Register::EAX), Operand::Stack(-8)),
+
+                // tmp2 = 2 + 1  = 3
+                Instruction::Mov(Operand::Imm(2), Operand::Stack(-12)),
+                Instruction::Binary(BinaryOp::Add, Operand::Imm(1), Operand::Stack(-12)),
+                
+                // tmp3 = 3 % tmp2 = 0
+                Instruction::Mov(Operand::Imm(3), Operand::Reg(Register::EDX)),
+                Instruction::Cdq,
+                Instruction::Idiv(Operand::Stack(-12)),
+                Instruction::Mov(Operand::Reg(Register::EDX), Operand::Stack(-16)),
+
+                // tmp3 = tmp1 - tmp3 = 10
+                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::R10)),
+                Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-20)),
+                Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::R10)),
+                Instruction::Binary(BinaryOp::Sub, Operand::Reg(Register::R10), Operand::Stack(-20)),
+                
+                // return
+                Instruction::Mov(Operand::Stack(-20), Operand::Reg(Register::EAX)),
+                Instruction::Ret,
+            ],
+        });
+
+        let assembly = Asm::from_tacky(ast);
+        assert_eq!(assembly, expected);
+
+    }
 }
 
 // some niceties. Maybe move to a from.rs
