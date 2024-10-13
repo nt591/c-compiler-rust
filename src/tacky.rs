@@ -110,6 +110,7 @@ impl<'a> Tacky<'a> {
                 });
                 Ok(dst)
             }
+            Expression::Binary(_, _, _) => todo!(),
         }
     }
 
