@@ -386,23 +386,19 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R11)),
                 Instruction::Binary(BinaryOp::Mult, Operand::Imm(2), Operand::Reg(Register::R11)),
                 Instruction::Mov(Operand::Reg(Register::R11), Operand::Stack(-4)),
-
                 // tmp1 = 4 + 5
                 Instruction::Mov(Operand::Imm(4), Operand::Stack(-8)),
                 Instruction::Binary(BinaryOp::Add, Operand::Imm(5), Operand::Stack(-8)),
-
                 // tmp2 = 3 % tmp1
                 Instruction::Mov(Operand::Imm(3), Operand::Reg(Register::EDX)),
                 Instruction::Cdq,
                 Instruction::Idiv(Operand::Stack(-8)),
                 Instruction::Mov(Operand::Reg(Register::EDX), Operand::Stack(-12)),
-
                 // tmp3 = tmp0 / tmp2
                 Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::EAX)),
                 Instruction::Cdq,
                 Instruction::Idiv(Operand::Stack(-12)),
                 Instruction::Mov(Operand::Reg(Register::EAX), Operand::Stack(-16)),
-
                 // return
                 Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::EAX)),
                 Instruction::Ret,
@@ -411,7 +407,6 @@ mod tests {
 
         let assembly = Asm::from_tacky(ast);
         assert_eq!(assembly, expected);
-
     }
 }
 

@@ -67,10 +67,31 @@ impl<'a> Emitter<'a> {
                 Self::emit_op(operand, output)?;
                 write!(output, "\n")?;
             }
+            asm::Instruction::Binary(binop, src, dst) => {
+                write!(output, "  ")?;
+                Self::emit_binary(binop, output)?;
+                // little formatting annoyance, imull has one extra char
+                if binop == &asm::BinaryOp::Mult {
+                    write!(output, "  ")?;
+                } else {
+                    write!(output, "   ")?;
+                }
+                Self::emit_op(src, output)?;
+                write!(output, ", ")?;
+                Self::emit_op(dst, output)?;
+                write!(output, "\n")?;
+            }
             asm::Instruction::AllocateStack(n) => {
                 writeln!(output, "  subq   ${}, %rsp", n)?;
             }
-            _ => todo!(),
+            asm::Instruction::Cdq => {
+                writeln!(output, "  cdq")?;
+            }
+            asm::Instruction::Idiv(operand) => {
+                write!(output, "  idivl  ")?;
+                Self::emit_op(operand, output)?;
+                write!(output, "\n")?;
+            }
         }
         Ok(())
     }
@@ -90,6 +111,15 @@ impl<'a> Emitter<'a> {
         match uop {
             asm::UnaryOp::Not => write!(output, "notl")?,
             asm::UnaryOp::Neg => write!(output, "negl")?,
+        }
+        Ok(())
+    }
+
+    fn emit_binary<W: Write>(binop: &asm::BinaryOp, output: &mut W) -> std::io::Result<()> {
+        match binop {
+            asm::BinaryOp::Add => write!(output, "addl")?,
+            asm::BinaryOp::Mult => write!(output, "imull")?,
+            asm::BinaryOp::Sub => write!(output, "subl")?,
         }
         Ok(())
     }
@@ -190,6 +220,96 @@ _main:
   movl   %r10d, -12(%rbp)
   negl   -12(%rbp)
   movl   -12(%rbp), %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+"#;
+        let emitter = Emitter::new(ast);
+        let mut vec = Vec::new();
+        emitter.emit(&mut vec).expect("Could not write to string");
+        let actual = String::from_utf8(vec).expect("Got invalid UTF-8");
+
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn binary_operators() {
+        let ast = asm::Asm::Program(asm::Function {
+            name: "main",
+            instructions: vec![
+                asm::Instruction::AllocateStack(-16),
+                // tmp0 = 1 * 2
+                asm::Instruction::Mov(asm::Operand::Imm(1), asm::Operand::Stack(-4)),
+                asm::Instruction::Mov(
+                    asm::Operand::Stack(-4),
+                    asm::Operand::Reg(asm::Register::R11),
+                ),
+                asm::Instruction::Binary(
+                    asm::BinaryOp::Mult,
+                    asm::Operand::Imm(2),
+                    asm::Operand::Reg(asm::Register::R11),
+                ),
+                asm::Instruction::Mov(
+                    asm::Operand::Reg(asm::Register::R11),
+                    asm::Operand::Stack(-4),
+                ),
+                // tmp1 = 4 + 5
+                asm::Instruction::Mov(asm::Operand::Imm(4), asm::Operand::Stack(-8)),
+                asm::Instruction::Binary(
+                    asm::BinaryOp::Add,
+                    asm::Operand::Imm(5),
+                    asm::Operand::Stack(-8),
+                ),
+                // tmp2 = 3 % tmp1
+                asm::Instruction::Mov(asm::Operand::Imm(3), asm::Operand::Reg(asm::Register::EDX)),
+                asm::Instruction::Cdq,
+                asm::Instruction::Idiv(asm::Operand::Stack(-8)),
+                asm::Instruction::Mov(
+                    asm::Operand::Reg(asm::Register::EDX),
+                    asm::Operand::Stack(-12),
+                ),
+                // tmp3 = tmp0 / tmp2
+                asm::Instruction::Mov(
+                    asm::Operand::Stack(-4),
+                    asm::Operand::Reg(asm::Register::EAX),
+                ),
+                asm::Instruction::Cdq,
+                asm::Instruction::Idiv(asm::Operand::Stack(-12)),
+                asm::Instruction::Mov(
+                    asm::Operand::Reg(asm::Register::EAX),
+                    asm::Operand::Stack(-16),
+                ),
+                // return
+                asm::Instruction::Mov(
+                    asm::Operand::Stack(-16),
+                    asm::Operand::Reg(asm::Register::EAX),
+                ),
+                asm::Instruction::Ret,
+            ],
+        });
+
+        let expected = r#"  .globl _main
+_main:
+                       # FUNCTION PROLOGUE
+  pushq  %rbp
+  movq   %rsp, %rbp
+  subq   $-16, %rsp
+  movl   $1, -4(%rbp)
+  movl   -4(%rbp), %r11d
+  imull  $2, %r11d
+  movl   %r11d, -4(%rbp)
+  movl   $4, -8(%rbp)
+  addl   $5, -8(%rbp)
+  movl   $3, %edx
+  cdq
+  idivl  -8(%rbp)
+  movl   %edx, -12(%rbp)
+  movl   -4(%rbp), %eax
+  cdq
+  idivl  -12(%rbp)
+  movl   %eax, -16(%rbp)
+  movl   -16(%rbp), %eax
                        # RESET REGISTERS
   movq   %rbp, %rsp
   popq   %rbp
