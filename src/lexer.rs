@@ -44,6 +44,8 @@ pub enum Token<'a> {
     Ampersand,
     Pipe,
     Caret,
+    ShiftLeft,
+    ShiftRight,
 }
 
 impl<'a> Token<'a> {
@@ -73,6 +75,8 @@ impl<'a> Token<'a> {
             Ampersand => format!("Ampersand"),
             Pipe => format!("Pipe"),
             Caret => format!("Caret"),
+            ShiftLeft => format!("ShiftLeft"),
+            ShiftRight => format!("ShiftRight"),
         }
     }
 }
@@ -161,6 +165,16 @@ impl<'a> Lexer<'a> {
                     tokens.push(Token::BlockComment(comment));
                     idx = end + 1; // move to the closing slash, we'll incr again
                 }
+                b'>' if idx < len - 1 && bytes[idx + 1] == b'>' => {
+                    // shift right, so increment idx once and capture the token
+                    tokens.push(Token::ShiftRight);
+                    idx += 1;
+                }
+                b'<' if idx < len - 1 && bytes[idx + 1] == b'<' => {
+                    tokens.push(Token::ShiftLeft);
+                    idx += 1;
+                }
+
                 b'/' => tokens.push(Token::Slash),
                 b'a'..=b'z' | b'A'..=b'Z' => {
                     // starts with a letter, just walk until the end.
@@ -385,7 +399,7 @@ bloop blorp */
 
     #[test]
     fn test_simple_bitwise_operators() {
-        let source = "^ | &";
+        let source = "^ | & << >>";
         let lexer = Lexer::lex(source);
         assert!(lexer.is_ok());
         let lexer = lexer.unwrap();
@@ -393,6 +407,8 @@ bloop blorp */
         assert_eq!(Some(&Token::Caret), tokens.next());
         assert_eq!(Some(&Token::Pipe), tokens.next());
         assert_eq!(Some(&Token::Ampersand), tokens.next());
+        assert_eq!(Some(&Token::ShiftLeft), tokens.next());
+        assert_eq!(Some(&Token::ShiftRight), tokens.next());
         assert_eq!(None, tokens.next());
     }
 }

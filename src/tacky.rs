@@ -68,6 +68,8 @@ pub enum BinaryOp {
     And,
     Or,
     Xor,
+    ShiftLeft,
+    ShiftRight,
 }
 
 #[derive(Debug, PartialEq)]
@@ -144,10 +146,11 @@ impl<'a> Tacky<'a> {
                     ParserBinaryOp::Multiply => BinaryOp::Multiply,
                     ParserBinaryOp::Divide => BinaryOp::Divide,
                     ParserBinaryOp::Remainder => BinaryOp::Remainder,
-
                     ParserBinaryOp::And => BinaryOp::And,
                     ParserBinaryOp::Xor => BinaryOp::Xor,
                     ParserBinaryOp::Or => BinaryOp::Or,
+                    ParserBinaryOp::ShiftLeft => BinaryOp::ShiftLeft,
+                    ParserBinaryOp::ShiftRight => BinaryOp::ShiftRight,
                 };
                 instructions.push(Instruction::Binary {
                     op: binop,
@@ -465,6 +468,46 @@ mod tests {
                     dst: Val::Var("tmp.3".into()),
                 },
                 Instruction::Ret(Val::Var("tmp.3".into())),
+            ],
+        });
+
+        let tacky = Tacky::new(ast);
+        let assembly = tacky.into_ast();
+        assert!(assembly.is_ok());
+        let assembly = assembly.unwrap();
+        assert_eq!(assembly, expected);
+    }
+
+    #[test]
+    fn shiftleft() {
+        let ast = ParserAST::Program(Box::new(ParserAST::Function {
+            name: "main",
+            body: Box::new(ParserAST::Return(Expression::Binary(
+                ParserBinaryOp::ShiftLeft,
+                Box::new(Expression::Binary(
+                    ParserBinaryOp::Multiply,
+                    Box::new(Expression::Constant(5)),
+                    Box::new(Expression::Constant(4)),
+                )),
+                Box::new(Expression::Constant(2)),
+            ))),
+        }));
+        let expected = AST::Program(Function {
+            name: "main",
+            instructions: vec![
+                Instruction::Binary {
+                    op: BinaryOp::Multiply,
+                    src1: Val::Constant(5),
+                    src2: Val::Constant(4),
+                    dst: Val::Var("tmp.0".into()),
+                },
+                Instruction::Binary {
+                    op: BinaryOp::ShiftLeft,
+                    src1: Val::Var("tmp.0".into()),
+                    src2: Val::Constant(2),
+                    dst: Val::Var("tmp.1".into()),
+                },
+                Instruction::Ret(Val::Var("tmp.1".into())),
             ],
         });
 

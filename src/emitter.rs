@@ -118,6 +118,8 @@ impl<'a> Emitter<'a> {
             asm::BinaryOp::And => write!(output, "andl   ")?,
             asm::BinaryOp::Or => write!(output, "orl    ")?,
             asm::BinaryOp::Xor => write!(output, "xorl   ")?,
+            asm::BinaryOp::ShiftLeft => write!(output, "shll   ")?,
+            asm::BinaryOp::ShiftRight => write!(output, "shrl   ")?,
         }
         Ok(())
     }
@@ -410,6 +412,77 @@ _main:
   movl   -12(%rbp), %r10d
   orl    %r10d, -16(%rbp)
   movl   -16(%rbp), %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+"#;
+        let emitter = Emitter::new(ast);
+        let mut vec = Vec::new();
+        emitter.emit(&mut vec).expect("Could not write to string");
+        let actual = String::from_utf8(vec).expect("Got invalid UTF-8");
+
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn shfitleft() {
+        let ast = asm::Asm::Program(asm::Function {
+            name: "main",
+            instructions: vec![
+                asm::Instruction::AllocateStack(-8),
+                // tmp0 = 5 * 4
+                asm::Instruction::Mov(asm::Operand::Imm(5), asm::Operand::Stack(-4)),
+                asm::Instruction::Mov(
+                    asm::Operand::Stack(-4),
+                    asm::Operand::Reg(asm::Register::R11),
+                ),
+                asm::Instruction::Binary(
+                    asm::BinaryOp::Mult,
+                    asm::Operand::Imm(4),
+                    asm::Operand::Reg(asm::Register::R11),
+                ),
+                asm::Instruction::Mov(
+                    asm::Operand::Reg(asm::Register::R11),
+                    asm::Operand::Stack(-4),
+                ),
+                // tmp1 = tmp.0 << 2
+                // moves tmp.8 into tmp.1 via reg10
+                asm::Instruction::Mov(
+                    asm::Operand::Stack(-4),
+                    asm::Operand::Reg(asm::Register::R10),
+                ),
+                asm::Instruction::Mov(
+                    asm::Operand::Reg(asm::Register::R10),
+                    asm::Operand::Stack(-8),
+                ),
+                asm::Instruction::Binary(
+                    asm::BinaryOp::ShiftLeft,
+                    asm::Operand::Imm(2),
+                    asm::Operand::Stack(-8),
+                ),
+                // return
+                asm::Instruction::Mov(
+                    asm::Operand::Stack(-8),
+                    asm::Operand::Reg(asm::Register::EAX),
+                ),
+                asm::Instruction::Ret,
+            ],
+        });
+        let expected = r#"  .globl _main
+_main:
+                       # FUNCTION PROLOGUE
+  pushq  %rbp
+  movq   %rsp, %rbp
+  subq   $-8, %rsp
+  movl   $5, -4(%rbp)
+  movl   -4(%rbp), %r11d
+  imull  $4, %r11d
+  movl   %r11d, -4(%rbp)
+  movl   -4(%rbp), %r10d
+  movl   %r10d, -8(%rbp)
+  shll   $2, -8(%rbp)
+  movl   -8(%rbp), %eax
                        # RESET REGISTERS
   movq   %rbp, %rsp
   popq   %rbp

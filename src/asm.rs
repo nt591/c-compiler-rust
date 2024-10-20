@@ -30,6 +30,8 @@ pub enum BinaryOp {
     And,
     Or,
     Xor,
+    ShiftLeft,
+    ShiftRight,
 }
 
 #[derive(Debug, PartialEq)]
@@ -137,6 +139,8 @@ impl<'a> Asm<'a> {
                         tacky::BinaryOp::And => BinaryOp::And,
                         tacky::BinaryOp::Or => BinaryOp::Or,
                         tacky::BinaryOp::Xor => BinaryOp::Xor,
+                        tacky::BinaryOp::ShiftLeft => BinaryOp::ShiftLeft,
+                        tacky::BinaryOp::ShiftRight => BinaryOp::ShiftRight,
                         tacky::BinaryOp::Remainder | tacky::BinaryOp::Divide => unreachable!(),
                     };
 
@@ -563,6 +567,50 @@ mod tests {
                 ),
                 // return
                 Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::EAX)),
+                Instruction::Ret,
+            ],
+        });
+        let assembly = Asm::from_tacky(ast);
+        assert_eq!(assembly, expected);
+    }
+
+    #[test]
+    fn shiftleft() {
+        let ast = tacky::AST::Program(tacky::Function {
+            name: "main",
+            instructions: vec![
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::Multiply,
+                    src1: tacky::Val::Constant(5),
+                    src2: tacky::Val::Constant(4),
+                    dst: tacky::Val::Var("tmp.0".into()),
+                },
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::ShiftLeft,
+                    src1: tacky::Val::Var("tmp.0".into()),
+                    src2: tacky::Val::Constant(2),
+                    dst: tacky::Val::Var("tmp.1".into()),
+                },
+                tacky::Instruction::Ret(tacky::Val::Var("tmp.1".into())),
+            ],
+        });
+
+        let expected = Asm::Program(Function {
+            name: "main",
+            instructions: vec![
+                Instruction::AllocateStack(-8),
+                // tmp0 = 5 * 4
+                Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),
+                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R11)),
+                Instruction::Binary(BinaryOp::Mult, Operand::Imm(4), Operand::Reg(Register::R11)),
+                Instruction::Mov(Operand::Reg(Register::R11), Operand::Stack(-4)),
+                // tmp1 = tmp.0 << 2
+                // moves tmp.8 into tmp.1 via reg10
+                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R10)),
+                Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-8)),
+                Instruction::Binary(BinaryOp::ShiftLeft, Operand::Imm(2), Operand::Stack(-8)),
+                // return
+                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::EAX)),
                 Instruction::Ret,
             ],
         });

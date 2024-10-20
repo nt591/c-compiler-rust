@@ -52,6 +52,8 @@ pub enum BinaryOp {
     And,
     Or,
     Xor,
+    ShiftLeft,
+    ShiftRight,
 }
 
 pub struct Parser<'a> {
@@ -118,6 +120,8 @@ impl<'a> Parser<'a> {
             Some(Token::Ampersand) => Ok(BinaryOp::And),
             Some(Token::Pipe) => Ok(BinaryOp::Or),
             Some(Token::Caret) => Ok(BinaryOp::Xor),
+            Some(Token::ShiftLeft) => Ok(BinaryOp::ShiftLeft),
+            Some(Token::ShiftRight) => Ok(BinaryOp::ShiftRight),
             Some(t) => Err(ParserError::MissingBinop(t.into_string())),
             None => Err(ParserError::OutOfTokens),
         }
@@ -135,7 +139,9 @@ impl<'a> Parser<'a> {
                 | Some(t @ Token::Percent)
                 | Some(t @ Token::Ampersand)
                 | Some(t @ Token::Caret)
-                | Some(t @ Token::Pipe) => {
+                | Some(t @ Token::Pipe)
+                | Some(t @ Token::ShiftLeft)
+                | Some(t @ Token::ShiftRight) => {
                     let new_prec = Self::precedence(*t)?;
                     if new_prec < min_precedence {
                         break;
@@ -191,6 +197,7 @@ impl<'a> Parser<'a> {
         match token {
             Token::Star | Token::Slash | Token::Percent => Ok(50),
             Token::Plus | Token::Hyphen => Ok(45),
+            Token::ShiftLeft | Token::ShiftRight => Ok(35),
             Token::Ampersand => Ok(32),
             Token::Caret => Ok(31),
             Token::Pipe => Ok(30),
@@ -569,6 +576,52 @@ mod tests {
                     )),
                     Box::new(Expression::Constant(6)),
                 )),
+            ))),
+        }));
+
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn handles_shift_precedence() {
+        /*
+         * int main(void) {
+         *   return 5 * 4 << 2;
+         * }
+         */
+        let tokens = vec![
+            Token::Int,
+            Token::Main,
+            Token::LeftParen,
+            Token::Void,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Return,
+            Token::Constant(5),
+            Token::Star,
+            Token::Constant(4),
+            Token::ShiftLeft,
+            Token::Constant(2),
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_ok());
+        let actual = ast.unwrap();
+        // multiple is a higher precedence than shift, so we
+        // eval 5 * 4 first by pushing it to a lower node, then
+        // leftshift the result by 2
+        let expected = AST::Program(Box::new(AST::Function {
+            name: "main",
+            body: Box::new(AST::Return(Expression::Binary(
+                BinaryOp::ShiftLeft,
+                Box::new(Expression::Binary(
+                    BinaryOp::Multiply,
+                    Box::new(Expression::Constant(5)),
+                    Box::new(Expression::Constant(4)),
+                )),
+                Box::new(Expression::Constant(2)),
             ))),
         }));
 
