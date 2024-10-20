@@ -116,7 +116,6 @@ impl<'a> Asm<'a> {
                     Instruction::Idiv(src2.into()),
                     Instruction::Mov(Operand::Reg(Register::EAX), dst.into()),
                 ],
-
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Remainder,
                     src1,
@@ -127,6 +126,29 @@ impl<'a> Asm<'a> {
                     Instruction::Cdq,
                     Instruction::Idiv(src2.into()),
                     Instruction::Mov(Operand::Reg(Register::EDX), dst.into()),
+                ],
+                // SHIFTRIGHT:
+                // since we need to sign extend for arithmetic we can use cdq for this
+                // TODO: maybe if src1 isn't a negative we avoid the sign extension
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::ShiftRight,
+                    src1,
+                    src2,
+                    dst,
+                } => vec![
+                    Instruction::Mov(src1.into(), Operand::Reg(Register::EAX)),
+                    Instruction::Cdq,
+                    Instruction::Binary(
+                        BinaryOp::ShiftRight,
+                        src2.into(),
+                        Operand::Reg(Register::EAX),
+                    ),
+                    Instruction::Binary(
+                        BinaryOp::Or,
+                        Operand::Reg(Register::EDX),
+                        Operand::Reg(Register::EAX),
+                    ),
+                    Instruction::Mov(Operand::Reg(Register::EAX), dst.into()),
                 ],
                 tacky::Instruction::Binary {
                     op,
@@ -142,8 +164,9 @@ impl<'a> Asm<'a> {
                         tacky::BinaryOp::Or => BinaryOp::Or,
                         tacky::BinaryOp::Xor => BinaryOp::Xor,
                         tacky::BinaryOp::ShiftLeft => BinaryOp::ShiftLeft,
-                        tacky::BinaryOp::ShiftRight => BinaryOp::ShiftRight,
-                        tacky::BinaryOp::Remainder | tacky::BinaryOp::Divide => unreachable!(),
+                        tacky::BinaryOp::Remainder
+                        | tacky::BinaryOp::Divide
+                        | tacky::BinaryOp::ShiftRight => unreachable!(),
                     };
 
                     vec![
@@ -240,14 +263,21 @@ impl<'a> Asm<'a> {
                     v.push(Instruction::Mov(src, Operand::Reg(Register::R10)));
                     v.push(Instruction::Binary(binop, Operand::Reg(Register::R10), dst));
                 }
-                Instruction::Binary(binop, src @ Operand::Stack(_), dst)
+                Instruction::Binary(binop, src, dst)
                     if matches!(binop, BinaryOp::ShiftLeft | BinaryOp::ShiftRight) =>
                 {
                     // shift left/right cannot use a memory address as a source.
                     // We move the data to a scratch register. We write to ECX,
                     // then read from the lower 8 bits.
-                    v.push(Instruction::Mov(src, Operand::Reg(Register::ECX)));
-                    v.push(Instruction::Binary(binop, Operand::Reg(Register::CL), dst));
+                    if let Operand::Stack(n) = src {
+                        v.push(Instruction::Mov(
+                            Operand::Stack(n),
+                            Operand::Reg(Register::ECX),
+                        ));
+                        v.push(Instruction::Binary(binop, Operand::Reg(Register::CL), dst));
+                    } else {
+                        v.push(Instruction::Binary(binop, src, dst));
+                    }
                 }
                 Instruction::Binary(BinaryOp::Mult, src, dst @ Operand::Stack(_)) => {
                     // imul cannot take an addr as a destination, regardless of src.
@@ -619,6 +649,47 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R10)),
                 Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-8)),
                 Instruction::Binary(BinaryOp::ShiftLeft, Operand::Imm(2), Operand::Stack(-8)),
+                // return
+                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::EAX)),
+                Instruction::Ret,
+            ],
+        });
+        let assembly = Asm::from_tacky(ast);
+        assert_eq!(assembly, expected);
+    }
+
+    #[test]
+    fn shiftright_lhs_is_negative() {
+        let ast = tacky::AST::Program(tacky::Function {
+            name: "main",
+            instructions: vec![
+                tacky::Instruction::Unary {
+                    op: tacky::UnaryOp::Negate,
+                    src: tacky::Val::Constant(5),
+                    dst: tacky::Val::Var("tmp.0".into()),
+                },
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::ShiftRight,
+                    src1: tacky::Val::Var("tmp.0".into()),
+                    src2: tacky::Val::Constant(30),
+                    dst: tacky::Val::Var("tmp.1".into()),
+                },
+                tacky::Instruction::Ret(tacky::Val::Var("tmp.1".into())),
+            ],
+        });
+        let expected = Asm::Program(Function {
+            name: "main",
+            instructions: vec![
+                Instruction::AllocateStack(-8),
+                // tmp0 = -5
+                Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),
+                Instruction::Unary(UnaryOp::Neg, Operand::Stack(-4)),
+                // tmp1 = tmp.0 >> 30
+                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::EAX)),
+                Instruction::Cdq,
+                Instruction::Binary(BinaryOp::ShiftRight, Operand::Imm(30), Operand::Reg(Register::EAX)),
+                Instruction::Binary(BinaryOp::Or, Operand::Reg(Register::EDX), Operand::Reg(Register::EAX)),
+                Instruction::Mov(Operand::Reg(Register::EAX), Operand::Stack(-8)),
                 // return
                 Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::EAX)),
                 Instruction::Ret,
