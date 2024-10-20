@@ -120,8 +120,8 @@ impl<'a> Parser<'a> {
             Some(Token::Ampersand) => Ok(BinaryOp::And),
             Some(Token::Pipe) => Ok(BinaryOp::Or),
             Some(Token::Caret) => Ok(BinaryOp::Xor),
-            Some(Token::ShiftLeft) => Ok(BinaryOp::ShiftLeft),
-            Some(Token::ShiftRight) => Ok(BinaryOp::ShiftRight),
+            Some(Token::LessThanLessThan) => Ok(BinaryOp::ShiftLeft),
+            Some(Token::GreaterThanGreaterThan) => Ok(BinaryOp::ShiftRight),
             Some(t) => Err(ParserError::MissingBinop(t.into_string())),
             None => Err(ParserError::OutOfTokens),
         }
@@ -140,8 +140,8 @@ impl<'a> Parser<'a> {
                 | Some(t @ Token::Ampersand)
                 | Some(t @ Token::Caret)
                 | Some(t @ Token::Pipe)
-                | Some(t @ Token::ShiftLeft)
-                | Some(t @ Token::ShiftRight) => {
+                | Some(t @ Token::LessThanLessThan)
+                | Some(t @ Token::GreaterThanGreaterThan) => {
                     let new_prec = Self::precedence(*t)?;
                     if new_prec < min_precedence {
                         break;
@@ -197,7 +197,7 @@ impl<'a> Parser<'a> {
         match token {
             Token::Star | Token::Slash | Token::Percent => Ok(50),
             Token::Plus | Token::Hyphen => Ok(45),
-            Token::ShiftLeft | Token::ShiftRight => Ok(35),
+            Token::LessThanLessThan| Token::GreaterThanGreaterThan => Ok(35),
             Token::Ampersand => Ok(32),
             Token::Caret => Ok(31),
             Token::Pipe => Ok(30),
@@ -600,7 +600,7 @@ mod tests {
             Token::Constant(5),
             Token::Star,
             Token::Constant(4),
-            Token::ShiftLeft,
+            Token::LessThanLessThan,
             Token::Constant(2),
             Token::Semicolon,
             Token::RightBrace,
@@ -644,7 +644,7 @@ mod tests {
             Token::LeftBrace,
             Token::Return,
             Token::Constant(5),
-            Token::ShiftLeft,
+            Token::LessThanLessThan,
             Token::LeftParen,
             Token::Constant(1),
             Token::Plus,

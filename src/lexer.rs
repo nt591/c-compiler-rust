@@ -45,8 +45,8 @@ pub enum Token<'a> {
     Ampersand,
     Pipe,
     Caret,
-    ShiftLeft,
-    ShiftRight,
+    LessThanLessThan,
+    GreaterThanGreaterThan,
 }
 
 impl<'a> Token<'a> {
@@ -77,8 +77,8 @@ impl<'a> Token<'a> {
             Ampersand => format!("Ampersand"),
             Pipe => format!("Pipe"),
             Caret => format!("Caret"),
-            ShiftLeft => format!("ShiftLeft"),
-            ShiftRight => format!("ShiftRight"),
+            LessThanLessThan => format!("LessThanLessThan"),
+            GreaterThanGreaterThan => format!("GreaterThanGreaterThan"),
         }
     }
 }
@@ -189,11 +189,11 @@ impl<'a> Lexer<'a> {
                 }
                 b'>' if idx < len - 1 && bytes[idx + 1] == b'>' => {
                     // shift right, so increment idx once and capture the token
-                    tokens.push(Token::ShiftRight);
+                    tokens.push(Token::GreaterThanGreaterThan);
                     idx += 1;
                 }
                 b'<' if idx < len - 1 && bytes[idx + 1] == b'<' => {
-                    tokens.push(Token::ShiftLeft);
+                    tokens.push(Token::LessThanLessThan);
                     idx += 1;
                 }
 
@@ -429,8 +429,8 @@ bloop blorp */
         assert_eq!(Some(&Token::Caret), tokens.next());
         assert_eq!(Some(&Token::Pipe), tokens.next());
         assert_eq!(Some(&Token::Ampersand), tokens.next());
-        assert_eq!(Some(&Token::ShiftLeft), tokens.next());
-        assert_eq!(Some(&Token::ShiftRight), tokens.next());
+        assert_eq!(Some(&Token::LessThanLessThan), tokens.next());
+        assert_eq!(Some(&Token::GreaterThanGreaterThan), tokens.next());
         assert_eq!(None, tokens.next());
     }
 }
