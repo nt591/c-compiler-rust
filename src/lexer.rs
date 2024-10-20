@@ -22,6 +22,7 @@ pub enum Token<'a> {
     Constant(usize),
     SingleLineComment(&'a str),
     BlockComment(&'a str),
+    PreprocessorBlock(&'a str), //todo
     // keywords
     Int,
     Main,
@@ -56,6 +57,7 @@ impl<'a> Token<'a> {
             Constant(c) => format!("Constant {c}"),
             SingleLineComment(c) => format!("SingleLineComment {c}"),
             BlockComment(c) => format!("BlockComment {c}"),
+            PreprocessorBlock(c) => format!("PreprocessorBlock {c}"),
             Int => format!("Int"),
             Main => format!("Main"),
             Void => format!("Void"),
@@ -90,7 +92,14 @@ impl<'a> Lexer<'a> {
     pub fn as_syntactic_tokens(&self) -> Vec<Token<'a>> {
         self.tokens
             .iter()
-            .filter(|x| !matches!(x, Token::SingleLineComment(_) | Token::BlockComment(_)))
+            .filter(|x| {
+                !matches!(
+                    x,
+                    Token::SingleLineComment(_)
+                        | Token::BlockComment(_)
+                        | Token::PreprocessorBlock(_)
+                )
+            })
             .copied()
             .collect::<Vec<_>>()
     }
@@ -138,6 +147,19 @@ impl<'a> Lexer<'a> {
                     let comment =
                         std::str::from_utf8(&bytes[start..end]).expect("We know this is UTF8");
                     tokens.push(Token::SingleLineComment(comment));
+                    idx = end - 1;
+                }
+                b'#' => {
+                    // these are ifdefs, pragmas, etc. Let's for now just ignore
+                    // we falsely claim these to be a special Token
+                    let start = idx + 1;
+                    let mut end = start;
+                    while end < len && bytes[end] != b'\n' {
+                        end += 1;
+                    }
+                    let comment =
+                        std::str::from_utf8(&bytes[start..end]).expect("We know this is UTF8");
+                    tokens.push(Token::PreprocessorBlock(comment));
                     idx = end - 1;
                 }
                 b'/' if idx < len - 1 && bytes[idx + 1] == b'*' => {

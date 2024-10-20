@@ -127,9 +127,11 @@ impl<'a> Emitter<'a> {
     fn emit_register<W: Write>(reg: &asm::Register, output: &mut W) -> std::io::Result<()> {
         match reg {
             asm::Register::EAX => write!(output, "{}", "%eax"),
+            asm::Register::ECX => write!(output, "{}", "%ecx"),
             asm::Register::EDX => write!(output, "{}", "%edx"),
             asm::Register::R10 => write!(output, "{}", "%r10d"),
             asm::Register::R11 => write!(output, "{}", "%r11d"),
+            asm::Register::CL => write!(output, "{}", "%cl"),
         }
     }
 }

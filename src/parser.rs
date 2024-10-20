@@ -627,4 +627,49 @@ mod tests {
 
         assert_eq!(expected, actual);
     }
+
+    #[test]
+    fn handles_shift_precedence_when_rhs_is_expression() {
+        /*
+         * int main(void) {
+         *   return 5 << (1 + 2);
+         * }
+         */
+        let tokens = vec![
+            Token::Int,
+            Token::Main,
+            Token::LeftParen,
+            Token::Void,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Return,
+            Token::Constant(5),
+            Token::ShiftLeft,
+            Token::LeftParen,
+            Token::Constant(1),
+            Token::Plus,
+            Token::Constant(2),
+            Token::RightParen,
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_ok());
+        let actual = ast.unwrap();
+        let expected = AST::Program(Box::new(AST::Function {
+            name: "main",
+            body: Box::new(AST::Return(Expression::Binary(
+                BinaryOp::ShiftLeft,
+                Box::new(Expression::Constant(5)),
+                Box::new(Expression::Binary(
+                    BinaryOp::Add,
+                    Box::new(Expression::Constant(1)),
+                    Box::new(Expression::Constant(2)),
+                )),
+            ))),
+        }));
+
+        assert_eq!(expected, actual);
+    }
 }

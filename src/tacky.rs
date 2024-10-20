@@ -517,4 +517,44 @@ mod tests {
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
     }
+
+    #[test]
+    fn shiftleft_rhs_is_expr() {
+        let ast = ParserAST::Program(Box::new(ParserAST::Function {
+            name: "main",
+            body: Box::new(ParserAST::Return(Expression::Binary(
+                ParserBinaryOp::ShiftLeft,
+                Box::new(Expression::Constant(5)),
+                Box::new(Expression::Binary(
+                    ParserBinaryOp::Add,
+                    Box::new(Expression::Constant(1)),
+                    Box::new(Expression::Constant(2)),
+                )),
+            ))),
+        }));
+        let expected = AST::Program(Function {
+            name: "main",
+            instructions: vec![
+                Instruction::Binary {
+                    op: BinaryOp::Add,
+                    src1: Val::Constant(1),
+                    src2: Val::Constant(2),
+                    dst: Val::Var("tmp.0".into()),
+                },
+                Instruction::Binary {
+                    op: BinaryOp::ShiftLeft,
+                    src1: Val::Constant(5),
+                    src2: Val::Var("tmp.0".into()),
+                    dst: Val::Var("tmp.1".into()),
+                },
+                Instruction::Ret(Val::Var("tmp.1".into())),
+            ],
+        });
+
+        let tacky = Tacky::new(ast);
+        let assembly = tacky.into_ast();
+        assert!(assembly.is_ok());
+        let assembly = assembly.unwrap();
+        assert_eq!(assembly, expected);
+    }
 }

@@ -58,9 +58,11 @@ pub enum Operand {
 #[derive(Debug, PartialEq, Clone)]
 pub enum Register {
     EAX,
+    ECX,
     EDX,
     R10,
     R11,
+    CL,
 }
 
 #[derive(Debug, Default)]
@@ -233,11 +235,19 @@ impl<'a> Asm<'a> {
                             | BinaryOp::Or
                     ) =>
                 {
-                    // addl and subl can't operate from two memory addrs, so
+                    // some instructions can't operate from two memory addrs, so
                     // use a temporary variable along the way in %r10d
-                    // According to AT&T syntax links, this is also true for andl, xorl, orl
                     v.push(Instruction::Mov(src, Operand::Reg(Register::R10)));
                     v.push(Instruction::Binary(binop, Operand::Reg(Register::R10), dst));
+                }
+                Instruction::Binary(binop, src @ Operand::Stack(_), dst)
+                    if matches!(binop, BinaryOp::ShiftLeft | BinaryOp::ShiftRight) =>
+                {
+                    // shift left/right cannot use a memory address as a source.
+                    // We move the data to a scratch register. We write to ECX,
+                    // then read from the lower 8 bits.
+                    v.push(Instruction::Mov(src, Operand::Reg(Register::ECX)));
+                    v.push(Instruction::Binary(binop, Operand::Reg(Register::CL), dst));
                 }
                 Instruction::Binary(BinaryOp::Mult, src, dst @ Operand::Stack(_)) => {
                     // imul cannot take an addr as a destination, regardless of src.
@@ -609,6 +619,50 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R10)),
                 Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-8)),
                 Instruction::Binary(BinaryOp::ShiftLeft, Operand::Imm(2), Operand::Stack(-8)),
+                // return
+                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::EAX)),
+                Instruction::Ret,
+            ],
+        });
+        let assembly = Asm::from_tacky(ast);
+        assert_eq!(assembly, expected);
+    }
+
+    #[test]
+    fn shiftleft_rhs_is_expr() {
+        let ast = tacky::AST::Program(tacky::Function {
+            name: "main",
+            instructions: vec![
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::Add,
+                    src1: tacky::Val::Constant(1),
+                    src2: tacky::Val::Constant(2),
+                    dst: tacky::Val::Var("tmp.0".into()),
+                },
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::ShiftLeft,
+                    src1: tacky::Val::Constant(5),
+                    src2: tacky::Val::Var("tmp.0".into()),
+                    dst: tacky::Val::Var("tmp.1".into()),
+                },
+                tacky::Instruction::Ret(tacky::Val::Var("tmp.1".into())),
+            ],
+        });
+        let expected = Asm::Program(Function {
+            name: "main",
+            instructions: vec![
+                Instruction::AllocateStack(-8),
+                // tmp0 = 1 + 2
+                Instruction::Mov(Operand::Imm(1), Operand::Stack(-4)),
+                Instruction::Binary(BinaryOp::Add, Operand::Imm(2), Operand::Stack(-4)),
+                // tmp1 = 5 << tmp.0
+                Instruction::Mov(Operand::Imm(5), Operand::Stack(-8)),
+                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::ECX)),
+                Instruction::Binary(
+                    BinaryOp::ShiftLeft,
+                    Operand::Reg(Register::CL),
+                    Operand::Stack(-8),
+                ),
                 // return
                 Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::EAX)),
                 Instruction::Ret,
