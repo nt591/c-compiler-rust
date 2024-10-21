@@ -687,8 +687,16 @@ mod tests {
                 // tmp1 = tmp.0 >> 30
                 Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::EAX)),
                 Instruction::Cdq,
-                Instruction::Binary(BinaryOp::ShiftRight, Operand::Imm(30), Operand::Reg(Register::EAX)),
-                Instruction::Binary(BinaryOp::Or, Operand::Reg(Register::EDX), Operand::Reg(Register::EAX)),
+                Instruction::Binary(
+                    BinaryOp::ShiftRight,
+                    Operand::Imm(30),
+                    Operand::Reg(Register::EAX),
+                ),
+                Instruction::Binary(
+                    BinaryOp::Or,
+                    Operand::Reg(Register::EDX),
+                    Operand::Reg(Register::EAX),
+                ),
                 Instruction::Mov(Operand::Reg(Register::EAX), Operand::Stack(-8)),
                 // return
                 Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::EAX)),

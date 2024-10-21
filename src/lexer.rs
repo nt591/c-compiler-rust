@@ -47,6 +47,16 @@ pub enum Token<'a> {
     Caret,
     LessThanLessThan,
     GreaterThanGreaterThan,
+    // Chapter 4 logical ops
+    Bang,
+    AmpersandAmpersand,
+    PipePipe,
+    EqualEqual,
+    BangEqual,
+    LessThan,
+    GreaterThan,
+    LessThanEqual,
+    GreaterThanEqual,
 }
 
 impl<'a> Token<'a> {
@@ -79,6 +89,15 @@ impl<'a> Token<'a> {
             Caret => format!("Caret"),
             LessThanLessThan => format!("LessThanLessThan"),
             GreaterThanGreaterThan => format!("GreaterThanGreaterThan"),
+            Bang => format!("Bang"),
+            AmpersandAmpersand => format!("AmpersandAmpersand"),
+            PipePipe => format!("PipePipe"),
+            EqualEqual => format!("EqualEqual"),
+            BangEqual => format!("BangEqual"),
+            LessThan => format!("LessEqual"),
+            GreaterThan => format!("GreaterThan"),
+            LessThanEqual => format!("LessThanEqual"),
+            GreaterThanEqual => format!("GreaterThanEqual"),
         }
     }
 }
@@ -123,8 +142,22 @@ impl<'a> Lexer<'a> {
                 b'+' => tokens.push(Token::Plus),
                 b'*' => tokens.push(Token::Star),
                 b'%' => tokens.push(Token::Percent),
-                b'&' => tokens.push(Token::Ampersand),
-                b'|' => tokens.push(Token::Pipe),
+                b'&' => {
+                    if idx < len - 1 && bytes[idx + 1] == b'&' {
+                        tokens.push(Token::AmpersandAmpersand);
+                        idx += 2;
+                        continue;
+                    }
+                    tokens.push(Token::Ampersand);
+                }
+                b'|' => {
+                    if idx < len - 1 && bytes[idx + 1] == b'|' {
+                        tokens.push(Token::PipePipe);
+                        idx += 2;
+                        continue;
+                    }
+                    tokens.push(Token::Pipe);
+                }
                 b'^' => tokens.push(Token::Caret),
                 b'-' => {
                     // first, check if we could be processing a double hyphen
@@ -135,19 +168,52 @@ impl<'a> Lexer<'a> {
                         tokens.push(Token::Hyphen);
                     }
                 }
-                b'/' if idx < len - 1 && bytes[idx + 1] == b'/' => {
-                    // single line comment handler
-                    // Scoop up until we see a newline or end of index, stuff into token
-                    // Start after the slashes
-                    let start = idx + 2;
-                    let mut end = start;
-                    while end < len && bytes[end] != b'\n' {
-                        end += 1;
+                b'/' => {
+                    if idx < len - 1 && bytes[idx + 1] == b'/' {
+                        // single line comment handler
+                        // Scoop up until we see a newline or end of index, stuff into token
+                        // Start after the slashes
+                        let start = idx + 2;
+                        let mut end = start;
+                        while end < len && bytes[end] != b'\n' {
+                            end += 1;
+                        }
+                        let comment =
+                            std::str::from_utf8(&bytes[start..end]).expect("We know this is UTF8");
+                        tokens.push(Token::SingleLineComment(comment));
+                        // we continue the loop and miss the idx increment at the bottom of the
+                        // match
+                        idx = end;
+                        continue;
+                    } else if idx < len - 1 && bytes[idx + 1] == b'*' {
+                        // block comment. This is tricky.
+                        // Let's just scoop up until we see *
+                        // and check if the character after is a slash.
+                        // Once we see this, we'll capture the inside.
+                        // We'll sanity check that we actually closed the comment.
+                        let start = idx + 2;
+                        let mut end = start;
+                        while end < len {
+                            // annoying, but we check if we're looking at *, if the next
+                            // index is in range AND it's a slash. Gotta tighten this up.
+                            if bytes[end] == b'*' && end + 1 < len && bytes[end + 1] == b'/' {
+                                break;
+                            }
+                            end += 1;
+                        }
+                        if end >= len {
+                            // we never closed the comment!
+                            return Err(LexerError::UnclosedBlockComment);
+                        }
+                        let comment =
+                            std::str::from_utf8(&bytes[start..end]).expect("We know this is UTF8");
+                        tokens.push(Token::BlockComment(comment));
+                        // we continue the loop and miss the idx increment at the bottom of the
+                        // match
+                        idx = end + 2;
+                        continue;
                     }
-                    let comment =
-                        std::str::from_utf8(&bytes[start..end]).expect("We know this is UTF8");
-                    tokens.push(Token::SingleLineComment(comment));
-                    idx = end - 1;
+                    tokens.push(Token::Slash);
                 }
                 b'#' => {
                     // these are ifdefs, pragmas, etc. Let's for now just ignore
@@ -162,42 +228,47 @@ impl<'a> Lexer<'a> {
                     tokens.push(Token::PreprocessorBlock(comment));
                     idx = end - 1;
                 }
-                b'/' if idx < len - 1 && bytes[idx + 1] == b'*' => {
-                    // block comment. This is tricky.
-                    // Let's just scoop up until we see *
-                    // and check if the character after is a slash.
-                    // Once we see this, we'll capture the inside.
-                    // We'll sanity check that we actually closed the comment.
-                    let start = idx + 2;
-                    let mut end = start;
-                    while end < len {
-                        // annoying, but we check if we're looking at *, if the next
-                        // index is in range AND it's a slash. Gotta tighten this up.
-                        if bytes[end] == b'*' && end + 1 < len && bytes[end + 1] == b'/' {
-                            break;
-                        }
-                        end += 1;
+                b'=' => {
+                    if idx < len - 1 && bytes[idx + 1] == b'=' {
+                        tokens.push(Token::EqualEqual);
+                        idx += 2;
+                        continue;
                     }
-                    if end >= len {
-                        // we never closed the comment!
-                        return Err(LexerError::UnclosedBlockComment);
+                    return Err(LexerError::UnexpectedChar(c.into()));
+                }
+                b'!' => {
+                    if idx < len - 1 && bytes[idx + 1] == b'=' {
+                        tokens.push(Token::BangEqual);
+                        idx += 2;
+                        continue;
                     }
-                    let comment =
-                        std::str::from_utf8(&bytes[start..end]).expect("We know this is UTF8");
-                    tokens.push(Token::BlockComment(comment));
-                    idx = end + 1; // move to the closing slash, we'll incr again
+                    tokens.push(Token::Bang);
                 }
-                b'>' if idx < len - 1 && bytes[idx + 1] == b'>' => {
-                    // shift right, so increment idx once and capture the token
-                    tokens.push(Token::GreaterThanGreaterThan);
-                    idx += 1;
+                b'>' => {
+                    if idx < len - 1 && bytes[idx + 1] == b'>' {
+                        // shift right, so increment idx once and capture the token
+                        tokens.push(Token::GreaterThanGreaterThan);
+                        idx += 2;
+                        continue;
+                    } else if idx < len - 1 && bytes[idx + 1] == b'=' {
+                        tokens.push(Token::GreaterThanEqual);
+                        idx += 2;
+                        continue;
+                    }
+                    tokens.push(Token::GreaterThan);
                 }
-                b'<' if idx < len - 1 && bytes[idx + 1] == b'<' => {
-                    tokens.push(Token::LessThanLessThan);
-                    idx += 1;
+                b'<' => {
+                    if idx < len - 1 && bytes[idx + 1] == b'<' {
+                        tokens.push(Token::LessThanLessThan);
+                        idx += 2;
+                        continue;
+                    } else if idx < len - 1 && bytes[idx + 1] == b'=' {
+                        tokens.push(Token::LessThanEqual);
+                        idx += 2;
+                        continue;
+                    }
+                    tokens.push(Token::LessThan);
                 }
-
-                b'/' => tokens.push(Token::Slash),
                 b'a'..=b'z' | b'A'..=b'Z' => {
                     // starts with a letter, just walk until the end.
                     let start = idx;
@@ -431,6 +502,26 @@ bloop blorp */
         assert_eq!(Some(&Token::Ampersand), tokens.next());
         assert_eq!(Some(&Token::LessThanLessThan), tokens.next());
         assert_eq!(Some(&Token::GreaterThanGreaterThan), tokens.next());
+        assert_eq!(None, tokens.next());
+    }
+
+    #[test]
+    fn test_logical_operators_and_longest_match() {
+        let source = "!= ! <= &&| >= == || < >";
+        let lexer = Lexer::lex(source);
+        assert!(lexer.is_ok());
+        let lexer = lexer.unwrap();
+        let mut tokens = lexer.tokens();
+        assert_eq!(Some(&Token::BangEqual), tokens.next());
+        assert_eq!(Some(&Token::Bang), tokens.next());
+        assert_eq!(Some(&Token::LessThanEqual), tokens.next());
+        assert_eq!(Some(&Token::AmpersandAmpersand), tokens.next());
+        assert_eq!(Some(&Token::Pipe), tokens.next());
+        assert_eq!(Some(&Token::GreaterThanEqual), tokens.next());
+        assert_eq!(Some(&Token::EqualEqual), tokens.next());
+        assert_eq!(Some(&Token::PipePipe), tokens.next());
+        assert_eq!(Some(&Token::LessThan), tokens.next());
+        assert_eq!(Some(&Token::GreaterThan), tokens.next());
         assert_eq!(None, tokens.next());
     }
 }

@@ -197,7 +197,7 @@ impl<'a> Parser<'a> {
         match token {
             Token::Star | Token::Slash | Token::Percent => Ok(50),
             Token::Plus | Token::Hyphen => Ok(45),
-            Token::LessThanLessThan| Token::GreaterThanGreaterThan => Ok(35),
+            Token::LessThanLessThan | Token::GreaterThanGreaterThan => Ok(35),
             Token::Ampersand => Ok(32),
             Token::Caret => Ok(31),
             Token::Pipe => Ok(30),
