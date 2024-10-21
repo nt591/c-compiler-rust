@@ -40,6 +40,7 @@ pub enum Expression {
 pub enum UnaryOp {
     Negate,
     Complement,
+    Not,
 }
 
 #[derive(Debug, PartialEq)]
@@ -54,6 +55,14 @@ pub enum BinaryOp {
     Xor,
     ShiftLeft,
     ShiftRight,
+    Equal,
+    NotEqual,
+    LessThan,
+    LessOrEqual,
+    GreaterThan,
+    GreaterOrEqual,
+    BinAnd, 
+    BinOr,
 }
 
 pub struct Parser<'a> {
@@ -122,6 +131,14 @@ impl<'a> Parser<'a> {
             Some(Token::Caret) => Ok(BinaryOp::Xor),
             Some(Token::LessThanLessThan) => Ok(BinaryOp::ShiftLeft),
             Some(Token::GreaterThanGreaterThan) => Ok(BinaryOp::ShiftRight),
+            Some(Token::EqualEqual) => Ok(BinaryOp::Equal),
+            Some(Token::BangEqual) => Ok(BinaryOp::NotEqual),
+            Some(Token::LessThan) => Ok(BinaryOp::LessThan),
+            Some(Token::LessThanEqual) => Ok(BinaryOp::LessOrEqual),
+            Some(Token::GreaterThan) => Ok(BinaryOp::GreaterThan),
+            Some(Token::GreaterThanEqual) => Ok(BinaryOp::GreaterOrEqual),
+            Some(Token::AmpersandAmpersand) => Ok(BinaryOp::BinAnd),
+            Some(Token::PipePipe) => Ok(BinaryOp::BinOr),
             Some(t) => Err(ParserError::MissingBinop(t.into_string())),
             None => Err(ParserError::OutOfTokens),
         }
@@ -140,6 +157,14 @@ impl<'a> Parser<'a> {
                 | Some(t @ Token::Ampersand)
                 | Some(t @ Token::Caret)
                 | Some(t @ Token::Pipe)
+                | Some(t @ Token::EqualEqual)
+                | Some(t @ Token::BangEqual)
+                | Some(t @ Token::LessThan)
+                | Some(t @ Token::LessThanEqual)
+                | Some(t @ Token::GreaterThan)
+                | Some(t @ Token::GreaterThanEqual)
+                | Some(t @ Token::AmpersandAmpersand)
+                | Some(t @ Token::PipePipe)
                 | Some(t @ Token::LessThanLessThan)
                 | Some(t @ Token::GreaterThanGreaterThan) => {
                     let new_prec = Self::precedence(*t)?;
@@ -167,6 +192,10 @@ impl<'a> Parser<'a> {
             Some(Token::Tilde) => {
                 let inner_exp = self.parse_factor()?;
                 Ok(Expression::Unary(UnaryOp::Complement, Box::new(inner_exp)))
+            }
+            Some(Token::Bang) => {
+                let inner_exp = self.parse_factor()?;
+                Ok(Expression::Unary(UnaryOp::Not, Box::new(inner_exp)))
             }
             Some(Token::LeftParen) => {
                 // throw away parens and use just inner expression
@@ -198,9 +227,16 @@ impl<'a> Parser<'a> {
             Token::Star | Token::Slash | Token::Percent => Ok(50),
             Token::Plus | Token::Hyphen => Ok(45),
             Token::LessThanLessThan | Token::GreaterThanGreaterThan => Ok(35),
+            Token::LessThan
+            | Token::LessThanEqual
+            | Token::GreaterThan
+            | Token::GreaterThanEqual => Ok(34),
+            Token::EqualEqual | Token::BangEqual => Ok(33),
             Token::Ampersand => Ok(32),
             Token::Caret => Ok(31),
             Token::Pipe => Ok(30),
+            Token::AmpersandAmpersand => Ok(25),
+            Token::PipePipe => Ok(24),
             t => Err(ParserError::NoPrecedenceForToken(t.into_string())),
         }
     }
@@ -666,6 +702,63 @@ mod tests {
                     BinaryOp::Add,
                     Box::new(Expression::Constant(1)),
                     Box::new(Expression::Constant(2)),
+                )),
+            ))),
+        }));
+
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn handles_relational_precedence() {
+        /*
+         * int main(void) {
+         *   return (2 <= 3 - 2) != 4 + 5;
+         * }
+         */
+        let tokens = vec![
+            Token::Int,
+            Token::Main,
+            Token::LeftParen,
+            Token::Void,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Return,
+            Token::LeftParen,
+            Token::Constant(2),
+            Token::LessThanEqual,
+            Token::Constant(3),
+            Token::Hyphen,
+            Token::Constant(2),
+            Token::RightParen,
+            Token::BangEqual,
+            Token::Constant(4),
+            Token::Plus,
+            Token::Constant(5),
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_ok());
+        let actual = ast.unwrap();
+        let expected = AST::Program(Box::new(AST::Function {
+            name: "main",
+            body: Box::new(AST::Return(Expression::Binary(
+                BinaryOp::NotEqual,
+                Box::new(Expression::Binary(
+                    BinaryOp::LessOrEqual,
+                    Box::new(Expression::Constant(2)),
+                    Box::new(Expression::Binary(
+                        BinaryOp::Subtract,
+                        Box::new(Expression::Constant(3)),
+                        Box::new(Expression::Constant(2)),
+                    )),
+                )),
+                Box::new(Expression::Binary(
+                    BinaryOp::Add,
+                    Box::new(Expression::Constant(4)),
+                    Box::new(Expression::Constant(5)),
                 )),
             ))),
         }));

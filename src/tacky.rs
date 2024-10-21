@@ -127,6 +127,7 @@ impl<'a> Tacky<'a> {
                 let unary_op = match op {
                     ParserUnaryOp::Negate => UnaryOp::Negate,
                     ParserUnaryOp::Complement => UnaryOp::Complement,
+                    _ => todo!(),
                 };
                 instructions.push(Instruction::Unary {
                     op: unary_op,
@@ -151,6 +152,7 @@ impl<'a> Tacky<'a> {
                     ParserBinaryOp::Or => BinaryOp::Or,
                     ParserBinaryOp::ShiftLeft => BinaryOp::ShiftLeft,
                     ParserBinaryOp::ShiftRight => BinaryOp::ShiftRight,
+                    _ => todo!(),
                 };
                 instructions.push(Instruction::Binary {
                     op: binop,

@@ -524,4 +524,31 @@ bloop blorp */
         assert_eq!(Some(&Token::GreaterThan), tokens.next());
         assert_eq!(None, tokens.next());
     }
+
+    #[test]
+    fn test_more_logical_lexing() {
+        let source = r#"int main(void) {
+    return 2 == 2 || 0;
+}"#;
+        let lexer = Lexer::lex(source);
+        assert!(lexer.is_ok());
+        let lexer = lexer.unwrap();
+        let mut tokens = lexer.tokens();
+        assert_eq!(Some(&Token::Int), tokens.next());
+        assert_eq!(Some(&Token::Main), tokens.next());
+        assert_eq!(Some(&Token::LeftParen), tokens.next());
+        assert_eq!(Some(&Token::Void), tokens.next());
+        assert_eq!(Some(&Token::RightParen), tokens.next());
+        assert_eq!(Some(&Token::LeftBrace), tokens.next());
+        assert_eq!(Some(&Token::Return), tokens.next());
+        assert_eq!(Some(&Token::Constant(2)), tokens.next());
+        assert_eq!(Some(&Token::EqualEqual), tokens.next());
+        assert_eq!(Some(&Token::Constant(2)), tokens.next());
+        assert_eq!(Some(&Token::PipePipe), tokens.next());
+        assert_eq!(Some(&Token::Constant(0)), tokens.next());
+        assert_eq!(Some(&Token::Semicolon), tokens.next());
+        assert_eq!(Some(&Token::RightBrace), tokens.next());
+        assert_eq!(None, tokens.next());
+
+    }
 }
