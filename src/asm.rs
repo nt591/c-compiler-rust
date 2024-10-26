@@ -35,6 +35,16 @@ pub enum BinaryOp {
 }
 
 #[derive(Debug, PartialEq)]
+pub enum CondCode {
+    E,  // equal
+    NE, // not equal
+    G,  // greater than
+    GE, // greater or equal
+    L,  // less than
+    LE, // less than or equal
+}
+
+#[derive(Debug, PartialEq)]
 pub enum Instruction {
     Mov(Operand, Operand),
     Unary(UnaryOp, Operand),
@@ -43,6 +53,12 @@ pub enum Instruction {
     Cdq,
     AllocateStack(i32),
     Ret,
+    // relational operation instructions
+    Cmp(Operand, Operand),
+    Jmp(String),              //identifier
+    JmpCC(CondCode, Operand), //conditional jump, eg jmpne
+    SetCC(CondCode, Operand), //conditional set, eg setl
+    Label(String),
 }
 
 // implement clone so our mapping of Tacky Var
@@ -96,26 +112,33 @@ impl<'a> Asm<'a> {
 
     fn parse_instructions(ins: &[tacky::Instruction]) -> Vec<Instruction> {
         use tacky::Instruction as TIns;
+        use tacky::UnaryOp as TUnaryOp;
+        use Instruction::*;
         ins.iter()
             .flat_map(|instruction| match instruction {
-                TIns::Ret(val) => vec![
-                    Instruction::Mov(val.into(), Operand::Reg(Register::EAX)),
-                    Instruction::Ret,
-                ],
-                TIns::Unary { op, src, dst } => vec![
-                    Instruction::Mov(src.into(), dst.into()),
-                    Instruction::Unary(op.into(), dst.into()),
-                ],
+                TIns::Ret(val) => vec![Mov(val.into(), Operand::Reg(Register::EAX)), Ret],
+                TIns::Unary { op, src, dst } => match op {
+                    TUnaryOp::Not => {
+                        // !x is the same as x==0, so compare
+                        // then zero out dest addr and check if cmp returned equal
+                        vec![
+                            Cmp(Operand::Imm(0), src.into()),
+                            Mov(Operand::Imm(0), dst.into()),
+                            SetCC(CondCode::E, dst.into()),
+                        ]
+                    }
+                    o => vec![Mov(src.into(), dst.into()), Unary(o.into(), dst.into())],
+                },
                 TIns::Binary {
                     op: tacky::BinaryOp::Divide,
                     src1,
                     src2,
                     dst,
                 } => vec![
-                    Instruction::Mov(src1.into(), Operand::Reg(Register::EAX)),
-                    Instruction::Cdq,
-                    Instruction::Idiv(src2.into()),
-                    Instruction::Mov(Operand::Reg(Register::EAX), dst.into()),
+                    Mov(src1.into(), Operand::Reg(Register::EAX)),
+                    Cdq,
+                    Idiv(src2.into()),
+                    Mov(Operand::Reg(Register::EAX), dst.into()),
                 ],
                 TIns::Binary {
                     op: tacky::BinaryOp::Remainder,
@@ -123,10 +146,10 @@ impl<'a> Asm<'a> {
                     src2,
                     dst,
                 } => vec![
-                    Instruction::Mov(src1.into(), Operand::Reg(Register::EAX)),
-                    Instruction::Cdq,
-                    Instruction::Idiv(src2.into()),
-                    Instruction::Mov(Operand::Reg(Register::EDX), dst.into()),
+                    Mov(src1.into(), Operand::Reg(Register::EAX)),
+                    Cdq,
+                    Idiv(src2.into()),
+                    Mov(Operand::Reg(Register::EDX), dst.into()),
                 ],
                 // SHIFTRIGHT:
                 // since we need to sign extend for arithmetic we can use cdq for this
@@ -137,54 +160,98 @@ impl<'a> Asm<'a> {
                     src2,
                     dst,
                 } => vec![
-                    Instruction::Mov(src1.into(), Operand::Reg(Register::EAX)),
-                    Instruction::Cdq,
-                    Instruction::Binary(
+                    Mov(src1.into(), Operand::Reg(Register::EAX)),
+                    Cdq,
+                    Binary(
                         BinaryOp::ShiftRight,
                         src2.into(),
                         Operand::Reg(Register::EAX),
                     ),
-                    Instruction::Binary(
+                    Binary(
                         BinaryOp::BitwiseOr,
                         Operand::Reg(Register::EDX),
                         Operand::Reg(Register::EAX),
                     ),
-                    Instruction::Mov(Operand::Reg(Register::EAX), dst.into()),
+                    Mov(Operand::Reg(Register::EAX), dst.into()),
                 ],
                 TIns::Binary {
                     op,
                     src1,
                     src2,
                     dst,
-                } => {
-                    let o = match op {
-                        tacky::BinaryOp::Add => BinaryOp::Add,
-                        tacky::BinaryOp::Multiply => BinaryOp::Mult,
-                        tacky::BinaryOp::Subtract => BinaryOp::Sub,
-                        tacky::BinaryOp::BitwiseAnd => BinaryOp::BitwiseAnd,
-                        tacky::BinaryOp::BitwiseOr => BinaryOp::BitwiseOr,
-                        tacky::BinaryOp::Xor => BinaryOp::Xor,
-                        tacky::BinaryOp::ShiftLeft => BinaryOp::ShiftLeft,
-                        tacky::BinaryOp::And | tacky::BinaryOp::Or => todo!(),
-                        tacky::BinaryOp::Equal
-                        | tacky::BinaryOp::NotEqual
-                        | tacky::BinaryOp::LessThan
-                        | tacky::BinaryOp::LessOrEqual
-                        | tacky::BinaryOp::GreaterThan
-                        | tacky::BinaryOp::GreaterOrEqual => todo!(),
-                        tacky::BinaryOp::Remainder
-                        | tacky::BinaryOp::Divide
-                        | tacky::BinaryOp::ShiftRight => unreachable!(),
-                    };
-
+                } => match op {
+                    tacky::BinaryOp::Add
+                    | tacky::BinaryOp::Multiply
+                    | tacky::BinaryOp::Subtract
+                    | tacky::BinaryOp::BitwiseAnd
+                    | tacky::BinaryOp::BitwiseOr
+                    | tacky::BinaryOp::Xor
+                    | tacky::BinaryOp::ShiftLeft => {
+                        let o = op.into();
+                        vec![
+                            Mov(src1.into(), dst.into()),
+                            Binary(o, src2.into(), dst.into()),
+                        ]
+                    }
+                    tacky::BinaryOp::Equal
+                    | tacky::BinaryOp::NotEqual
+                    | tacky::BinaryOp::LessThan
+                    | tacky::BinaryOp::LessOrEqual
+                    | tacky::BinaryOp::GreaterThan
+                    | tacky::BinaryOp::GreaterOrEqual => {
+                        Self::parse_binary_relational_ops(op, src1, src2, dst)
+                    }
+                    tacky::BinaryOp::And | tacky::BinaryOp::Or => todo!(),
+                    tacky::BinaryOp::Remainder
+                    | tacky::BinaryOp::Divide
+                    | tacky::BinaryOp::ShiftRight => unreachable!(),
+                },
+                TIns::JumpIfZero { cond, target } => {
+                    // comp condition to 0, then jump if equal to target
                     vec![
-                        Instruction::Mov(src1.into(), dst.into()),
-                        Instruction::Binary(o, src2.into(), dst.into()),
+                        Cmp(Operand::Imm(0), cond.into()),
+                        JmpCC(CondCode::E, Operand::Pseudo(target.clone())),
                     ]
                 }
-                _ => todo!(),
+                TIns::JumpIfNotZero { cond, target } => {
+                    vec![
+                        Cmp(Operand::Imm(0), cond.into()),
+                        JmpCC(CondCode::NE, Operand::Pseudo(target.clone())),
+                    ]
+                }
+                TIns::Label(ident) => vec![Label(ident.clone())],
+                TIns::Copy { src, dst } => vec![Mov(src.into(), dst.into())],
+                TIns::Jump(ident) => vec![Jmp(ident.clone())],
             })
             .collect::<Vec<_>>()
+    }
+
+    fn parse_binary_relational_ops(
+        op: &tacky::BinaryOp,
+        src1: &tacky::Val,
+        src2: &tacky::Val,
+        dst: &tacky::Val,
+    ) -> Vec<Instruction> {
+        use tacky::BinaryOp as TBO;
+        use Instruction::*;
+        let cond_code = match op {
+            TBO::Equal => CondCode::E,
+            TBO::NotEqual => CondCode::LE,
+            TBO::GreaterThan => CondCode::G,
+            TBO::GreaterOrEqual => CondCode::GE,
+            TBO::LessThan => CondCode::L,
+            TBO::LessOrEqual => CondCode::LE,
+            _ => panic!("Unexpected tacky BinaryOp {op:?} when constructing relational instruction"),
+        };
+        // turns foo = x < y into
+        // cmp y, x AKA x - y
+        // zeros out foo
+        // setl foo
+        vec![
+            Cmp(src2.into(), src1.into()),
+            Mov(Operand::Imm(0), dst.clone().into()),
+            SetCC(cond_code, dst.into()),
+        ]
     }
 
     fn fixup(asm: &mut Asm<'a>, gen: &mut AsmGenerator) {
@@ -217,6 +284,13 @@ impl<'a> Asm<'a> {
             }
             Instruction::Idiv(src) => {
                 *src = Self::replace_pseudo_in_op(src, gen);
+            }
+            Instruction::Cmp(src, dst) => {
+                *src = Self::replace_pseudo_in_op(src, gen);
+                *dst = Self::replace_pseudo_in_op(dst, gen);
+            }
+            Instruction::SetCC(_cc, dst) => {
+                *dst = Self::replace_pseudo_in_op(dst, gen);
             }
             _ => {}
         })
@@ -307,6 +381,19 @@ impl<'a> Asm<'a> {
                     v.push(Instruction::Mov(imm, Operand::Reg(Register::R10)));
                     v.push(Instruction::Idiv(Operand::Reg(Register::R10)));
                 }
+                Instruction::Cmp(src @ Operand::Stack(_), dst @ Operand::Stack(_)) => {
+                    // cmpl can't move from two memory addrs, so
+                    // use a temporary variable along the way in %r10d
+                    v.push(Instruction::Mov(src, Operand::Reg(Register::R10)));
+                    v.push(Instruction::Cmp(Operand::Reg(Register::R10), dst));
+                }
+                Instruction::Cmp(src, dst @ Operand::Imm(_)) => {
+                    // cmpl can't use a constant as a destination so move into reg
+                    // use a temporary variable along the way in %r11d
+                    v.push(Instruction::Mov(dst.clone(), Operand::Reg(Register::R11)));
+                    v.push(Instruction::Cmp(src, Operand::Reg(Register::R11)));
+                }
+
                 i => v.push(i),
             }
         }
@@ -318,6 +405,7 @@ impl<'a> Asm<'a> {
 mod tests {
     use super::*;
     use crate::tacky;
+    use crate::tacky::UnaryOp as TUOp;
     #[test]
     fn basic_parse() {
         let ast = tacky::AST::Program(tacky::Function {
@@ -759,6 +847,69 @@ mod tests {
         let assembly = Asm::from_tacky(ast);
         assert_eq!(assembly, expected);
     }
+
+    #[test]
+    fn unary_not() {
+        let ast = tacky::AST::Program(tacky::Function {
+            name: "main",
+            instructions: vec![
+                tacky::Instruction::Unary {
+                    op: TUOp::Not,
+                    src: tacky::Val::Constant(1),
+                    dst: tacky::Val::Var("tmp.0".into()),
+                },
+                tacky::Instruction::Ret(tacky::Val::Var("tmp.0".into())),
+            ],
+        });
+        let expected = Asm::Program(Function {
+            name: "main",
+            // move 1 into register 11,
+            // then check if 1 == 0
+            // clear out the next address, then check if cmp set ZF
+            // and write to stack addr -4
+            // move stack addr -4 to EAX and return
+            instructions: vec![
+                Instruction::AllocateStack(-4),
+                Instruction::Mov(Operand::Imm(1), Operand::Reg(Register::R11)),
+                Instruction::Cmp(Operand::Imm(0), Operand::Reg(Register::R11)),
+                Instruction::Mov(Operand::Imm(0), Operand::Stack(-4)),
+                Instruction::SetCC(CondCode::E, Operand::Stack(-4)),
+                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::EAX)),
+                Instruction::Ret,
+            ],
+        });
+        let assembly = Asm::from_tacky(ast);
+        assert_eq!(assembly, expected);
+    }
+
+    #[test]
+    fn binary_greater_or_equal() {
+        let ast = tacky::AST::Program(tacky::Function {
+            name: "main",
+            instructions: vec![
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::GreaterOrEqual,
+                    src1: tacky::Val::Var("tmp.0".into()),
+                    src2: tacky::Val::Constant(2),
+                    dst: tacky::Val::Var("tmp.1".into()),
+                },
+                tacky::Instruction::Ret(tacky::Val::Var("tmp.1".into())),
+            ],
+        });
+        let expected = Asm::Program(Function {
+            name: "main",
+            instructions: vec![
+                Instruction::AllocateStack(-8),
+                Instruction::Cmp(Operand::Imm(2), Operand::Stack(-4)),
+                Instruction::Mov(Operand::Imm(0), Operand::Stack(-8)),
+                Instruction::SetCC(CondCode::GE, Operand::Stack(-8)),
+                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::EAX)),
+                Instruction::Ret,
+            ],
+        });
+        let assembly = Asm::from_tacky(ast);
+        assert_eq!(assembly, expected);
+    }
 }
 
 // some niceties. Maybe move to a from.rs
@@ -796,6 +947,23 @@ impl From<&tacky::Val> for Operand {
         match v {
             tacky::Val::Constant(imm) => Operand::Imm(*imm),
             tacky::Val::Var(ident) => Operand::Pseudo(ident.clone()),
+        }
+    }
+}
+
+impl From<&tacky::BinaryOp> for BinaryOp {
+    fn from(o: &tacky::BinaryOp) -> Self {
+        use tacky::BinaryOp as TBO;
+        match o {
+            TBO::Add => BinaryOp::Add,
+            TBO::Subtract => BinaryOp::Sub,
+            TBO::Multiply => BinaryOp::Mult,
+            TBO::BitwiseAnd => BinaryOp::BitwiseAnd,
+            TBO::BitwiseOr => BinaryOp::BitwiseOr,
+            TBO::Xor => BinaryOp::Xor,
+            TBO::ShiftLeft => BinaryOp::ShiftLeft,
+            TBO::ShiftRight => BinaryOp::ShiftRight,
+            o => panic!("No way to convert tacky binary op {o:?} into asm binary op"),
         }
     }
 }

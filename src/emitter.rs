@@ -87,6 +87,7 @@ impl<'a> Emitter<'a> {
                 Self::emit_op(operand, output)?;
                 write!(output, "\n")?;
             }
+            _ => todo!(),
         }
         Ok(())
     }
