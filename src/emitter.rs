@@ -115,8 +115,8 @@ impl<'a> Emitter<'a> {
             asm::BinaryOp::Add => write!(output, "addl   ")?,
             asm::BinaryOp::Mult => write!(output, "imull  ")?,
             asm::BinaryOp::Sub => write!(output, "subl   ")?,
-            asm::BinaryOp::And => write!(output, "andl   ")?,
-            asm::BinaryOp::Or => write!(output, "orl    ")?,
+            asm::BinaryOp::BitwiseAnd => write!(output, "andl   ")?,
+            asm::BinaryOp::BitwiseOr => write!(output, "orl    ")?,
             asm::BinaryOp::Xor => write!(output, "xorl   ")?,
             asm::BinaryOp::ShiftLeft => write!(output, "shll   ")?,
             asm::BinaryOp::ShiftRight => write!(output, "shrl   ")?,
@@ -363,7 +363,7 @@ _main:
                     asm::Operand::Stack(-12),
                 ),
                 asm::Instruction::Binary(
-                    asm::BinaryOp::And,
+                    asm::BinaryOp::BitwiseAnd,
                     asm::Operand::Imm(6),
                     asm::Operand::Stack(-12),
                 ),
@@ -381,7 +381,7 @@ _main:
                     asm::Operand::Reg(asm::Register::R10),
                 ),
                 asm::Instruction::Binary(
-                    asm::BinaryOp::Or,
+                    asm::BinaryOp::BitwiseOr,
                     asm::Operand::Reg(asm::Register::R10),
                     asm::Operand::Stack(-16),
                 ),

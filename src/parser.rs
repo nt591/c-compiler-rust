@@ -50,8 +50,8 @@ pub enum BinaryOp {
     Multiply,
     Divide,
     Remainder,
-    And,
-    Or,
+    BitwiseAnd,
+    BitwiseOr,
     Xor,
     ShiftLeft,
     ShiftRight,
@@ -61,7 +61,7 @@ pub enum BinaryOp {
     LessOrEqual,
     GreaterThan,
     GreaterOrEqual,
-    BinAnd, 
+    BinAnd,
     BinOr,
 }
 
@@ -126,8 +126,8 @@ impl<'a> Parser<'a> {
             Some(Token::Star) => Ok(BinaryOp::Multiply),
             Some(Token::Slash) => Ok(BinaryOp::Divide),
             Some(Token::Percent) => Ok(BinaryOp::Remainder),
-            Some(Token::Ampersand) => Ok(BinaryOp::And),
-            Some(Token::Pipe) => Ok(BinaryOp::Or),
+            Some(Token::Ampersand) => Ok(BinaryOp::BitwiseAnd),
+            Some(Token::Pipe) => Ok(BinaryOp::BitwiseOr),
             Some(Token::Caret) => Ok(BinaryOp::Xor),
             Some(Token::LessThanLessThan) => Ok(BinaryOp::ShiftLeft),
             Some(Token::GreaterThanGreaterThan) => Ok(BinaryOp::ShiftRight),
@@ -597,14 +597,14 @@ mod tests {
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
             body: Box::new(AST::Return(Expression::Binary(
-                BinaryOp::Or,
+                BinaryOp::BitwiseOr,
                 Box::new(Expression::Binary(
                     BinaryOp::Multiply,
                     Box::new(Expression::Constant(5)),
                     Box::new(Expression::Constant(4)),
                 )),
                 Box::new(Expression::Binary(
-                    BinaryOp::And,
+                    BinaryOp::BitwiseAnd,
                     Box::new(Expression::Binary(
                         BinaryOp::Subtract,
                         Box::new(Expression::Constant(4)),

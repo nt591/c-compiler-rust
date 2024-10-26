@@ -549,6 +549,5 @@ bloop blorp */
         assert_eq!(Some(&Token::Semicolon), tokens.next());
         assert_eq!(Some(&Token::RightBrace), tokens.next());
         assert_eq!(None, tokens.next());
-
     }
 }

@@ -44,6 +44,20 @@ pub enum Instruction {
         src2: Val,
         dst: Val,
     },
+    Copy {
+        src: Val,
+        dst: Val,
+    },
+    Jump(String), // identifier of label
+    JumpIfZero {
+        cond: Val,
+        target: String,
+    },
+    JumpIfNotZero {
+        cond: Val,
+        target: String,
+    },
+    Label(String), // identifier
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -56,6 +70,7 @@ pub enum Val {
 pub enum UnaryOp {
     Complement,
     Negate,
+    Not,
 }
 
 #[derive(Debug, PartialEq)]
@@ -65,11 +80,20 @@ pub enum BinaryOp {
     Multiply,
     Divide,
     Remainder,
-    And,
-    Or,
+    BitwiseAnd,
+    BitwiseOr,
     Xor,
     ShiftLeft,
     ShiftRight,
+    // Logical and relational operators
+    And,
+    Or,
+    Equal,
+    NotEqual,
+    LessThan,
+    LessOrEqual,
+    GreaterThan,
+    GreaterOrEqual,
 }
 
 #[derive(Debug, PartialEq)]
@@ -127,7 +151,7 @@ impl<'a> Tacky<'a> {
                 let unary_op = match op {
                     ParserUnaryOp::Negate => UnaryOp::Negate,
                     ParserUnaryOp::Complement => UnaryOp::Complement,
-                    _ => todo!(),
+                    ParserUnaryOp::Not => UnaryOp::Not,
                 };
                 instructions.push(Instruction::Unary {
                     op: unary_op,
@@ -137,32 +161,213 @@ impl<'a> Tacky<'a> {
                 Ok(dst)
             }
             Expression::Binary(op, left, right) => {
-                let src1 = self.parse_expression(left, instructions)?;
-                let src2 = self.parse_expression(right, instructions)?;
-                let dst_name = self.make_temporary();
-                let dst = Val::Var(dst_name);
-                let binop = match op {
-                    ParserBinaryOp::Add => BinaryOp::Add,
-                    ParserBinaryOp::Subtract => BinaryOp::Subtract,
-                    ParserBinaryOp::Multiply => BinaryOp::Multiply,
-                    ParserBinaryOp::Divide => BinaryOp::Divide,
-                    ParserBinaryOp::Remainder => BinaryOp::Remainder,
-                    ParserBinaryOp::And => BinaryOp::And,
-                    ParserBinaryOp::Xor => BinaryOp::Xor,
-                    ParserBinaryOp::Or => BinaryOp::Or,
-                    ParserBinaryOp::ShiftLeft => BinaryOp::ShiftLeft,
-                    ParserBinaryOp::ShiftRight => BinaryOp::ShiftRight,
-                    _ => todo!(),
-                };
-                instructions.push(Instruction::Binary {
-                    op: binop,
-                    src1,
-                    src2,
-                    dst: dst.clone(),
-                });
-                Ok(dst)
+                use ParserBinaryOp as PBO;
+                if matches!(op, PBO::BinAnd | PBO::BinOr) {
+                    self.parse_short_circuit_expression(op, left, right, instructions)
+                } else {
+                    self.parse_eager_binary_expression(op, left, right, instructions)
+                }
             }
         }
+    }
+
+    fn parse_short_circuit_expression(
+        &mut self,
+        op: &ParserBinaryOp,
+        left: &Expression,
+        right: &Expression,
+        instructions: &mut Vec<Instruction>,
+    ) -> Result<Val, TackyError> {
+        use ParserBinaryOp as PBO;
+        match op {
+            PBO::BinAnd => self.parse_short_circuit_and_expression(BinaryOp::And, left, right, instructions),
+            PBO::BinOr => self.parse_short_circuit_or_expression(BinaryOp::Or, left, right, instructions),
+            _ => unreachable!(),
+        }
+    }
+
+    // short circuiting means that we first
+    //   eval left
+    //   JumpIfZero to bailout label
+    //   eval right
+    //   JumpIfZero to bailout label
+    //     copy "true" into return variable
+    //   Jump to END
+    //   BAILOUT label
+    //     copy "false" into return variable
+    //   END label
+    fn parse_short_circuit_and_expression(
+        &mut self,
+        op: BinaryOp,
+        left: &Expression,
+        right: &Expression,
+        instructions: &mut Vec<Instruction>,
+    ) -> Result<Val, TackyError> {
+        assert_eq!(
+            op,
+            BinaryOp::And,
+            "Expected BinaryOp::And when parsing short circuit expr"
+        );
+        let jump_label = "false_label";
+        let end_label = "end";
+        let src1 = self.parse_expression(left, instructions)?;
+        // move src1 into a tmp
+        let dst1_name = self.make_temporary();
+        let dst1 = Val::Var(dst1_name);
+        instructions.push(Instruction::Copy {
+            src: src1,
+            dst: dst1.clone(),
+        });
+        instructions.push(Instruction::JumpIfZero {
+            cond: dst1,
+            target: jump_label.into(),
+        });
+        let src2 = self.parse_expression(right, instructions)?;
+        // move src2 into a tmp
+        let dst2_name = self.make_temporary();
+        let dst2 = Val::Var(dst2_name);
+        instructions.push(Instruction::Copy {
+            src: src2,
+            dst: dst2.clone(),
+        });
+        instructions.push(Instruction::JumpIfZero {
+            cond: dst2,
+            target: jump_label.into(),
+        });
+
+        // at this point, neither arm are false so we
+        // define our destination location, set it to true
+        // and jump to the end label
+        let result_name = self.make_temporary();
+        let result = Val::Var(result_name);
+        instructions.push(Instruction::Copy {
+            src: Val::Constant(1),
+            dst: result.clone(),
+        });
+        instructions.push(Instruction::Jump(end_label.into()));
+        // here we create our labels:
+        // Create our jump_label label to reach
+        // copy False into our result
+        // create our end label
+        instructions.push(Instruction::Label(jump_label.into()));
+        instructions.push(Instruction::Copy {
+            src: Val::Constant(0),
+            dst: result.clone(),
+        });
+        instructions.push(Instruction::Label(end_label.into()));
+        Ok(result)
+    }
+
+    // short circuiting means that we first
+    //   eval left
+    //   JumpIfNotZero to bailout label
+    //   eval right
+    //   JumpIfNotZero to bailout label
+    //     copy "false" into return variable
+    //   Jump to END
+    //   BAILOUT label
+    //     copy "true" into return variable
+    //   END label
+    fn parse_short_circuit_or_expression(
+        &mut self,
+        op: BinaryOp,
+        left: &Expression,
+        right: &Expression,
+        instructions: &mut Vec<Instruction>,
+    ) -> Result<Val, TackyError> {
+        assert_eq!(
+            op,
+            BinaryOp::Or,
+            "Expected BinaryOp::Or when parsing short circuit expr"
+        );
+        let jump_label = "true_label";
+        let end_label = "end";
+        let src1 = self.parse_expression(left, instructions)?;
+        // move src1 into a tmp
+        let dst1_name = self.make_temporary();
+        let dst1 = Val::Var(dst1_name);
+        instructions.push(Instruction::Copy {
+            src: src1,
+            dst: dst1.clone(),
+        });
+        instructions.push(Instruction::JumpIfNotZero {
+            cond: dst1,
+            target: jump_label.into(),
+        });
+        let src2 = self.parse_expression(right, instructions)?;
+        // move src2 into a tmp
+        let dst2_name = self.make_temporary();
+        let dst2 = Val::Var(dst2_name);
+        instructions.push(Instruction::Copy {
+            src: src2,
+            dst: dst2.clone(),
+        });
+        instructions.push(Instruction::JumpIfNotZero {
+            cond: dst2,
+            target: jump_label.into(),
+        });
+
+        // at this point, neither arm are true so we
+        // define our destination location, set it to false
+        // and jump to the end label
+        let result_name = self.make_temporary();
+        let result = Val::Var(result_name);
+        instructions.push(Instruction::Copy {
+            src: Val::Constant(0),
+            dst: result.clone(),
+        });
+        instructions.push(Instruction::Jump(end_label.into()));
+        // here we create our labels:
+        // Create our jump_label label to reach
+        // copy true into our result
+        // create our end label
+        instructions.push(Instruction::Label(jump_label.into()));
+        instructions.push(Instruction::Copy {
+            src: Val::Constant(1),
+            dst: result.clone(),
+        });
+        instructions.push(Instruction::Label(end_label.into()));
+        Ok(result)
+    }
+
+    fn parse_eager_binary_expression(
+        &mut self,
+        op: &ParserBinaryOp,
+        left: &Expression,
+        right: &Expression,
+        instructions: &mut Vec<Instruction>,
+    ) -> Result<Val, TackyError> {
+        use ParserBinaryOp as PBO;
+        let src1 = self.parse_expression(left, instructions)?;
+        let src2 = self.parse_expression(right, instructions)?;
+        let dst_name = self.make_temporary();
+        let dst = Val::Var(dst_name);
+        let binop = match op {
+            PBO::Add => BinaryOp::Add,
+            PBO::Subtract => BinaryOp::Subtract,
+            PBO::Multiply => BinaryOp::Multiply,
+            PBO::Divide => BinaryOp::Divide,
+            PBO::Remainder => BinaryOp::Remainder,
+            PBO::BitwiseAnd => BinaryOp::BitwiseAnd,
+            PBO::Xor => BinaryOp::Xor,
+            PBO::BitwiseOr => BinaryOp::BitwiseOr,
+            PBO::ShiftLeft => BinaryOp::ShiftLeft,
+            PBO::ShiftRight => BinaryOp::ShiftRight,
+            PBO::LessThan => BinaryOp::LessThan,
+            PBO::LessOrEqual => BinaryOp::LessOrEqual,
+            PBO::GreaterThan => BinaryOp::GreaterThan,
+            PBO::GreaterOrEqual => BinaryOp::GreaterOrEqual,
+            PBO::Equal => BinaryOp::Equal,
+            PBO::NotEqual => BinaryOp::NotEqual,
+            PBO::BinAnd | PBO::BinOr => unreachable!("Cannot eagerly parse And or Or binary expressions"),
+        };
+        instructions.push(Instruction::Binary {
+            op: binop,
+            src1,
+            src2,
+            dst: dst.clone(),
+        });
+        Ok(dst)
     }
 
     fn parse_instructions(
@@ -424,14 +629,14 @@ mod tests {
         let ast = ParserAST::Program(Box::new(ParserAST::Function {
             name: "main",
             body: Box::new(ParserAST::Return(Expression::Binary(
-                ParserBinaryOp::Or,
+                ParserBinaryOp::BitwiseOr,
                 Box::new(Expression::Binary(
                     ParserBinaryOp::Multiply,
                     Box::new(Expression::Constant(5)),
                     Box::new(Expression::Constant(4)),
                 )),
                 Box::new(Expression::Binary(
-                    ParserBinaryOp::And,
+                    ParserBinaryOp::BitwiseAnd,
                     Box::new(Expression::Binary(
                         ParserBinaryOp::Subtract,
                         Box::new(Expression::Constant(4)),
@@ -458,13 +663,13 @@ mod tests {
                     dst: Val::Var("tmp.1".into()),
                 },
                 Instruction::Binary {
-                    op: BinaryOp::And,
+                    op: BinaryOp::BitwiseAnd,
                     src1: Val::Var("tmp.1".into()),
                     src2: Val::Constant(6),
                     dst: Val::Var("tmp.2".into()),
                 },
                 Instruction::Binary {
-                    op: BinaryOp::Or,
+                    op: BinaryOp::BitwiseOr,
                     src1: Val::Var("tmp.0".into()),
                     src2: Val::Var("tmp.2".into()),
                     dst: Val::Var("tmp.3".into()),

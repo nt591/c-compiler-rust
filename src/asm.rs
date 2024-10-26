@@ -27,8 +27,8 @@ pub enum BinaryOp {
     Add,
     Sub,
     Mult,
-    And,
-    Or,
+    BitwiseAnd,
+    BitwiseOr,
     Xor,
     ShiftLeft,
     ShiftRight,
@@ -95,17 +95,18 @@ impl<'a> Asm<'a> {
     }
 
     fn parse_instructions(ins: &[tacky::Instruction]) -> Vec<Instruction> {
+        use tacky::Instruction as TIns;
         ins.iter()
             .flat_map(|instruction| match instruction {
-                tacky::Instruction::Ret(val) => vec![
+                TIns::Ret(val) => vec![
                     Instruction::Mov(val.into(), Operand::Reg(Register::EAX)),
                     Instruction::Ret,
                 ],
-                tacky::Instruction::Unary { op, src, dst } => vec![
+                TIns::Unary { op, src, dst } => vec![
                     Instruction::Mov(src.into(), dst.into()),
                     Instruction::Unary(op.into(), dst.into()),
                 ],
-                tacky::Instruction::Binary {
+                TIns::Binary {
                     op: tacky::BinaryOp::Divide,
                     src1,
                     src2,
@@ -116,7 +117,7 @@ impl<'a> Asm<'a> {
                     Instruction::Idiv(src2.into()),
                     Instruction::Mov(Operand::Reg(Register::EAX), dst.into()),
                 ],
-                tacky::Instruction::Binary {
+                TIns::Binary {
                     op: tacky::BinaryOp::Remainder,
                     src1,
                     src2,
@@ -130,7 +131,7 @@ impl<'a> Asm<'a> {
                 // SHIFTRIGHT:
                 // since we need to sign extend for arithmetic we can use cdq for this
                 // TODO: maybe if src1 isn't a negative we avoid the sign extension
-                tacky::Instruction::Binary {
+                TIns::Binary {
                     op: tacky::BinaryOp::ShiftRight,
                     src1,
                     src2,
@@ -144,13 +145,13 @@ impl<'a> Asm<'a> {
                         Operand::Reg(Register::EAX),
                     ),
                     Instruction::Binary(
-                        BinaryOp::Or,
+                        BinaryOp::BitwiseOr,
                         Operand::Reg(Register::EDX),
                         Operand::Reg(Register::EAX),
                     ),
                     Instruction::Mov(Operand::Reg(Register::EAX), dst.into()),
                 ],
-                tacky::Instruction::Binary {
+                TIns::Binary {
                     op,
                     src1,
                     src2,
@@ -160,10 +161,17 @@ impl<'a> Asm<'a> {
                         tacky::BinaryOp::Add => BinaryOp::Add,
                         tacky::BinaryOp::Multiply => BinaryOp::Mult,
                         tacky::BinaryOp::Subtract => BinaryOp::Sub,
-                        tacky::BinaryOp::And => BinaryOp::And,
-                        tacky::BinaryOp::Or => BinaryOp::Or,
+                        tacky::BinaryOp::BitwiseAnd => BinaryOp::BitwiseAnd,
+                        tacky::BinaryOp::BitwiseOr => BinaryOp::BitwiseOr,
                         tacky::BinaryOp::Xor => BinaryOp::Xor,
                         tacky::BinaryOp::ShiftLeft => BinaryOp::ShiftLeft,
+                        tacky::BinaryOp::And | tacky::BinaryOp::Or => todo!(),
+                        tacky::BinaryOp::Equal
+                        | tacky::BinaryOp::NotEqual
+                        | tacky::BinaryOp::LessThan
+                        | tacky::BinaryOp::LessOrEqual
+                        | tacky::BinaryOp::GreaterThan
+                        | tacky::BinaryOp::GreaterOrEqual => todo!(),
                         tacky::BinaryOp::Remainder
                         | tacky::BinaryOp::Divide
                         | tacky::BinaryOp::ShiftRight => unreachable!(),
@@ -174,6 +182,7 @@ impl<'a> Asm<'a> {
                         Instruction::Binary(o, src2.into(), dst.into()),
                     ]
                 }
+                _ => todo!(),
             })
             .collect::<Vec<_>>()
     }
@@ -253,9 +262,9 @@ impl<'a> Asm<'a> {
                         binop,
                         BinaryOp::Add
                             | BinaryOp::Sub
-                            | BinaryOp::And
+                            | BinaryOp::BitwiseAnd
                             | BinaryOp::Xor
-                            | BinaryOp::Or
+                            | BinaryOp::BitwiseOr
                     ) =>
                 {
                     // some instructions can't operate from two memory addrs, so
@@ -566,13 +575,13 @@ mod tests {
                     dst: tacky::Val::Var("tmp.1".into()),
                 },
                 tacky::Instruction::Binary {
-                    op: tacky::BinaryOp::And,
+                    op: tacky::BinaryOp::BitwiseAnd,
                     src1: tacky::Val::Var("tmp.1".into()),
                     src2: tacky::Val::Constant(6),
                     dst: tacky::Val::Var("tmp.2".into()),
                 },
                 tacky::Instruction::Binary {
-                    op: tacky::BinaryOp::Or,
+                    op: tacky::BinaryOp::BitwiseOr,
                     src1: tacky::Val::Var("tmp.0".into()),
                     src2: tacky::Val::Var("tmp.2".into()),
                     dst: tacky::Val::Var("tmp.3".into()),
@@ -595,13 +604,13 @@ mod tests {
                 // tmp2 = tmp1 & 6
                 Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::R10)),
                 Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-12)),
-                Instruction::Binary(BinaryOp::And, Operand::Imm(6), Operand::Stack(-12)),
+                Instruction::Binary(BinaryOp::BitwiseAnd, Operand::Imm(6), Operand::Stack(-12)),
                 // tmp3 = tmp0 | tmp2
                 Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R10)),
                 Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-16)),
                 Instruction::Mov(Operand::Stack(-12), Operand::Reg(Register::R10)),
                 Instruction::Binary(
-                    BinaryOp::Or,
+                    BinaryOp::BitwiseOr,
                     Operand::Reg(Register::R10),
                     Operand::Stack(-16),
                 ),
@@ -693,7 +702,7 @@ mod tests {
                     Operand::Reg(Register::EAX),
                 ),
                 Instruction::Binary(
-                    BinaryOp::Or,
+                    BinaryOp::BitwiseOr,
                     Operand::Reg(Register::EDX),
                     Operand::Reg(Register::EAX),
                 ),
@@ -758,6 +767,7 @@ impl From<tacky::UnaryOp> for UnaryOp {
         match op {
             tacky::UnaryOp::Complement => UnaryOp::Not,
             tacky::UnaryOp::Negate => UnaryOp::Neg,
+            tacky::UnaryOp::Not => todo!(),
         }
     }
 }
@@ -776,6 +786,7 @@ impl From<&tacky::UnaryOp> for UnaryOp {
         match op {
             &tacky::UnaryOp::Complement => UnaryOp::Not,
             &tacky::UnaryOp::Negate => UnaryOp::Neg,
+            &tacky::UnaryOp::Not => todo!(),
         }
     }
 }
