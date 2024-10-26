@@ -100,6 +100,7 @@ pub enum BinaryOp {
 pub struct Tacky<'a> {
     parser: ParserAST<'a>,
     dst_counter: u16,
+    label_counter: u16,
 }
 
 impl<'a> Tacky<'a> {
@@ -107,6 +108,7 @@ impl<'a> Tacky<'a> {
         Self {
             parser,
             dst_counter: 0,
+            label_counter: 0,
         }
     }
 
@@ -180,8 +182,12 @@ impl<'a> Tacky<'a> {
     ) -> Result<Val, TackyError> {
         use ParserBinaryOp as PBO;
         match op {
-            PBO::BinAnd => self.parse_short_circuit_and_expression(BinaryOp::And, left, right, instructions),
-            PBO::BinOr => self.parse_short_circuit_or_expression(BinaryOp::Or, left, right, instructions),
+            PBO::BinAnd => {
+                self.parse_short_circuit_and_expression(BinaryOp::And, left, right, instructions)
+            }
+            PBO::BinOr => {
+                self.parse_short_circuit_or_expression(BinaryOp::Or, left, right, instructions)
+            }
             _ => unreachable!(),
         }
     }
@@ -208,8 +214,8 @@ impl<'a> Tacky<'a> {
             BinaryOp::And,
             "Expected BinaryOp::And when parsing short circuit expr"
         );
-        let jump_label = "false_label";
-        let end_label = "end";
+        let jump_label = self.make_label("and_expr_false");
+        let end_label = self.make_label("and_expr_end");
         let src1 = self.parse_expression(left, instructions)?;
         // move src1 into a tmp
         let dst1_name = self.make_temporary();
@@ -220,7 +226,7 @@ impl<'a> Tacky<'a> {
         });
         instructions.push(Instruction::JumpIfZero {
             cond: dst1,
-            target: jump_label.into(),
+            target: jump_label.clone(),
         });
         let src2 = self.parse_expression(right, instructions)?;
         // move src2 into a tmp
@@ -232,7 +238,7 @@ impl<'a> Tacky<'a> {
         });
         instructions.push(Instruction::JumpIfZero {
             cond: dst2,
-            target: jump_label.into(),
+            target: jump_label.clone(),
         });
 
         // at this point, neither arm are false so we
@@ -244,17 +250,17 @@ impl<'a> Tacky<'a> {
             src: Val::Constant(1),
             dst: result.clone(),
         });
-        instructions.push(Instruction::Jump(end_label.into()));
+        instructions.push(Instruction::Jump(end_label.clone()));
         // here we create our labels:
         // Create our jump_label label to reach
         // copy False into our result
         // create our end label
-        instructions.push(Instruction::Label(jump_label.into()));
+        instructions.push(Instruction::Label(jump_label));
         instructions.push(Instruction::Copy {
             src: Val::Constant(0),
             dst: result.clone(),
         });
-        instructions.push(Instruction::Label(end_label.into()));
+        instructions.push(Instruction::Label(end_label));
         Ok(result)
     }
 
@@ -280,8 +286,8 @@ impl<'a> Tacky<'a> {
             BinaryOp::Or,
             "Expected BinaryOp::Or when parsing short circuit expr"
         );
-        let jump_label = "true_label";
-        let end_label = "end";
+        let jump_label = self.make_label("or_expr_true");
+        let end_label = self.make_label("or_expr_end");
         let src1 = self.parse_expression(left, instructions)?;
         // move src1 into a tmp
         let dst1_name = self.make_temporary();
@@ -292,7 +298,7 @@ impl<'a> Tacky<'a> {
         });
         instructions.push(Instruction::JumpIfNotZero {
             cond: dst1,
-            target: jump_label.into(),
+            target: jump_label.clone(),
         });
         let src2 = self.parse_expression(right, instructions)?;
         // move src2 into a tmp
@@ -304,7 +310,7 @@ impl<'a> Tacky<'a> {
         });
         instructions.push(Instruction::JumpIfNotZero {
             cond: dst2,
-            target: jump_label.into(),
+            target: jump_label.clone(),
         });
 
         // at this point, neither arm are true so we
@@ -316,17 +322,17 @@ impl<'a> Tacky<'a> {
             src: Val::Constant(0),
             dst: result.clone(),
         });
-        instructions.push(Instruction::Jump(end_label.into()));
+        instructions.push(Instruction::Jump(end_label.clone()));
         // here we create our labels:
         // Create our jump_label label to reach
         // copy true into our result
         // create our end label
-        instructions.push(Instruction::Label(jump_label.into()));
+        instructions.push(Instruction::Label(jump_label));
         instructions.push(Instruction::Copy {
             src: Val::Constant(1),
             dst: result.clone(),
         });
-        instructions.push(Instruction::Label(end_label.into()));
+        instructions.push(Instruction::Label(end_label));
         Ok(result)
     }
 
@@ -359,7 +365,9 @@ impl<'a> Tacky<'a> {
             PBO::GreaterOrEqual => BinaryOp::GreaterOrEqual,
             PBO::Equal => BinaryOp::Equal,
             PBO::NotEqual => BinaryOp::NotEqual,
-            PBO::BinAnd | PBO::BinOr => unreachable!("Cannot eagerly parse And or Or binary expressions"),
+            PBO::BinAnd | PBO::BinOr => {
+                unreachable!("Cannot eagerly parse And or Or binary expressions")
+            }
         };
         instructions.push(Instruction::Binary {
             op: binop,
@@ -389,6 +397,13 @@ impl<'a> Tacky<'a> {
         let c = self.dst_counter;
         let s = format!("tmp.{c}");
         self.dst_counter = c + 1;
+        s
+    }
+
+    fn make_label(&mut self, base: &str) -> String {
+        let c = self.label_counter;
+        let s = format!("{base}.{c}");
+        self.label_counter = c + 1;
         s
     }
 }
@@ -755,6 +770,130 @@ mod tests {
                     dst: Val::Var("tmp.1".into()),
                 },
                 Instruction::Ret(Val::Var("tmp.1".into())),
+            ],
+        });
+
+        let tacky = Tacky::new(ast);
+        let assembly = tacky.into_ast();
+        assert!(assembly.is_ok());
+        let assembly = assembly.unwrap();
+        assert_eq!(assembly, expected);
+    }
+
+    #[test]
+    fn test_short_circuit_and() {
+        let ast = ParserAST::Program(Box::new(ParserAST::Function {
+            name: "main",
+            body: Box::new(ParserAST::Return(Expression::Binary(
+                ParserBinaryOp::BinAnd,
+                Box::new(Expression::Constant(5)),
+                Box::new(Expression::Binary(
+                    ParserBinaryOp::Add,
+                    Box::new(Expression::Constant(1)),
+                    Box::new(Expression::Constant(2)),
+                )),
+            ))),
+        }));
+
+        let expected = AST::Program(Function {
+            name: "main",
+            instructions: vec![
+                Instruction::Copy {
+                    src: Val::Constant(5),
+                    dst: Val::Var("tmp.0".into()),
+                },
+                Instruction::JumpIfZero {
+                    cond: Val::Var("tmp.0".into()),
+                    target: "and_expr_false.0".into(),
+                },
+                Instruction::Binary {
+                    op: BinaryOp::Add,
+                    src1: Val::Constant(1),
+                    src2: Val::Constant(2),
+                    dst: Val::Var("tmp.1".into()),
+                },
+                Instruction::Copy {
+                    src: Val::Var("tmp.1".into()),
+                    dst: Val::Var("tmp.2".into()),
+                },
+                Instruction::JumpIfZero {
+                    cond: Val::Var("tmp.2".into()),
+                    target: "and_expr_false.0".into(),
+                },
+                Instruction::Copy {
+                    src: Val::Constant(1),
+                    dst: Val::Var("tmp.3".into()),
+                },
+                Instruction::Jump("and_expr_end.1".into()),
+                Instruction::Label("and_expr_false.0".into()),
+                Instruction::Copy {
+                    src: Val::Constant(0),
+                    dst: Val::Var("tmp.3".into()),
+                },
+                Instruction::Label("and_expr_end.1".into()),
+                Instruction::Ret(Val::Var("tmp.3".into())),
+            ],
+        });
+
+        let tacky = Tacky::new(ast);
+        let assembly = tacky.into_ast();
+        assert!(assembly.is_ok());
+        let assembly = assembly.unwrap();
+        assert_eq!(assembly, expected);
+    }
+
+    #[test]
+    fn test_short_circuit_or() {
+        let ast = ParserAST::Program(Box::new(ParserAST::Function {
+            name: "main",
+            body: Box::new(ParserAST::Return(Expression::Binary(
+                ParserBinaryOp::BinOr,
+                Box::new(Expression::Constant(5)),
+                Box::new(Expression::Binary(
+                    ParserBinaryOp::Add,
+                    Box::new(Expression::Constant(1)),
+                    Box::new(Expression::Constant(2)),
+                )),
+            ))),
+        }));
+
+        let expected = AST::Program(Function {
+            name: "main",
+            instructions: vec![
+                Instruction::Copy {
+                    src: Val::Constant(5),
+                    dst: Val::Var("tmp.0".into()),
+                },
+                Instruction::JumpIfNotZero {
+                    cond: Val::Var("tmp.0".into()),
+                    target: "or_expr_true.0".into(),
+                },
+                Instruction::Binary {
+                    op: BinaryOp::Add,
+                    src1: Val::Constant(1),
+                    src2: Val::Constant(2),
+                    dst: Val::Var("tmp.1".into()),
+                },
+                Instruction::Copy {
+                    src: Val::Var("tmp.1".into()),
+                    dst: Val::Var("tmp.2".into()),
+                },
+                Instruction::JumpIfNotZero {
+                    cond: Val::Var("tmp.2".into()),
+                    target: "or_expr_true.0".into(),
+                },
+                Instruction::Copy {
+                    src: Val::Constant(0),
+                    dst: Val::Var("tmp.3".into()),
+                },
+                Instruction::Jump("or_expr_end.1".into()),
+                Instruction::Label("or_expr_true.0".into()),
+                Instruction::Copy {
+                    src: Val::Constant(1),
+                    dst: Val::Var("tmp.3".into()),
+                },
+                Instruction::Label("or_expr_end.1".into()),
+                Instruction::Ret(Val::Var("tmp.3".into())),
             ],
         });
 
