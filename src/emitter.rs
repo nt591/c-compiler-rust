@@ -8,6 +8,12 @@ use std::io::Write;
 // lifetime bound to source text.
 pub struct Emitter<'a>(Asm<'a>);
 
+#[derive(Debug, PartialEq, Copy, Clone)]
+enum RegisterSize {
+    FourByte,
+    OneByte,
+}
+
 impl<'a> Emitter<'a> {
     pub fn new(asm: Asm<'a>) -> Self {
         Self(asm)
@@ -55,25 +61,25 @@ impl<'a> Emitter<'a> {
             }
             asm::Instruction::Mov(src, dst) => {
                 write!(output, "  movl   ")?;
-                Self::emit_op(src, output)?;
+                Self::emit_op(src, RegisterSize::FourByte, output)?;
                 write!(output, ", ")?;
-                Self::emit_op(dst, output)?;
+                Self::emit_op(dst, RegisterSize::FourByte, output)?;
                 write!(output, "\n")?;
             }
             asm::Instruction::Unary(unary, operand) => {
                 write!(output, "  ")?;
                 Self::emit_unary(unary, output)?;
                 write!(output, "   ")?;
-                Self::emit_op(operand, output)?;
+                Self::emit_op(operand, RegisterSize::FourByte, output)?;
                 write!(output, "\n")?;
             }
             asm::Instruction::Binary(binop, src, dst) => {
                 write!(output, "  ")?;
                 Self::emit_binary(binop, output)?;
                 // assume emit_binary handles proper space formatting!
-                Self::emit_op(src, output)?;
+                Self::emit_op(src, RegisterSize::FourByte, output)?;
                 write!(output, ", ")?;
-                Self::emit_op(dst, output)?;
+                Self::emit_op(dst, RegisterSize::FourByte, output)?;
                 write!(output, "\n")?;
             }
             asm::Instruction::AllocateStack(n) => {
@@ -84,17 +90,45 @@ impl<'a> Emitter<'a> {
             }
             asm::Instruction::Idiv(operand) => {
                 write!(output, "  idivl  ")?;
-                Self::emit_op(operand, output)?;
+                Self::emit_op(operand, RegisterSize::FourByte, output)?;
                 write!(output, "\n")?;
             }
-            _ => todo!(),
+            asm::Instruction::Cmp(op1, op2) => {
+                write!(output, "  cmpl   ")?;
+                Self::emit_op(op1, RegisterSize::FourByte, output)?;
+                write!(output, ", ")?;
+                Self::emit_op(op2, RegisterSize::FourByte, output)?;
+                write!(output, "\n")?;
+            }
+            asm::Instruction::Jmp(label) => {
+                write!(output, "jmp    ")?;
+                Self::emit_label(&label, output)?;
+                write!(output, "\n")?;
+            }
+            asm::Instruction::Label(label) => {
+                Self::emit_label(&label, output)?;
+                writeln!(output, ":")?
+            }
+            asm::Instruction::JmpCC(cond, label) => {
+                Self::emit_cond_jmp(*cond, output)?;
+                write!(output, ", ")?;
+                Self::emit_label(&label, output)?;
+                write!(output, "\n")?;
+            }
+            asm::Instruction::SetCC(cond, operand) => {
+                Self::emit_cond_set(*cond, output)?;
+                write!(output, ", ")?;
+                Self::emit_op(operand, RegisterSize::OneByte, output)?;
+                write!(output, "\n")?;
+            }
         }
         Ok(())
     }
 
-    fn emit_op<W: Write>(op: &asm::Operand, output: &mut W) -> std::io::Result<()> {
+    fn emit_op<W: Write>(op: &asm::Operand, regsize: RegisterSize, output: &mut W) -> std::io::Result<()> {
         match op {
-            asm::Operand::Reg(reg) => Self::emit_register(reg, output)?,
+            asm::Operand::Reg(reg) if regsize == RegisterSize::FourByte => Self::emit_register(reg, output)?,
+            asm::Operand::Reg(reg) if regsize == RegisterSize::OneByte => Self::emit_register_one_byte(reg, output)?,
             asm::Operand::Imm(imm) => write!(output, "${}", imm)?,
             asm::Operand::Stack(n) => write!(output, "{}(%rbp)", n)?,
             _ => todo!(),
@@ -135,6 +169,50 @@ impl<'a> Emitter<'a> {
             asm::Register::CL => write!(output, "{}", "%cl"),
         }
     }
+
+    fn emit_register_one_byte<W: Write>(reg: &asm::Register, output: &mut W) -> std::io::Result<()> {
+        match reg {
+            asm::Register::EAX => write!(output, "{}", "%al"),
+            asm::Register::ECX => write!(output, "{}", "%cl"),
+            asm::Register::EDX => write!(output, "{}", "%dl"),
+            asm::Register::R10 => write!(output, "{}", "%r10b"),
+            asm::Register::R11 => write!(output, "{}", "%r11b"),
+            asm::Register::CL => write!(output, "{}", "%cl"),
+        }
+    }
+
+
+    fn emit_label<W: Write>(label: &str, output: &mut W) -> std::io::Result<()> {
+        write!(output, "L{}", label)?;
+        Ok(())
+    }
+
+    fn emit_cond_jmp<W: Write>(cond: asm::CondCode, output: &mut W) -> std::io::Result<()> {
+        use asm::CondCode::*;
+        match cond {
+            E =>  write!(output, "je          ")?,
+            NE => write!(output, "jne         ")?,
+            G =>  write!(output, "jg          ")?,
+            GE => write!(output, "jge         ")?,
+            L =>  write!(output, "jl          ")?,
+            LE => write!(output, "jle         ")?,
+        }
+        Ok(())
+    }
+
+    fn emit_cond_set<W: Write>(cond: asm::CondCode, output: &mut W) -> std::io::Result<()> {
+        use asm::CondCode::*;
+        match cond {
+            E =>  write!(output, "sete        ")?,
+            NE => write!(output, "setne       ")?,
+            G =>  write!(output, "setg        ")?,
+            GE => write!(output, "setge       ")?,
+            L =>  write!(output, "setl        ")?,
+            LE => write!(output, "setLe       ")?,
+        }
+        Ok(())
+    }
+
 }
 
 #[cfg(test)]

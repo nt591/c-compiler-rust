@@ -34,7 +34,7 @@ pub enum BinaryOp {
     ShiftRight,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum CondCode {
     E,  // equal
     NE, // not equal
@@ -56,7 +56,7 @@ pub enum Instruction {
     // relational operation instructions
     Cmp(Operand, Operand),
     Jmp(String),              //identifier
-    JmpCC(CondCode, Operand), //conditional jump, eg jmpne
+    JmpCC(CondCode, String),  //conditional jump, eg jmpne to identifier
     SetCC(CondCode, Operand), //conditional set, eg setl
     Label(String),
 }
@@ -210,13 +210,13 @@ impl<'a> Asm<'a> {
                     // comp condition to 0, then jump if equal to target
                     vec![
                         Cmp(Operand::Imm(0), cond.into()),
-                        JmpCC(CondCode::E, Operand::Pseudo(target.clone())),
+                        JmpCC(CondCode::E, target.clone()),
                     ]
                 }
                 TIns::JumpIfNotZero { cond, target } => {
                     vec![
                         Cmp(Operand::Imm(0), cond.into()),
-                        JmpCC(CondCode::NE, Operand::Pseudo(target.clone())),
+                        JmpCC(CondCode::NE, target.clone()),
                     ]
                 }
                 TIns::Label(ident) => vec![Label(ident.clone())],
@@ -241,7 +241,9 @@ impl<'a> Asm<'a> {
             TBO::GreaterOrEqual => CondCode::GE,
             TBO::LessThan => CondCode::L,
             TBO::LessOrEqual => CondCode::LE,
-            _ => panic!("Unexpected tacky BinaryOp {op:?} when constructing relational instruction"),
+            _ => {
+                panic!("Unexpected tacky BinaryOp {op:?} when constructing relational instruction")
+            }
         };
         // turns foo = x < y into
         // cmp y, x AKA x - y
