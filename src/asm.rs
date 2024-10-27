@@ -235,7 +235,7 @@ impl<'a> Asm<'a> {
         use Instruction::*;
         let cond_code = match op {
             TBO::Equal => CondCode::E,
-            TBO::NotEqual => CondCode::LE,
+            TBO::NotEqual => CondCode::NE,
             TBO::GreaterThan => CondCode::G,
             TBO::GreaterOrEqual => CondCode::GE,
             TBO::LessThan => CondCode::L,
@@ -905,6 +905,74 @@ mod tests {
                 Instruction::Mov(Operand::Imm(0), Operand::Stack(-8)),
                 Instruction::SetCC(CondCode::GE, Operand::Stack(-8)),
                 Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::AX)),
+                Instruction::Ret,
+            ],
+        });
+        let assembly = Asm::from_tacky(ast);
+        assert_eq!(assembly, expected);
+    }
+
+    #[test]
+    fn jump_if_zero() {
+        let ast = tacky::AST::Program(tacky::Function {
+            name: "main",
+            instructions: vec![
+                tacky::Instruction::Copy {
+                    src: tacky::Val::Constant(5),
+                    dst: tacky::Val::Var("tmp.0".into()),
+                },
+                tacky::Instruction::JumpIfZero {
+                    cond: tacky::Val::Var("tmp.0".into()),
+                    target: "and_expr_false.0".into(),
+                },
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::Add,
+                    src1: tacky::Val::Constant(1),
+                    src2: tacky::Val::Constant(2),
+                    dst: tacky::Val::Var("tmp.1".into()),
+                },
+                tacky::Instruction::Copy {
+                    src: tacky::Val::Var("tmp.1".into()),
+                    dst: tacky::Val::Var("tmp.2".into()),
+                },
+                tacky::Instruction::JumpIfZero {
+                    cond: tacky::Val::Var("tmp.2".into()),
+                    target: "and_expr_false.0".into(),
+                },
+                tacky::Instruction::Copy {
+                    src: tacky::Val::Constant(1),
+                    dst: tacky::Val::Var("tmp.3".into()),
+                },
+                tacky::Instruction::Jump("and_expr_end.1".into()),
+                tacky::Instruction::Label("and_expr_false.0".into()),
+                tacky::Instruction::Copy {
+                    src: tacky::Val::Constant(0),
+                    dst: tacky::Val::Var("tmp.3".into()),
+                },
+                tacky::Instruction::Label("and_expr_end.1".into()),
+                tacky::Instruction::Ret(tacky::Val::Var("tmp.3".into())),
+            ],
+        });
+
+        let expected = Asm::Program(Function {
+            name: "main",
+            instructions: vec![
+                Instruction::AllocateStack(-16),
+                Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),
+                Instruction::Cmp(Operand::Imm(0), Operand::Stack(-4)),
+                Instruction::JmpCC(CondCode::E, "and_expr_false.0".into()),
+                Instruction::Mov(Operand::Imm(1), Operand::Stack(-8)),
+                Instruction::Binary(BinaryOp::Add, Operand::Imm(2), Operand::Stack(-8)),
+                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::R10)),
+                Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-12)),
+                Instruction::Cmp(Operand::Imm(0), Operand::Stack(-12)),
+                Instruction::JmpCC(CondCode::E, "and_expr_false.0".into()),
+                Instruction::Mov(Operand::Imm(1), Operand::Stack(-16)),
+                Instruction::Jmp("and_expr_end.1".into()),
+                Instruction::Label("and_expr_false.0".into()),
+                Instruction::Mov(Operand::Imm(0), Operand::Stack(-16)),
+                Instruction::Label("and_expr_end.1".into()),
+                Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         });

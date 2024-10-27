@@ -107,7 +107,7 @@ impl<'a> Emitter<'a> {
                 write!(output, "\n")?;
             }
             asm::Instruction::Jmp(label) => {
-                write!(output, "jmp    ")?;
+                write!(output, "  jmp    ")?;
                 Self::emit_label(&label, output)?;
                 write!(output, "\n")?;
             }
@@ -116,14 +116,14 @@ impl<'a> Emitter<'a> {
                 writeln!(output, ":")?
             }
             asm::Instruction::JmpCC(cond, label) => {
+                write!(output, "  ")?;
                 Self::emit_cond_jmp(*cond, output)?;
-                write!(output, ", ")?;
                 Self::emit_label(&label, output)?;
                 write!(output, "\n")?;
             }
             asm::Instruction::SetCC(cond, operand) => {
+                write!(output, "  ")?;
                 Self::emit_cond_set(*cond, output)?;
-                write!(output, ", ")?;
                 Self::emit_op(operand, RegisterSize::OneByte, output)?;
                 write!(output, "\n")?;
             }
@@ -204,11 +204,11 @@ impl<'a> Emitter<'a> {
     fn emit_cond_jmp<W: Write>(cond: asm::CondCode, output: &mut W) -> std::io::Result<()> {
         use asm::CondCode::*;
         match cond {
-            E => write!(output, "je          ")?,
+            E =>  write!(output, "je          ")?,
             NE => write!(output, "jne         ")?,
-            G => write!(output, "jg          ")?,
+            G =>  write!(output, "jg          ")?,
             GE => write!(output, "jge         ")?,
-            L => write!(output, "jl          ")?,
+            L =>  write!(output, "jl          ")?,
             LE => write!(output, "jle         ")?,
         }
         Ok(())
@@ -217,12 +217,12 @@ impl<'a> Emitter<'a> {
     fn emit_cond_set<W: Write>(cond: asm::CondCode, output: &mut W) -> std::io::Result<()> {
         use asm::CondCode::*;
         match cond {
-            E => write!(output, "sete        ")?,
-            NE => write!(output, "setne       ")?,
-            G => write!(output, "setg        ")?,
-            GE => write!(output, "setge       ")?,
-            L => write!(output, "setl        ")?,
-            LE => write!(output, "setLe       ")?,
+            E =>  write!(output, "sete       ")?,
+            NE => write!(output, "setne      ")?,
+            G =>  write!(output, "setg       ")?,
+            GE => write!(output, "setge      ")?,
+            L =>  write!(output, "setl       ")?,
+            LE => write!(output, "setle      ")?,
         }
         Ok(())
     }
@@ -231,16 +231,14 @@ impl<'a> Emitter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use asm::*;
 
     #[test]
     fn basic_emit() {
         let ast = Asm::Program(asm::Function {
             name: "main",
             instructions: vec![
-                asm::Instruction::Mov(
-                    asm::Operand::Imm(100),
-                    asm::Operand::Reg(asm::Register::AX),
-                ),
+                asm::Instruction::Mov(asm::Operand::Imm(100), asm::Operand::Reg(asm::Register::AX)),
                 asm::Instruction::Ret,
             ],
         });
@@ -520,7 +518,7 @@ _main:
     }
 
     #[test]
-    fn shfitleft() {
+    fn shiftleft() {
         let ast = asm::Asm::Program(asm::Function {
             name: "main",
             instructions: vec![
@@ -577,6 +575,64 @@ _main:
   movl   %r10d, -8(%rbp)
   shll   $2, -8(%rbp)
   movl   -8(%rbp), %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+"#;
+        let emitter = Emitter::new(ast);
+        let mut vec = Vec::new();
+        emitter.emit(&mut vec).expect("Could not write to string");
+        let actual = String::from_utf8(vec).expect("Got invalid UTF-8");
+
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn jump_cond() {
+        let ast = Asm::Program(Function {
+            name: "main",
+            instructions: vec![
+                Instruction::AllocateStack(-16),
+                Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),
+                Instruction::Cmp(Operand::Imm(0), Operand::Stack(-4)),
+                Instruction::JmpCC(CondCode::E, "and_expr_false.0".into()),
+                Instruction::Mov(Operand::Imm(1), Operand::Stack(-8)),
+                Instruction::Binary(BinaryOp::Add, Operand::Imm(2), Operand::Stack(-8)),
+                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::R10)),
+                Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-12)),
+                Instruction::Cmp(Operand::Imm(0), Operand::Stack(-12)),
+                Instruction::JmpCC(CondCode::E, "and_expr_false.0".into()),
+                Instruction::Mov(Operand::Imm(1), Operand::Stack(-16)),
+                Instruction::Jmp("and_expr_end.1".into()),
+                Instruction::Label("and_expr_false.0".into()),
+                Instruction::Mov(Operand::Imm(0), Operand::Stack(-16)),
+                Instruction::Label("and_expr_end.1".into()),
+                Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::AX)),
+                Instruction::Ret,
+            ],
+        });
+        let expected = r#"  .globl _main
+_main:
+                       # FUNCTION PROLOGUE
+  pushq  %rbp
+  movq   %rsp, %rbp
+  subq   $-16, %rsp
+  movl   $5, -4(%rbp)
+  cmpl   $0, -4(%rbp)
+  je          Land_expr_false.0
+  movl   $1, -8(%rbp)
+  addl   $2, -8(%rbp)
+  movl   -8(%rbp), %r10d
+  movl   %r10d, -12(%rbp)
+  cmpl   $0, -12(%rbp)
+  je          Land_expr_false.0
+  movl   $1, -16(%rbp)
+  jmp    Land_expr_end.1
+Land_expr_false.0:
+  movl   $0, -16(%rbp)
+Land_expr_end.1:
+  movl   -16(%rbp), %eax
                        # RESET REGISTERS
   movq   %rbp, %rsp
   popq   %rbp
