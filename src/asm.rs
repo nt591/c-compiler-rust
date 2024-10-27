@@ -73,12 +73,11 @@ pub enum Operand {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Register {
-    EAX,
-    ECX,
-    EDX,
+    AX,
+    CX,
+    DX,
     R10,
     R11,
-    CL,
 }
 
 #[derive(Debug, Default)]
@@ -116,7 +115,7 @@ impl<'a> Asm<'a> {
         use Instruction::*;
         ins.iter()
             .flat_map(|instruction| match instruction {
-                TIns::Ret(val) => vec![Mov(val.into(), Operand::Reg(Register::EAX)), Ret],
+                TIns::Ret(val) => vec![Mov(val.into(), Operand::Reg(Register::AX)), Ret],
                 TIns::Unary { op, src, dst } => match op {
                     TUnaryOp::Not => {
                         // !x is the same as x==0, so compare
@@ -135,10 +134,10 @@ impl<'a> Asm<'a> {
                     src2,
                     dst,
                 } => vec![
-                    Mov(src1.into(), Operand::Reg(Register::EAX)),
+                    Mov(src1.into(), Operand::Reg(Register::AX)),
                     Cdq,
                     Idiv(src2.into()),
-                    Mov(Operand::Reg(Register::EAX), dst.into()),
+                    Mov(Operand::Reg(Register::AX), dst.into()),
                 ],
                 TIns::Binary {
                     op: tacky::BinaryOp::Remainder,
@@ -146,10 +145,10 @@ impl<'a> Asm<'a> {
                     src2,
                     dst,
                 } => vec![
-                    Mov(src1.into(), Operand::Reg(Register::EAX)),
+                    Mov(src1.into(), Operand::Reg(Register::AX)),
                     Cdq,
                     Idiv(src2.into()),
-                    Mov(Operand::Reg(Register::EDX), dst.into()),
+                    Mov(Operand::Reg(Register::DX), dst.into()),
                 ],
                 // SHIFTRIGHT:
                 // since we need to sign extend for arithmetic we can use cdq for this
@@ -160,19 +159,19 @@ impl<'a> Asm<'a> {
                     src2,
                     dst,
                 } => vec![
-                    Mov(src1.into(), Operand::Reg(Register::EAX)),
+                    Mov(src1.into(), Operand::Reg(Register::AX)),
                     Cdq,
                     Binary(
                         BinaryOp::ShiftRight,
                         src2.into(),
-                        Operand::Reg(Register::EAX),
+                        Operand::Reg(Register::AX),
                     ),
                     Binary(
                         BinaryOp::BitwiseOr,
-                        Operand::Reg(Register::EDX),
-                        Operand::Reg(Register::EAX),
+                        Operand::Reg(Register::DX),
+                        Operand::Reg(Register::AX),
                     ),
-                    Mov(Operand::Reg(Register::EAX), dst.into()),
+                    Mov(Operand::Reg(Register::AX), dst.into()),
                 ],
                 TIns::Binary {
                     op,
@@ -357,9 +356,9 @@ impl<'a> Asm<'a> {
                     if let Operand::Stack(n) = src {
                         v.push(Instruction::Mov(
                             Operand::Stack(n),
-                            Operand::Reg(Register::ECX),
+                            Operand::Reg(Register::CX),
                         ));
-                        v.push(Instruction::Binary(binop, Operand::Reg(Register::CL), dst));
+                        v.push(Instruction::Binary(binop, Operand::Reg(Register::CX), dst));
                     } else {
                         v.push(Instruction::Binary(binop, src, dst));
                     }
@@ -419,7 +418,7 @@ mod tests {
             name: "main",
             instructions: vec![
                 Instruction::AllocateStack(0),
-                Instruction::Mov(Operand::Imm(100), Operand::Reg(Register::EAX)),
+                Instruction::Mov(Operand::Imm(100), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         });
@@ -448,7 +447,7 @@ mod tests {
                 Instruction::AllocateStack(-4),
                 Instruction::Mov(Operand::Imm(100), Operand::Stack(-4)),
                 Instruction::Unary(UnaryOp::Neg, Operand::Stack(-4)),
-                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::EAX)),
+                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         });
@@ -493,7 +492,7 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::R10)),
                 Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-12)),
                 Instruction::Unary(UnaryOp::Neg, Operand::Stack(-12)),
-                Instruction::Mov(Operand::Stack(-12), Operand::Reg(Register::EAX)),
+                Instruction::Mov(Operand::Stack(-12), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         });
@@ -547,17 +546,17 @@ mod tests {
                 Instruction::Mov(Operand::Imm(4), Operand::Stack(-8)),
                 Instruction::Binary(BinaryOp::Add, Operand::Imm(5), Operand::Stack(-8)),
                 // tmp2 = 3 % tmp1
-                Instruction::Mov(Operand::Imm(3), Operand::Reg(Register::EAX)),
+                Instruction::Mov(Operand::Imm(3), Operand::Reg(Register::AX)),
                 Instruction::Cdq,
                 Instruction::Idiv(Operand::Stack(-8)),
-                Instruction::Mov(Operand::Reg(Register::EDX), Operand::Stack(-12)),
+                Instruction::Mov(Operand::Reg(Register::DX), Operand::Stack(-12)),
                 // tmp3 = tmp0 / tmp2
-                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::EAX)),
+                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::AX)),
                 Instruction::Cdq,
                 Instruction::Idiv(Operand::Stack(-12)),
-                Instruction::Mov(Operand::Reg(Register::EAX), Operand::Stack(-16)),
+                Instruction::Mov(Operand::Reg(Register::AX), Operand::Stack(-16)),
                 // return
-                Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::EAX)),
+                Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         });
@@ -615,19 +614,19 @@ mod tests {
                 Instruction::Binary(BinaryOp::Mult, Operand::Imm(4), Operand::Reg(Register::R11)),
                 Instruction::Mov(Operand::Reg(Register::R11), Operand::Stack(-4)),
                 // tmp1 = tmp0 / 2 = 10
-                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::EAX)),
+                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::AX)),
                 Instruction::Cdq,
                 Instruction::Mov(Operand::Imm(2), Operand::Reg(Register::R10)),
                 Instruction::Idiv(Operand::Reg(Register::R10)),
-                Instruction::Mov(Operand::Reg(Register::EAX), Operand::Stack(-8)),
+                Instruction::Mov(Operand::Reg(Register::AX), Operand::Stack(-8)),
                 // tmp2 = 2 + 1  = 3
                 Instruction::Mov(Operand::Imm(2), Operand::Stack(-12)),
                 Instruction::Binary(BinaryOp::Add, Operand::Imm(1), Operand::Stack(-12)),
                 // tmp3 = 3 % tmp2 = 0
-                Instruction::Mov(Operand::Imm(3), Operand::Reg(Register::EAX)),
+                Instruction::Mov(Operand::Imm(3), Operand::Reg(Register::AX)),
                 Instruction::Cdq,
                 Instruction::Idiv(Operand::Stack(-12)),
-                Instruction::Mov(Operand::Reg(Register::EDX), Operand::Stack(-16)),
+                Instruction::Mov(Operand::Reg(Register::DX), Operand::Stack(-16)),
                 // tmp3 = tmp1 - tmp3 = 10
                 Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::R10)),
                 Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-20)),
@@ -638,7 +637,7 @@ mod tests {
                     Operand::Stack(-20),
                 ),
                 // return
-                Instruction::Mov(Operand::Stack(-20), Operand::Reg(Register::EAX)),
+                Instruction::Mov(Operand::Stack(-20), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         });
@@ -705,7 +704,7 @@ mod tests {
                     Operand::Stack(-16),
                 ),
                 // return
-                Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::EAX)),
+                Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         });
@@ -749,7 +748,7 @@ mod tests {
                 Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-8)),
                 Instruction::Binary(BinaryOp::ShiftLeft, Operand::Imm(2), Operand::Stack(-8)),
                 // return
-                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::EAX)),
+                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         });
@@ -784,21 +783,21 @@ mod tests {
                 Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),
                 Instruction::Unary(UnaryOp::Neg, Operand::Stack(-4)),
                 // tmp1 = tmp.0 >> 30
-                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::EAX)),
+                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::AX)),
                 Instruction::Cdq,
                 Instruction::Binary(
                     BinaryOp::ShiftRight,
                     Operand::Imm(30),
-                    Operand::Reg(Register::EAX),
+                    Operand::Reg(Register::AX),
                 ),
                 Instruction::Binary(
                     BinaryOp::BitwiseOr,
-                    Operand::Reg(Register::EDX),
-                    Operand::Reg(Register::EAX),
+                    Operand::Reg(Register::DX),
+                    Operand::Reg(Register::AX),
                 ),
-                Instruction::Mov(Operand::Reg(Register::EAX), Operand::Stack(-8)),
+                Instruction::Mov(Operand::Reg(Register::AX), Operand::Stack(-8)),
                 // return
-                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::EAX)),
+                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         });
@@ -835,14 +834,14 @@ mod tests {
                 Instruction::Binary(BinaryOp::Add, Operand::Imm(2), Operand::Stack(-4)),
                 // tmp1 = 5 << tmp.0
                 Instruction::Mov(Operand::Imm(5), Operand::Stack(-8)),
-                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::ECX)),
+                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::CX)),
                 Instruction::Binary(
                     BinaryOp::ShiftLeft,
-                    Operand::Reg(Register::CL),
+                    Operand::Reg(Register::CX),
                     Operand::Stack(-8),
                 ),
                 // return
-                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::EAX)),
+                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         });
@@ -876,7 +875,7 @@ mod tests {
                 Instruction::Cmp(Operand::Imm(0), Operand::Reg(Register::R11)),
                 Instruction::Mov(Operand::Imm(0), Operand::Stack(-4)),
                 Instruction::SetCC(CondCode::E, Operand::Stack(-4)),
-                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::EAX)),
+                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         });
@@ -905,7 +904,7 @@ mod tests {
                 Instruction::Cmp(Operand::Imm(2), Operand::Stack(-4)),
                 Instruction::Mov(Operand::Imm(0), Operand::Stack(-8)),
                 Instruction::SetCC(CondCode::GE, Operand::Stack(-8)),
-                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::EAX)),
+                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         });

@@ -79,7 +79,13 @@ impl<'a> Emitter<'a> {
                 // assume emit_binary handles proper space formatting!
                 Self::emit_op(src, RegisterSize::FourByte, output)?;
                 write!(output, ", ")?;
-                Self::emit_op(dst, RegisterSize::FourByte, output)?;
+                // shift left and right use the lower 8 bits of ECX to read
+                match binop {
+                    asm::BinaryOp::ShiftLeft | asm::BinaryOp::ShiftRight => {
+                        Self::emit_op(dst, RegisterSize::OneByte, output)?
+                    }
+                    _op => Self::emit_op(dst, RegisterSize::FourByte, output)?,
+                };
                 write!(output, "\n")?;
             }
             asm::Instruction::AllocateStack(n) => {
@@ -125,10 +131,18 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
-    fn emit_op<W: Write>(op: &asm::Operand, regsize: RegisterSize, output: &mut W) -> std::io::Result<()> {
+    fn emit_op<W: Write>(
+        op: &asm::Operand,
+        regsize: RegisterSize,
+        output: &mut W,
+    ) -> std::io::Result<()> {
         match op {
-            asm::Operand::Reg(reg) if regsize == RegisterSize::FourByte => Self::emit_register(reg, output)?,
-            asm::Operand::Reg(reg) if regsize == RegisterSize::OneByte => Self::emit_register_one_byte(reg, output)?,
+            asm::Operand::Reg(reg) if regsize == RegisterSize::FourByte => {
+                Self::emit_register(reg, output)?
+            }
+            asm::Operand::Reg(reg) if regsize == RegisterSize::OneByte => {
+                Self::emit_register_one_byte(reg, output)?
+            }
             asm::Operand::Imm(imm) => write!(output, "${}", imm)?,
             asm::Operand::Stack(n) => write!(output, "{}(%rbp)", n)?,
             _ => todo!(),
@@ -161,26 +175,26 @@ impl<'a> Emitter<'a> {
 
     fn emit_register<W: Write>(reg: &asm::Register, output: &mut W) -> std::io::Result<()> {
         match reg {
-            asm::Register::EAX => write!(output, "{}", "%eax"),
-            asm::Register::ECX => write!(output, "{}", "%ecx"),
-            asm::Register::EDX => write!(output, "{}", "%edx"),
+            asm::Register::AX => write!(output, "{}", "%eax"),
+            asm::Register::CX => write!(output, "{}", "%ecx"),
+            asm::Register::DX => write!(output, "{}", "%edx"),
             asm::Register::R10 => write!(output, "{}", "%r10d"),
             asm::Register::R11 => write!(output, "{}", "%r11d"),
-            asm::Register::CL => write!(output, "{}", "%cl"),
         }
     }
 
-    fn emit_register_one_byte<W: Write>(reg: &asm::Register, output: &mut W) -> std::io::Result<()> {
+    fn emit_register_one_byte<W: Write>(
+        reg: &asm::Register,
+        output: &mut W,
+    ) -> std::io::Result<()> {
         match reg {
-            asm::Register::EAX => write!(output, "{}", "%al"),
-            asm::Register::ECX => write!(output, "{}", "%cl"),
-            asm::Register::EDX => write!(output, "{}", "%dl"),
+            asm::Register::AX => write!(output, "{}", "%al"),
+            asm::Register::CX => write!(output, "{}", "%cl"),
+            asm::Register::DX => write!(output, "{}", "%dl"),
             asm::Register::R10 => write!(output, "{}", "%r10b"),
             asm::Register::R11 => write!(output, "{}", "%r11b"),
-            asm::Register::CL => write!(output, "{}", "%cl"),
         }
     }
-
 
     fn emit_label<W: Write>(label: &str, output: &mut W) -> std::io::Result<()> {
         write!(output, "L{}", label)?;
@@ -190,11 +204,11 @@ impl<'a> Emitter<'a> {
     fn emit_cond_jmp<W: Write>(cond: asm::CondCode, output: &mut W) -> std::io::Result<()> {
         use asm::CondCode::*;
         match cond {
-            E =>  write!(output, "je          ")?,
+            E => write!(output, "je          ")?,
             NE => write!(output, "jne         ")?,
-            G =>  write!(output, "jg          ")?,
+            G => write!(output, "jg          ")?,
             GE => write!(output, "jge         ")?,
-            L =>  write!(output, "jl          ")?,
+            L => write!(output, "jl          ")?,
             LE => write!(output, "jle         ")?,
         }
         Ok(())
@@ -203,16 +217,15 @@ impl<'a> Emitter<'a> {
     fn emit_cond_set<W: Write>(cond: asm::CondCode, output: &mut W) -> std::io::Result<()> {
         use asm::CondCode::*;
         match cond {
-            E =>  write!(output, "sete        ")?,
+            E => write!(output, "sete        ")?,
             NE => write!(output, "setne       ")?,
-            G =>  write!(output, "setg        ")?,
+            G => write!(output, "setg        ")?,
             GE => write!(output, "setge       ")?,
-            L =>  write!(output, "setl        ")?,
+            L => write!(output, "setl        ")?,
             LE => write!(output, "setLe       ")?,
         }
         Ok(())
     }
-
 }
 
 #[cfg(test)]
@@ -226,7 +239,7 @@ mod tests {
             instructions: vec![
                 asm::Instruction::Mov(
                     asm::Operand::Imm(100),
-                    asm::Operand::Reg(asm::Register::EAX),
+                    asm::Operand::Reg(asm::Register::AX),
                 ),
                 asm::Instruction::Ret,
             ],
@@ -281,7 +294,7 @@ _main:
                 asm::Instruction::Unary(asm::UnaryOp::Neg, asm::Operand::Stack(-12)),
                 asm::Instruction::Mov(
                     asm::Operand::Stack(-12),
-                    asm::Operand::Reg(asm::Register::EAX),
+                    asm::Operand::Reg(asm::Register::AX),
                 ),
                 asm::Instruction::Ret,
             ],
@@ -343,28 +356,28 @@ _main:
                     asm::Operand::Stack(-8),
                 ),
                 // tmp2 = 3 % tmp1
-                asm::Instruction::Mov(asm::Operand::Imm(3), asm::Operand::Reg(asm::Register::EDX)),
+                asm::Instruction::Mov(asm::Operand::Imm(3), asm::Operand::Reg(asm::Register::DX)),
                 asm::Instruction::Cdq,
                 asm::Instruction::Idiv(asm::Operand::Stack(-8)),
                 asm::Instruction::Mov(
-                    asm::Operand::Reg(asm::Register::EDX),
+                    asm::Operand::Reg(asm::Register::DX),
                     asm::Operand::Stack(-12),
                 ),
                 // tmp3 = tmp0 / tmp2
                 asm::Instruction::Mov(
                     asm::Operand::Stack(-4),
-                    asm::Operand::Reg(asm::Register::EAX),
+                    asm::Operand::Reg(asm::Register::AX),
                 ),
                 asm::Instruction::Cdq,
                 asm::Instruction::Idiv(asm::Operand::Stack(-12)),
                 asm::Instruction::Mov(
-                    asm::Operand::Reg(asm::Register::EAX),
+                    asm::Operand::Reg(asm::Register::AX),
                     asm::Operand::Stack(-16),
                 ),
                 // return
                 asm::Instruction::Mov(
                     asm::Operand::Stack(-16),
-                    asm::Operand::Reg(asm::Register::EAX),
+                    asm::Operand::Reg(asm::Register::AX),
                 ),
                 asm::Instruction::Ret,
             ],
@@ -467,7 +480,7 @@ _main:
                 // return
                 asm::Instruction::Mov(
                     asm::Operand::Stack(-16),
-                    asm::Operand::Reg(asm::Register::EAX),
+                    asm::Operand::Reg(asm::Register::AX),
                 ),
                 asm::Instruction::Ret,
             ],
@@ -545,7 +558,7 @@ _main:
                 // return
                 asm::Instruction::Mov(
                     asm::Operand::Stack(-8),
-                    asm::Operand::Reg(asm::Register::EAX),
+                    asm::Operand::Reg(asm::Register::AX),
                 ),
                 asm::Instruction::Ret,
             ],
