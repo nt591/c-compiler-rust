@@ -57,6 +57,9 @@ pub enum Token<'a> {
     GreaterThan,
     LessThanEqual,
     GreaterThanEqual,
+    // assignment and variables
+    Equal,
+    Underscore,
 }
 
 impl<'a> Token<'a> {
@@ -92,6 +95,8 @@ impl<'a> Token<'a> {
             Bang => format!("Bang"),
             AmpersandAmpersand => format!("AmpersandAmpersand"),
             PipePipe => format!("PipePipe"),
+            Equal => format!("Equal"),
+            Underscore => format!("Underscore"),
             EqualEqual => format!("EqualEqual"),
             BangEqual => format!("BangEqual"),
             LessThan => format!("LessEqual"),
@@ -142,6 +147,7 @@ impl<'a> Lexer<'a> {
                 b'+' => tokens.push(Token::Plus),
                 b'*' => tokens.push(Token::Star),
                 b'%' => tokens.push(Token::Percent),
+                b'_' => tokens.push(Token::Underscore),
                 b'&' => {
                     if idx < len - 1 && bytes[idx + 1] == b'&' {
                         tokens.push(Token::AmpersandAmpersand);
@@ -234,7 +240,7 @@ impl<'a> Lexer<'a> {
                         idx += 2;
                         continue;
                     }
-                    return Err(LexerError::UnexpectedChar(c.into()));
+                    tokens.push(Token::Equal);
                 }
                 b'!' => {
                     if idx < len - 1 && bytes[idx + 1] == b'=' {
