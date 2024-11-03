@@ -5,8 +5,8 @@ use thiserror::Error;
 pub enum ParserError {
     #[error("Unexpected token: wanted {0} but got {1}")]
     UnexpectedToken(String, String),
-    #[error("Unexpected token when parsing expression")]
-    UnexpectedExpressionToken,
+    #[error("Unexpected token when parsing expression. Got {0}")]
+    UnexpectedExpressionToken(String),
     #[error("Unexpected function name")]
     UnexpectedName,
     #[error("Got leftover tokens after parsing program")]
@@ -25,15 +25,38 @@ use crate::lexer::Token;
 #[derive(Debug, PartialEq)]
 pub enum AST<'a> {
     Program(Box<AST<'a>>),
-    Function { name: &'a str, body: Box<AST<'a>> },
+    Function { name: &'a str, body: Vec<BlockItem> },
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Statement {
     Return(Expression),
+    Expr(Expression),
+    Null,
+}
+
+// might need to evolve into an enum
+// TODO: figure out how to borrow the str without
+// two mutable borrows
+#[derive(Debug, PartialEq)]
+pub struct Declaration {
+    name: String,
+    init: Option<Expression>,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum BlockItem {
+    Stmt(Statement),
+    Decl(Declaration),
 }
 
 #[derive(Debug, PartialEq)]
 pub enum Expression {
     Constant(usize),
+    Var(String), // identifier for variable
     Unary(UnaryOp, Box<Expression>),
     Binary(BinaryOp, Box<Expression>, Box<Expression>),
+    Assignment(Box<Expression>, Box<Expression>), // LHS, RHS
 }
 
 #[derive(Debug, PartialEq)]
@@ -103,20 +126,82 @@ impl<'a> Parser<'a> {
         self.expect(Token::Void)?;
         self.expect(Token::RightParen)?;
         self.expect(Token::LeftBrace)?;
-        let body = self.parse_statement()?;
+        let mut body = vec![];
+
+        loop {
+            if self.tokens.peek() == Some(&&Token::RightBrace) {
+                break;
+            }
+            let item = self.parse_block_item()?;
+            body.push(item);
+        }
         self.expect(Token::RightBrace)?;
 
-        return Ok(AST::Function {
-            name,
-            body: Box::new(body),
-        });
+        return Ok(AST::Function { name, body });
     }
 
-    fn parse_statement(&mut self) -> Result<AST<'a>, ParserError> {
-        self.expect(Token::Return)?;
-        let val = self.parse_expression(0)?;
-        self.expect(Token::Semicolon)?;
-        Ok(AST::Return(val))
+    fn parse_block_item(&mut self) -> Result<BlockItem, ParserError> {
+        let block_item = if let Some(Token::Int) = self.tokens.peek() {
+            let decl = self.parse_declaration()?;
+            BlockItem::Decl(decl)
+        } else {
+            let stmt = self.parse_statement()?;
+            BlockItem::Stmt(stmt)
+        };
+
+        Ok(block_item)
+    }
+
+    // "int" 'IDENTIFIER' [ '=' EXPR] ';'
+    fn parse_declaration(&mut self) -> Result<Declaration, ParserError> {
+        assert_eq!(
+            Some(Token::Int),
+            self.tokens.next().copied(),
+            "Expected to see 'int' token when parsing a declaration"
+        );
+        let name = match self.tokens.next() {
+            Some(Token::Main) => "main",
+            Some(Token::Identifier(ident)) => ident,
+            _ => return Err(ParserError::UnexpectedName),
+        };
+        let init = if let Some(Token::Equal) = self.tokens.peek() {
+            self.tokens.next();
+            let init = self.parse_expression(0)?;
+            self.expect(Token::Semicolon)?;
+            Some(init)
+        } else {
+            self.expect(Token::Semicolon)?;
+            None
+        };
+
+        Ok(Declaration {
+            name: name.to_owned(),
+            init,
+        })
+    }
+
+    // if it starts with return, it's a return Statement
+    // if it's just a semi colon, it's Null
+    // else, it's an expression
+    fn parse_statement(&mut self) -> Result<Statement, ParserError> {
+        match self.tokens.peek() {
+            Some(Token::Return) => {
+                self.tokens.next();
+                let val = self.parse_expression(0)?;
+                self.expect(Token::Semicolon)?;
+                Ok(Statement::Return(val))
+            }
+            Some(Token::Semicolon) => {
+                self.tokens.next();
+                Ok(Statement::Null)
+            }
+            Some(_other) => {
+                let val = self.parse_expression(0)?;
+                self.expect(Token::Semicolon)?;
+                Ok(Statement::Expr(val))
+            }
+            None => Err(ParserError::OutOfTokens),
+        }
     }
 
     fn parse_binop(&mut self) -> Result<BinaryOp, ParserError> {
@@ -175,6 +260,17 @@ impl<'a> Parser<'a> {
                     let right = self.parse_expression(new_prec + 1)?;
                     left = Expression::Binary(operator, Box::new(left), Box::new(right));
                 }
+                Some(t @ Token::Equal) => {
+                    // consume the equality, but since we're left associative
+                    // make sure that the precendence is EQUAL to the equal prec
+                    let new_prec = Self::precedence(*t)?;
+                    if new_prec < min_precedence {
+                        break;
+                    }
+                    self.tokens.next(); // consume the equal token
+                    let right = self.parse_expression(new_prec)?;
+                    left = Expression::Assignment(Box::new(left), Box::new(right));
+                }
                 _ => break,
             }
         }
@@ -203,7 +299,9 @@ impl<'a> Parser<'a> {
                 self.expect(Token::RightParen)?;
                 Ok(inner_expr)
             }
-            _ => Err(ParserError::UnexpectedExpressionToken),
+            Some(Token::Identifier(ident)) => Ok(Expression::Var(ident.to_string())),
+            Some(t) => Err(ParserError::UnexpectedExpressionToken(t.into_string())),
+            None => Err(ParserError::OutOfTokens),
         }
     }
 
@@ -237,6 +335,7 @@ impl<'a> Parser<'a> {
             Token::Pipe => Ok(30),
             Token::AmpersandAmpersand => Ok(25),
             Token::PipePipe => Ok(24),
+            Token::Equal => Ok(2),
             t => Err(ParserError::NoPrecedenceForToken(t.into_string())),
         }
     }
@@ -271,7 +370,7 @@ mod tests {
         let ast = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: Box::new(AST::Return(Expression::Constant(100))),
+            body: vec![(BlockItem::Stmt(Statement::Return(Expression::Constant(100))))],
         }));
         assert_eq!(expected, ast);
     }
@@ -325,10 +424,10 @@ mod tests {
         let ast = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: Box::new(AST::Return(Expression::Unary(
+            body: vec![BlockItem::Stmt(Statement::Return(Expression::Unary(
                 UnaryOp::Complement,
                 Box::new(Expression::Constant(100)),
-            ))),
+            )))],
         }));
         assert_eq!(expected, ast);
     }
@@ -354,10 +453,10 @@ mod tests {
         let ast = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: Box::new(AST::Return(Expression::Unary(
+            body: vec![BlockItem::Stmt(Statement::Return(Expression::Unary(
                 UnaryOp::Negate,
                 Box::new(Expression::Constant(100)),
-            ))),
+            )))],
         }));
         assert_eq!(expected, ast);
     }
@@ -385,10 +484,10 @@ mod tests {
         let ast = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: Box::new(AST::Return(Expression::Unary(
+            body: vec![BlockItem::Stmt(Statement::Return(Expression::Unary(
                 UnaryOp::Negate,
                 Box::new(Expression::Constant(100)),
-            ))),
+            )))],
         }));
         assert_eq!(expected, ast);
     }
@@ -478,7 +577,7 @@ mod tests {
         let actual = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: Box::new(AST::Return(Expression::Binary(
+            body: vec![BlockItem::Stmt(Statement::Return(Expression::Binary(
                 BinaryOp::Subtract,
                 Box::new(Expression::Binary(
                     BinaryOp::Multiply,
@@ -494,7 +593,7 @@ mod tests {
                         Box::new(Expression::Constant(5)),
                     )),
                 )),
-            ))),
+            )))],
         }));
 
         assert_eq!(expected, actual);
@@ -537,7 +636,7 @@ mod tests {
         let actual = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: Box::new(AST::Return(Expression::Binary(
+            body: vec![BlockItem::Stmt(Statement::Return(Expression::Binary(
                 BinaryOp::Subtract,
                 Box::new(Expression::Binary(
                     BinaryOp::Divide,
@@ -557,7 +656,7 @@ mod tests {
                         Box::new(Expression::Constant(1)),
                     )),
                 )),
-            ))),
+            )))],
         }));
 
         assert_eq!(expected, actual);
@@ -596,7 +695,7 @@ mod tests {
         let actual = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: Box::new(AST::Return(Expression::Binary(
+            body: vec![BlockItem::Stmt(Statement::Return(Expression::Binary(
                 BinaryOp::BitwiseOr,
                 Box::new(Expression::Binary(
                     BinaryOp::Multiply,
@@ -612,7 +711,7 @@ mod tests {
                     )),
                     Box::new(Expression::Constant(6)),
                 )),
-            ))),
+            )))],
         }));
 
         assert_eq!(expected, actual);
@@ -650,7 +749,7 @@ mod tests {
         // leftshift the result by 2
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: Box::new(AST::Return(Expression::Binary(
+            body: vec![BlockItem::Stmt(Statement::Return(Expression::Binary(
                 BinaryOp::ShiftLeft,
                 Box::new(Expression::Binary(
                     BinaryOp::Multiply,
@@ -658,7 +757,7 @@ mod tests {
                     Box::new(Expression::Constant(4)),
                 )),
                 Box::new(Expression::Constant(2)),
-            ))),
+            )))],
         }));
 
         assert_eq!(expected, actual);
@@ -695,7 +794,7 @@ mod tests {
         let actual = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: Box::new(AST::Return(Expression::Binary(
+            body: vec![BlockItem::Stmt(Statement::Return(Expression::Binary(
                 BinaryOp::ShiftLeft,
                 Box::new(Expression::Constant(5)),
                 Box::new(Expression::Binary(
@@ -703,7 +802,7 @@ mod tests {
                     Box::new(Expression::Constant(1)),
                     Box::new(Expression::Constant(2)),
                 )),
-            ))),
+            )))],
         }));
 
         assert_eq!(expected, actual);
@@ -744,7 +843,7 @@ mod tests {
         let actual = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: Box::new(AST::Return(Expression::Binary(
+            body: vec![BlockItem::Stmt(Statement::Return(Expression::Binary(
                 BinaryOp::NotEqual,
                 Box::new(Expression::Binary(
                     BinaryOp::LessOrEqual,
@@ -760,9 +859,147 @@ mod tests {
                     Box::new(Expression::Constant(4)),
                     Box::new(Expression::Constant(5)),
                 )),
-            ))),
+            )))],
         }));
 
         assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn basic_assignment() {
+        /*
+         * int main(void) {
+         *   int a = 1;
+         *   return a;
+         * }
+         */
+        let tokens = vec![
+            Token::Int,
+            Token::Main,
+            Token::LeftParen,
+            Token::Void,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Int,
+            Token::Identifier("a"),
+            Token::Equal,
+            Token::Constant(1),
+            Token::Semicolon,
+            Token::Return,
+            Token::Identifier("a"),
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_ok());
+        let actual = ast.unwrap();
+        let expected = AST::Program(Box::new(AST::Function {
+            name: "main",
+            body: vec![
+                BlockItem::Decl(Declaration {
+                    name: "a".into(),
+                    init: Some(Expression::Constant(1)),
+                }),
+                BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
+            ],
+        }));
+
+        assert_eq!(expected, actual)
+    }
+
+    #[test]
+    fn left_assoc_assignment() {
+        /*
+         * int main(void) {
+         *   int a;
+         *   return a = b = c;
+         * }
+         */
+        let tokens = vec![
+            Token::Int,
+            Token::Main,
+            Token::LeftParen,
+            Token::Void,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Int,
+            Token::Identifier("a"),
+            Token::Semicolon,
+            Token::Return,
+            Token::Identifier("a"),
+            Token::Equal,
+            Token::Identifier("b"),
+            Token::Equal,
+            Token::Identifier("c"),
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_ok());
+        let actual = ast.unwrap();
+        let expected = AST::Program(Box::new(AST::Function {
+            name: "main",
+            body: vec![
+                BlockItem::Decl(Declaration {
+                    name: "a".into(),
+                    init: None,
+                }),
+                BlockItem::Stmt(Statement::Return(Expression::Assignment(
+                    Box::new(Expression::Var("a".into())),
+                    Box::new(Expression::Assignment(
+                        Box::new(Expression::Var("b".into())),
+                        Box::new(Expression::Var("c".into())),
+                    )),
+                ))),
+            ],
+        }));
+
+        assert_eq!(expected, actual)
+    }
+
+    #[test]
+    fn expression_statement() {
+        /*
+         * int main(void) {
+         *   2 + 2;
+         *   return 0;
+         * }
+         */
+        let tokens = vec![
+            Token::Int,
+            Token::Main,
+            Token::LeftParen,
+            Token::Void,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Constant(2),
+            Token::Plus,
+            Token::Constant(2),
+            Token::Semicolon,
+            Token::Return,
+            Token::Constant(0),
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        eprintln!("{ast:?}");
+        assert!(ast.is_ok());
+        let actual = ast.unwrap();
+        let expected = AST::Program(Box::new(AST::Function {
+            name: "main",
+            body: vec![
+                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                    BinaryOp::Add,
+                    Box::new(Expression::Constant(2)),
+                    Box::new(Expression::Constant(2)),
+                ))),
+                BlockItem::Stmt(Statement::Return(Expression::Constant(0))),
+            ],
+        }));
+
+        assert_eq!(expected, actual)
     }
 }

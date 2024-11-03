@@ -328,7 +328,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn is_valid_identifier_character(c: u8) -> bool {
-        matches!(c, b'a'..=b'z' | b'A'..=b'Z'| b'0'..=b'9')
+        matches!(c, b'a'..=b'z' | b'A'..=b'Z'| b'0'..=b'9' | b'_')
     }
 
     fn parse_keyword(s: &str) -> Option<Token> {
@@ -554,6 +554,17 @@ bloop blorp */
         assert_eq!(Some(&Token::Constant(0)), tokens.next());
         assert_eq!(Some(&Token::Semicolon), tokens.next());
         assert_eq!(Some(&Token::RightBrace), tokens.next());
+        assert_eq!(None, tokens.next());
+    }
+
+    #[test]
+    fn test_identifier_parsing() {
+        let source = "return_val_123";
+        let lexer = Lexer::lex(source);
+        assert!(lexer.is_ok());
+        let lexer = lexer.unwrap();
+        let mut tokens = lexer.tokens();
+        assert_eq!(Some(&Token::Identifier("return_val_123")), tokens.next());
         assert_eq!(None, tokens.next());
     }
 }

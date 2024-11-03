@@ -204,11 +204,11 @@ impl<'a> Emitter<'a> {
     fn emit_cond_jmp<W: Write>(cond: asm::CondCode, output: &mut W) -> std::io::Result<()> {
         use asm::CondCode::*;
         match cond {
-            E =>  write!(output, "je          ")?,
+            E => write!(output, "je          ")?,
             NE => write!(output, "jne         ")?,
-            G =>  write!(output, "jg          ")?,
+            G => write!(output, "jg          ")?,
             GE => write!(output, "jge         ")?,
-            L =>  write!(output, "jl          ")?,
+            L => write!(output, "jl          ")?,
             LE => write!(output, "jle         ")?,
         }
         Ok(())
@@ -217,11 +217,11 @@ impl<'a> Emitter<'a> {
     fn emit_cond_set<W: Write>(cond: asm::CondCode, output: &mut W) -> std::io::Result<()> {
         use asm::CondCode::*;
         match cond {
-            E =>  write!(output, "sete       ")?,
+            E => write!(output, "sete       ")?,
             NE => write!(output, "setne      ")?,
-            G =>  write!(output, "setg       ")?,
+            G => write!(output, "setg       ")?,
             GE => write!(output, "setge      ")?,
-            L =>  write!(output, "setl       ")?,
+            L => write!(output, "setl       ")?,
             LE => write!(output, "setle      ")?,
         }
         Ok(())
