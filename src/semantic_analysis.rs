@@ -137,6 +137,7 @@ fn resolve_expr(
     Ok(())
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::parser::BinaryOp;
