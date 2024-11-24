@@ -14,8 +14,8 @@ pub enum TackyError {
     MissingProgram,
     #[error("Expected function")]
     MissingFunction,
-    #[error("Invalid Instruction")]
-    InvalidInstruction,
+    #[error("Found non-variable on lefthand side of assignment")]
+    InvalidLhsOfAssignment,
 }
 
 // Lifetime of source test, since we need
@@ -176,7 +176,19 @@ impl<'a> Tacky<'a> {
                     self.parse_eager_binary_expression(op, left, right, instructions)
                 }
             }
-            Expression::Var(_) | Expression::Assignment(_, _) => todo!(),
+            Expression::Var(ident) => Ok(Val::Var(ident.clone())),
+            Expression::Assignment(lhs, rhs) => {
+                let Expression::Var(ref ident) = **lhs else {
+                    return Err(TackyError::InvalidLhsOfAssignment);
+                };
+                // emit instructions for rhs, then copy into lhs
+                let result = self.parse_expression(rhs, instructions)?;
+                instructions.push(Instruction::Copy {
+                    src: result,
+                    dst: Val::Var(ident.clone()),
+                });
+                Ok(Val::Var(ident.clone()))
+            }
         }
     }
 
@@ -389,17 +401,43 @@ impl<'a> Tacky<'a> {
         &mut self,
         body: &[parser::BlockItem],
     ) -> Result<Vec<Instruction>, TackyError> {
-        // TODO: FIX
-        let instruction = body.first().unwrap();
-        match instruction {
-            parser::BlockItem::Stmt(parser::Statement::Return(body)) => {
-                let mut instructions = vec![];
-                let val = self.parse_expression(body, &mut instructions)?;
-                instructions.push(Instruction::Ret(val));
-                Ok(instructions)
+        use parser::BlockItem;
+        use parser::Declaration;
+        use parser::Statement;
+        let mut instructions = vec![];
+        for body_item in body {
+            match body_item {
+                BlockItem::Stmt(Statement::Return(body)) => {
+                    let val = self.parse_expression(body, &mut instructions)?;
+                    instructions.push(Instruction::Ret(val));
+                }
+                BlockItem::Stmt(Statement::Null) => (),
+                BlockItem::Stmt(Statement::Expr(expr)) => {
+                    self.parse_expression(expr, &mut instructions)?;
+                }
+                BlockItem::Decl(Declaration {
+                    name: _,
+                    init: None,
+                }) => (),
+                BlockItem::Decl(Declaration {
+                    name: ident,
+                    init: Some(init),
+                }) => {
+                    // emit instructions for rhs, then copy into lhs
+                    let result = self.parse_expression(init, &mut instructions)?;
+                    instructions.push(Instruction::Copy {
+                        src: result,
+                        dst: Val::Var(ident.clone()),
+                    });
+                }
             }
-            _ => Err(TackyError::InvalidInstruction),
         }
+
+        // temporary hack: always add a Return(Constant(0)) Instruction
+        // to handle functions that don't end with a return. If we already
+        // have a return, it doesn't run.
+        instructions.push(Instruction::Ret(Val::Constant(0)));
+        Ok(instructions)
     }
 
     fn make_temporary(&mut self) -> String {
@@ -422,6 +460,7 @@ mod tests {
     use super::*;
     use crate::parser::BinaryOp as ParserBinaryOp;
     use crate::parser::BlockItem;
+    use crate::parser::Declaration;
     use crate::parser::Statement;
     use crate::parser::UnaryOp as ParserUnaryOp;
     use crate::parser::AST as ParserAST;
@@ -437,7 +476,10 @@ mod tests {
 
         let expected = AST::Program(Function {
             name: "main",
-            instructions: vec![Instruction::Ret(Val::Constant(100))],
+            instructions: vec![
+                Instruction::Ret(Val::Constant(100)),
+                Instruction::Ret(Val::Constant(0)),
+            ],
         });
 
         let tacky = Tacky::new(ast);
@@ -466,6 +508,7 @@ mod tests {
                     dst: Val::Var("tmp.0".into()),
                 },
                 Instruction::Ret(Val::Var("tmp.0".into())),
+                Instruction::Ret(Val::Constant(0)),
             ],
         });
 
@@ -511,6 +554,7 @@ mod tests {
                     dst: Val::Var("tmp.2".into()),
                 },
                 Instruction::Ret(Val::Var("tmp.2".into())),
+                Instruction::Ret(Val::Constant(0)),
             ],
         });
 
@@ -571,6 +615,7 @@ mod tests {
                     dst: Val::Var("tmp.3".into()),
                 },
                 Instruction::Ret(Val::Var("tmp.3".into())),
+                Instruction::Ret(Val::Constant(0)),
             ],
         });
 
@@ -642,6 +687,7 @@ mod tests {
                     dst: Val::Var("tmp.4".into()),
                 },
                 Instruction::Ret(Val::Var("tmp.4".into())),
+                Instruction::Ret(Val::Constant(0)),
             ],
         });
 
@@ -703,6 +749,7 @@ mod tests {
                     dst: Val::Var("tmp.3".into()),
                 },
                 Instruction::Ret(Val::Var("tmp.3".into())),
+                Instruction::Ret(Val::Constant(0)),
             ],
         });
 
@@ -743,6 +790,7 @@ mod tests {
                     dst: Val::Var("tmp.1".into()),
                 },
                 Instruction::Ret(Val::Var("tmp.1".into())),
+                Instruction::Ret(Val::Constant(0)),
             ],
         });
 
@@ -783,6 +831,7 @@ mod tests {
                     dst: Val::Var("tmp.1".into()),
                 },
                 Instruction::Ret(Val::Var("tmp.1".into())),
+                Instruction::Ret(Val::Constant(0)),
             ],
         });
 
@@ -845,6 +894,7 @@ mod tests {
                 },
                 Instruction::Label("and_expr_end.1".into()),
                 Instruction::Ret(Val::Var("tmp.3".into())),
+                Instruction::Ret(Val::Constant(0)),
             ],
         });
 
@@ -907,6 +957,65 @@ mod tests {
                 },
                 Instruction::Label("or_expr_end.1".into()),
                 Instruction::Ret(Val::Var("tmp.3".into())),
+                Instruction::Ret(Val::Constant(0)),
+            ],
+        });
+
+        let tacky = Tacky::new(ast);
+        let assembly = tacky.into_ast();
+        assert!(assembly.is_ok());
+        let assembly = assembly.unwrap();
+        assert_eq!(assembly, expected);
+    }
+
+    #[test]
+    fn basic_declarations() {
+        let ast = ParserAST::Program(Box::new(ParserAST::Function {
+            name: "main",
+            body: vec![
+                BlockItem::Decl(Declaration {
+                    name: "a.0.decl".into(),
+                    init: Some(Expression::Constant(1)),
+                }),
+                BlockItem::Decl(Declaration {
+                    name: "b.1.decl".into(),
+                    init: Some(Expression::Var("a.0.decl".into())),
+                }),
+                BlockItem::Decl(Declaration {
+                    name: "c.2.decl".into(),
+                    init: Some(Expression::Binary(
+                        ParserBinaryOp::Add,
+                        Box::new(Expression::Var("a.0.decl".into())),
+                        Box::new(Expression::Var("b.1.decl".into())),
+                    )),
+                }),
+                BlockItem::Stmt(Statement::Return(Expression::Var("c.2.decl".into()))),
+            ],
+        }));
+        let expected = AST::Program(Function {
+            name: "main",
+            instructions: vec![
+                Instruction::Copy {
+                    src: Val::Constant(1),
+                    dst: Val::Var("a.0.decl".into()),
+                },
+            Instruction::Copy {
+                    src: Val::Var("a.0.decl".into()),
+                    dst: Val::Var("b.1.decl".into()),
+                },
+
+                Instruction::Binary {
+                    op: BinaryOp::Add,
+                    src1: Val::Var("a.0.decl".into()),
+                    src2: Val::Var("b.1.decl".into()),
+                    dst: Val::Var("tmp.0".into()),
+                },
+                Instruction::Copy {
+                    src: Val::Var("tmp.0".into()),
+                    dst: Val::Var("c.2.decl".into()),
+                },
+                Instruction::Ret(Val::Var("c.2.decl".into())),
+                Instruction::Ret(Val::Constant(0)),
             ],
         });
 
