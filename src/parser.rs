@@ -40,8 +40,8 @@ pub enum Statement {
 // two mutable borrows
 #[derive(Debug, PartialEq)]
 pub struct Declaration {
-    name: String,
-    init: Option<Expression>,
+    pub name: String,
+    pub init: Option<Expression>,
 }
 
 #[derive(Debug, PartialEq)]

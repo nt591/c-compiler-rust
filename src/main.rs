@@ -9,6 +9,7 @@ mod asm;
 mod emitter;
 mod lexer;
 mod parser;
+mod semantic_analysis;
 mod tacky;
 use asm::Asm;
 use emitter::Emitter;
