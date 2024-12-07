@@ -999,11 +999,10 @@ mod tests {
                     src: Val::Constant(1),
                     dst: Val::Var("a.0.decl".into()),
                 },
-            Instruction::Copy {
+                Instruction::Copy {
                     src: Val::Var("a.0.decl".into()),
                     dst: Val::Var("b.1.decl".into()),
                 },
-
                 Instruction::Binary {
                     op: BinaryOp::Add,
                     src1: Val::Var("a.0.decl".into()),

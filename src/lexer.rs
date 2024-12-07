@@ -60,6 +60,12 @@ pub enum Token<'a> {
     // assignment and variables
     Equal,
     Underscore,
+    // chapter 5 compound assignment
+    PlusEqual,
+    HyphenEqual,
+    StarEqual,
+    SlashEqual,
+    PercentEqual,
 }
 
 impl<'a> Token<'a> {
@@ -103,6 +109,11 @@ impl<'a> Token<'a> {
             GreaterThan => format!("GreaterThan"),
             LessThanEqual => format!("LessThanEqual"),
             GreaterThanEqual => format!("GreaterThanEqual"),
+            PlusEqual => format!("PlusEqual"),
+            HyphenEqual => format!("HyphenEqual"),
+            StarEqual => format!("StarEqual"),
+            SlashEqual => format!("SlashEqual"),
+            PercentEqual => format!("PercentEqual"),
         }
     }
 }
@@ -144,17 +155,38 @@ impl<'a> Lexer<'a> {
                 b')' => tokens.push(Token::RightParen),
                 b';' => tokens.push(Token::Semicolon),
                 b'~' => tokens.push(Token::Tilde),
-                b'+' => tokens.push(Token::Plus),
-                b'*' => tokens.push(Token::Star),
-                b'%' => tokens.push(Token::Percent),
+                b'+' => {
+                    if idx < len - 1 && bytes[idx + 1] == b'=' {
+                        tokens.push(Token::PlusEqual);
+                        idx += 1;
+                    } else {
+                        tokens.push(Token::Plus);
+                    }
+                }
+                b'*' => {
+                    if idx < len - 1 && bytes[idx + 1] == b'=' {
+                        tokens.push(Token::StarEqual);
+                        idx += 1;
+                    } else {
+                    tokens.push(Token::Star);
+                    }
+                }
+                b'%' => {
+                    if idx < len - 1 && bytes[idx + 1] == b'=' {
+                        tokens.push(Token::PercentEqual);
+                        idx += 1;
+                    } else {
+                    tokens.push(Token::Percent);
+                    }
+                }
                 b'_' => tokens.push(Token::Underscore),
                 b'&' => {
                     if idx < len - 1 && bytes[idx + 1] == b'&' {
                         tokens.push(Token::AmpersandAmpersand);
-                        idx += 2;
-                        continue;
-                    }
+                        idx += 1;
+                    } else {
                     tokens.push(Token::Ampersand);
+                    }
                 }
                 b'|' => {
                     if idx < len - 1 && bytes[idx + 1] == b'|' {
@@ -170,12 +202,19 @@ impl<'a> Lexer<'a> {
                     if idx < len - 1 && bytes[idx + 1] == b'-' {
                         idx += 1;
                         tokens.push(Token::DoubleHyphen);
+                    } else if idx < len - 1 && bytes[idx + 1] == b'=' {
+                        idx += 1;
+                        tokens.push(Token::HyphenEqual);
                     } else {
                         tokens.push(Token::Hyphen);
                     }
                 }
                 b'/' => {
-                    if idx < len - 1 && bytes[idx + 1] == b'/' {
+                    if idx < len - 1 && bytes[idx + 1] == b'=' {
+                        idx += 2;
+                        tokens.push(Token::SlashEqual);
+                        continue;
+                    } else if idx < len - 1 && bytes[idx + 1] == b'/' {
                         // single line comment handler
                         // Scoop up until we see a newline or end of index, stuff into token
                         // Start after the slashes
@@ -484,7 +523,7 @@ bloop blorp */
     }
     #[test]
     fn test_binary_operators() {
-        let source = "+*/%";
+        let source = "+*/% += -= /= *= %=";
         let lexer = Lexer::lex(source);
         assert!(lexer.is_ok());
         let lexer = lexer.unwrap();
@@ -493,6 +532,11 @@ bloop blorp */
         assert_eq!(Some(&Token::Star), tokens.next());
         assert_eq!(Some(&Token::Slash), tokens.next());
         assert_eq!(Some(&Token::Percent), tokens.next());
+        assert_eq!(Some(&Token::PlusEqual), tokens.next());
+        assert_eq!(Some(&Token::HyphenEqual), tokens.next());
+        assert_eq!(Some(&Token::SlashEqual), tokens.next());
+        assert_eq!(Some(&Token::StarEqual), tokens.next());
+        assert_eq!(Some(&Token::PercentEqual), tokens.next());
         assert_eq!(None, tokens.next());
     }
 
