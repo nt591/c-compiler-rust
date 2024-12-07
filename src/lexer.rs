@@ -168,7 +168,7 @@ impl<'a> Lexer<'a> {
                         tokens.push(Token::StarEqual);
                         idx += 1;
                     } else {
-                    tokens.push(Token::Star);
+                        tokens.push(Token::Star);
                     }
                 }
                 b'%' => {
@@ -176,7 +176,7 @@ impl<'a> Lexer<'a> {
                         tokens.push(Token::PercentEqual);
                         idx += 1;
                     } else {
-                    tokens.push(Token::Percent);
+                        tokens.push(Token::Percent);
                     }
                 }
                 b'_' => tokens.push(Token::Underscore),
@@ -185,7 +185,7 @@ impl<'a> Lexer<'a> {
                         tokens.push(Token::AmpersandAmpersand);
                         idx += 1;
                     } else {
-                    tokens.push(Token::Ampersand);
+                        tokens.push(Token::Ampersand);
                     }
                 }
                 b'|' => {

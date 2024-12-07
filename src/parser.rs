@@ -86,6 +86,13 @@ pub enum BinaryOp {
     GreaterOrEqual,
     BinAnd,
     BinOr,
+    // temporary operators to
+    // construct new nodes
+    AddAssign,
+    MinusAssign,
+    MultiplyAssign,
+    DivideAssign,
+    RemainderAssign,
 }
 
 pub struct Parser<'a> {
@@ -224,6 +231,11 @@ impl<'a> Parser<'a> {
             Some(Token::GreaterThanEqual) => Ok(BinaryOp::GreaterOrEqual),
             Some(Token::AmpersandAmpersand) => Ok(BinaryOp::BinAnd),
             Some(Token::PipePipe) => Ok(BinaryOp::BinOr),
+            Some(Token::PlusEqual) => Ok(BinaryOp::AddAssign),
+            Some(Token::HyphenEqual) => Ok(BinaryOp::MinusAssign),
+            Some(Token::StarEqual) => Ok(BinaryOp::MultiplyAssign),
+            Some(Token::SlashEqual) => Ok(BinaryOp::DivideAssign),
+            Some(Token::PercentEqual) => Ok(BinaryOp::RemainderAssign),
             Some(t) => Err(ParserError::MissingBinop(t.into_string())),
             None => Err(ParserError::OutOfTokens),
         }
@@ -258,6 +270,19 @@ impl<'a> Parser<'a> {
                     }
                     let operator = self.parse_binop()?;
                     let right = self.parse_expression(new_prec + 1)?;
+                    left = Expression::Binary(operator, Box::new(left), Box::new(right));
+                }
+                Some(t @ Token::PlusEqual)
+                | Some(t @ Token::HyphenEqual)
+                | Some(t @ Token::StarEqual)
+                | Some(t @ Token::SlashEqual)
+                | Some(t @ Token::PercentEqual) => {
+                    let new_prec = Self::precedence(*t)?;
+                    if new_prec < min_precedence {
+                        break;
+                    }
+                    let operator = self.parse_binop()?;
+                    let right = self.parse_expression(new_prec)?;
                     left = Expression::Binary(operator, Box::new(left), Box::new(right));
                 }
                 Some(t @ Token::Equal) => {
@@ -335,7 +360,12 @@ impl<'a> Parser<'a> {
             Token::Pipe => Ok(30),
             Token::AmpersandAmpersand => Ok(25),
             Token::PipePipe => Ok(24),
-            Token::Equal => Ok(2),
+            Token::Equal
+            | Token::PlusEqual
+            | Token::HyphenEqual
+            | Token::StarEqual
+            | Token::SlashEqual
+            | Token::PercentEqual => Ok(2),
             t => Err(ParserError::NoPrecedenceForToken(t.into_string())),
         }
     }
@@ -985,7 +1015,6 @@ mod tests {
         ];
         let parse = Parser::new(&tokens);
         let ast = parse.into_ast();
-        eprintln!("{ast:?}");
         assert!(ast.is_ok());
         let actual = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
@@ -997,6 +1026,239 @@ mod tests {
                     Box::new(Expression::Constant(2)),
                 ))),
                 BlockItem::Stmt(Statement::Return(Expression::Constant(0))),
+            ],
+        }));
+
+        assert_eq!(expected, actual)
+    }
+
+    #[test]
+    fn compound_assignment() {
+        /*
+         * int main(void) {
+         *   int a = 1;
+         *   a += 2;
+         *   a -= 2;
+         *   a *= 2;
+         *   a /= 2;
+         *   a %= 2;
+         *   return a;
+         * }
+         */
+        let tokens = vec![
+            Token::Int,
+            Token::Main,
+            Token::LeftParen,
+            Token::Void,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Int,
+            Token::Identifier("a"),
+            Token::Equal,
+            Token::Constant(1),
+            Token::Semicolon,
+            Token::Identifier("a"),
+            Token::PlusEqual,
+            Token::Constant(2),
+            Token::Semicolon,
+            Token::Identifier("a"),
+            Token::HyphenEqual,
+            Token::Constant(2),
+            Token::Semicolon,
+            Token::Identifier("a"),
+            Token::StarEqual,
+            Token::Constant(2),
+            Token::Semicolon,
+            Token::Identifier("a"),
+            Token::SlashEqual,
+            Token::Constant(2),
+            Token::Semicolon,
+            Token::Identifier("a"),
+            Token::PercentEqual,
+            Token::Constant(2),
+            Token::Semicolon,
+            Token::Return,
+            Token::Identifier("a"),
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_ok());
+        let actual = ast.unwrap();
+        let expected = AST::Program(Box::new(AST::Function {
+            name: "main",
+            body: vec![
+                BlockItem::Decl(Declaration {
+                    name: "a".into(),
+                    init: Some(Expression::Constant(1)),
+                }),
+                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                    BinaryOp::AddAssign,
+                    Box::new(Expression::Var("a".into())),
+                    Box::new(Expression::Constant(2)),
+                ))),
+                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                    BinaryOp::MinusAssign,
+                    Box::new(Expression::Var("a".into())),
+                    Box::new(Expression::Constant(2)),
+                ))),
+                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                    BinaryOp::MultiplyAssign,
+                    Box::new(Expression::Var("a".into())),
+                    Box::new(Expression::Constant(2)),
+                ))),
+                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                    BinaryOp::DivideAssign,
+                    Box::new(Expression::Var("a".into())),
+                    Box::new(Expression::Constant(2)),
+                ))),
+                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                    BinaryOp::RemainderAssign,
+                    Box::new(Expression::Var("a".into())),
+                    Box::new(Expression::Constant(2)),
+                ))),
+                BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
+            ],
+        }));
+
+        assert_eq!(expected, actual)
+    }
+
+    #[test]
+    fn small_compound_assignment() {
+        /*
+         * int main(void) {
+         *   int a = 1;
+         *   int b = 0;
+         *   int c = 2;
+         *   a += b -= c = 5;
+         *   return a;
+         * }
+         */
+        let tokens = vec![
+            Token::Int,
+            Token::Main,
+            Token::LeftParen,
+            Token::Void,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Int,
+            Token::Identifier("a"),
+            Token::Equal,
+            Token::Constant(1),
+            Token::Semicolon,
+            Token::Int,
+            Token::Identifier("b"),
+            Token::Equal,
+            Token::Constant(0),
+            Token::Semicolon,
+            Token::Int,
+            Token::Identifier("c"),
+            Token::Equal,
+            Token::Constant(2),
+            Token::Semicolon,
+            Token::Identifier("a"),
+            Token::PlusEqual,
+            Token::Identifier("b"),
+            Token::HyphenEqual,
+            Token::Identifier("c"),
+            Token::Equal,
+            Token::Constant(5),
+            Token::Semicolon,
+            Token::Return,
+            Token::Identifier("a"),
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_ok());
+        let actual = ast.unwrap();
+        let expected = AST::Program(Box::new(AST::Function {
+            name: "main",
+            body: vec![
+                BlockItem::Decl(Declaration {
+                    name: "a".into(),
+                    init: Some(Expression::Constant(1)),
+                }),
+                BlockItem::Decl(Declaration {
+                    name: "b".into(),
+                    init: Some(Expression::Constant(0)),
+                }),
+                BlockItem::Decl(Declaration {
+                    name: "c".into(),
+                    init: Some(Expression::Constant(2)),
+                }),
+                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                    BinaryOp::AddAssign,
+                    Box::new(Expression::Var("a".into())),
+                    Box::new(Expression::Binary(
+                        BinaryOp::MinusAssign,
+                        Box::new(Expression::Var("b".into())),
+                        Box::new(Expression::Assignment(
+                            Box::new(Expression::Var("c".into())),
+                            Box::new(Expression::Constant(5)),
+                        )),
+                    )),
+                ))),
+                BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
+            ],
+        }));
+
+        assert_eq!(expected, actual)
+    }
+
+    #[test]
+    fn another_small_compound_assignment() {
+        /*
+         * int main(void) {
+         *   int a = 10;
+         *   (a += 1) -= 2;
+         * }
+         */
+        let tokens = vec![
+            Token::Int,
+            Token::Main,
+            Token::LeftParen,
+            Token::Void,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Int,
+            Token::Identifier("a"),
+            Token::Equal,
+            Token::Constant(10),
+            Token::Semicolon,
+            Token::LeftParen,
+            Token::Identifier("a"),
+            Token::PlusEqual,
+            Token::Constant(1),
+            Token::RightParen,
+            Token::HyphenEqual,
+            Token::Constant(2),
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_ok());
+        let actual = ast.unwrap();
+        let expected = AST::Program(Box::new(AST::Function {
+            name: "main",
+            body: vec![
+                BlockItem::Decl(Declaration {
+                    name: "a".into(),
+                    init: Some(Expression::Constant(10)),
+                }),
+                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                    BinaryOp::MinusAssign,
+                    Box::new(Expression::Binary(
+                        BinaryOp::AddAssign,
+                        Box::new(Expression::Var("a".into())),
+                        Box::new(Expression::Constant(1)),
+                    )),
+                    Box::new(Expression::Constant(2)),
+                ))),
             ],
         }));
 

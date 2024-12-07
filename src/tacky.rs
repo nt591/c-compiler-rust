@@ -168,13 +168,20 @@ impl<'a> Tacky<'a> {
                 });
                 Ok(dst)
             }
+            Expression::Binary(op @ ParserBinaryOp::BinAnd, left, right)
+            | Expression::Binary(op @ ParserBinaryOp::BinOr, left, right) => {
+                self.parse_short_circuit_expression(op, left, right, instructions)
+            }
+            Expression::Binary(op @ ParserBinaryOp::AddAssign, left, right)
+            | Expression::Binary(op @ ParserBinaryOp::MinusAssign, left, right)
+            | Expression::Binary(op @ ParserBinaryOp::MultiplyAssign, left, right)
+            | Expression::Binary(op @ ParserBinaryOp::DivideAssign, left, right)
+            | Expression::Binary(op @ ParserBinaryOp::RemainderAssign, left, right) => {
+                self.parse_eager_compound_binary_expression(op, left, right, instructions)
+            }
+
             Expression::Binary(op, left, right) => {
-                use ParserBinaryOp as PBO;
-                if matches!(op, PBO::BinAnd | PBO::BinOr) {
-                    self.parse_short_circuit_expression(op, left, right, instructions)
-                } else {
-                    self.parse_eager_binary_expression(op, left, right, instructions)
-                }
+                self.parse_eager_binary_expression(op, left, right, instructions)
             }
             Expression::Var(ident) => Ok(Val::Var(ident.clone())),
             Expression::Assignment(lhs, rhs) => {
@@ -355,6 +362,50 @@ impl<'a> Tacky<'a> {
         Ok(result)
     }
 
+    fn parse_eager_compound_binary_expression(
+        &mut self,
+        op: &ParserBinaryOp,
+        left: &Expression,
+        right: &Expression,
+        instructions: &mut Vec<Instruction>,
+    ) -> Result<Val, TackyError> {
+        use ParserBinaryOp as PBO;
+        let src1 = self.parse_expression(left, instructions)?;
+        // if src1 is a temporary, it's an invalid lvalue.
+        // We should only allow variables. To do so, we check if we've emitted
+        // the identifier as a temporary.
+        let Val::Var(ref ident) = src1 else {
+            return Err(TackyError::InvalidLhsOfAssignment);
+        };
+        if self.created_label(ident) {
+            return Err(TackyError::InvalidLhsOfAssignment);
+        };
+
+        let src2 = self.parse_expression(right, instructions)?;
+        let dst_name = self.make_temporary();
+        let dst = Val::Var(dst_name);
+        let binop = match op {
+            PBO::AddAssign => BinaryOp::Add,
+            PBO::MinusAssign => BinaryOp::Subtract,
+            PBO::MultiplyAssign => BinaryOp::Multiply,
+            PBO::DivideAssign => BinaryOp::Divide,
+            PBO::RemainderAssign => BinaryOp::Remainder,
+            _ => unreachable!("Unexpected compound binary operator"),
+        };
+
+        instructions.push(Instruction::Binary {
+            op: binop,
+            src1: src1.clone(),
+            src2,
+            dst: dst.clone(),
+        });
+        instructions.push(Instruction::Copy {
+            src: dst.clone(),
+            dst: src1.clone(),
+        });
+        Ok(dst)
+    }
+
     fn parse_eager_binary_expression(
         &mut self,
         op: &ParserBinaryOp,
@@ -386,6 +437,15 @@ impl<'a> Tacky<'a> {
             PBO::NotEqual => BinaryOp::NotEqual,
             PBO::BinAnd | PBO::BinOr => {
                 unreachable!("Cannot eagerly parse And or Or binary expressions")
+            }
+            PBO::AddAssign
+            | PBO::MinusAssign
+            | PBO::MultiplyAssign
+            | PBO::DivideAssign
+            | PBO::RemainderAssign => {
+                unreachable!(
+                    "We handle compound assignment in parse_eager_compound_binary_expression"
+                )
             }
         };
         instructions.push(Instruction::Binary {
@@ -445,6 +505,11 @@ impl<'a> Tacky<'a> {
         let s = format!("tmp.{c}");
         self.dst_counter = c + 1;
         s
+    }
+
+    fn created_label(&self, label: &str) -> bool {
+        // if the first four characters are tmp. we have a temporary.
+        label.starts_with("tmp.")
     }
 
     fn make_label(&mut self, base: &str) -> String {
@@ -1023,5 +1088,137 @@ mod tests {
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
+    }
+
+    #[test]
+    fn test_compound_assignment() {
+        let ast = ParserAST::Program(Box::new(ParserAST::Function {
+            name: "main",
+            body: vec![
+                BlockItem::Decl(Declaration {
+                    name: "a".into(),
+                    init: Some(Expression::Constant(1)),
+                }),
+                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                    ParserBinaryOp::AddAssign,
+                    Box::new(Expression::Var("a".into())),
+                    Box::new(Expression::Constant(2)),
+                ))),
+                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                    ParserBinaryOp::MinusAssign,
+                    Box::new(Expression::Var("a".into())),
+                    Box::new(Expression::Constant(2)),
+                ))),
+                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                    ParserBinaryOp::MultiplyAssign,
+                    Box::new(Expression::Var("a".into())),
+                    Box::new(Expression::Constant(2)),
+                ))),
+                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                    ParserBinaryOp::DivideAssign,
+                    Box::new(Expression::Var("a".into())),
+                    Box::new(Expression::Constant(2)),
+                ))),
+                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                    ParserBinaryOp::RemainderAssign,
+                    Box::new(Expression::Var("a".into())),
+                    Box::new(Expression::Constant(2)),
+                ))),
+                BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
+            ],
+        }));
+
+        let expected = AST::Program(Function {
+            name: "main",
+            instructions: vec![
+                Instruction::Copy {
+                    src: Val::Constant(1),
+                    dst: Val::Var("a".into()),
+                },
+                Instruction::Binary {
+                    op: BinaryOp::Add,
+                    src1: Val::Var("a".into()),
+                    src2: Val::Constant(2),
+                    dst: Val::Var("tmp.0".into()),
+                },
+                Instruction::Copy {
+                    src: Val::Var("tmp.0".into()),
+                    dst: Val::Var("a".into()),
+                },
+                Instruction::Binary {
+                    op: BinaryOp::Subtract,
+                    src1: Val::Var("a".into()),
+                    src2: Val::Constant(2),
+                    dst: Val::Var("tmp.1".into()),
+                },
+                Instruction::Copy {
+                    src: Val::Var("tmp.1".into()),
+                    dst: Val::Var("a".into()),
+                },
+                Instruction::Binary {
+                    op: BinaryOp::Multiply,
+                    src1: Val::Var("a".into()),
+                    src2: Val::Constant(2),
+                    dst: Val::Var("tmp.2".into()),
+                },
+                Instruction::Copy {
+                    src: Val::Var("tmp.2".into()),
+                    dst: Val::Var("a".into()),
+                },
+                Instruction::Binary {
+                    op: BinaryOp::Divide,
+                    src1: Val::Var("a".into()),
+                    src2: Val::Constant(2),
+                    dst: Val::Var("tmp.3".into()),
+                },
+                Instruction::Copy {
+                    src: Val::Var("tmp.3".into()),
+                    dst: Val::Var("a".into()),
+                },
+                Instruction::Binary {
+                    op: BinaryOp::Remainder,
+                    src1: Val::Var("a".into()),
+                    src2: Val::Constant(2),
+                    dst: Val::Var("tmp.4".into()),
+                },
+                Instruction::Copy {
+                    src: Val::Var("tmp.4".into()),
+                    dst: Val::Var("a".into()),
+                },
+                Instruction::Ret(Val::Var("a".into())),
+                Instruction::Ret(Val::Constant(0)),
+            ],
+        });
+
+        let tacky = Tacky::new(ast);
+        let assembly = tacky.into_ast();
+        assert!(assembly.is_ok());
+        let assembly = assembly.unwrap();
+        assert_eq!(assembly, expected);
+    }
+
+    #[test]
+    fn test_invalid_lhs_compound_assignment() {
+        let ast = ParserAST::Program(Box::new(ParserAST::Function {
+            name: "main",
+            body: vec![
+                BlockItem::Decl(Declaration {
+                    name: "a".into(),
+                    init: Some(Expression::Constant(10)),
+                }),
+                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                    ParserBinaryOp::MinusAssign,
+                    Box::new(Expression::Binary(
+                        ParserBinaryOp::AddAssign,
+                        Box::new(Expression::Var("a".into())),
+                        Box::new(Expression::Constant(1)),
+                    )),
+                    Box::new(Expression::Constant(2)),
+                ))),
+            ],
+        }));
+        let tacky = Tacky::new(ast);
+        let assembly = tacky.into_ast();
+        assert!(assembly.is_err());
     }
 }
