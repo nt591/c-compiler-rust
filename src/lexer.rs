@@ -66,6 +66,11 @@ pub enum Token<'a> {
     StarEqual,
     SlashEqual,
     PercentEqual,
+    AmpersandEqual,
+    PipeEqual,
+    CaratEqual,
+    LessThanLessThanEqual,
+    GreaterThanGreaterThanEqual,
 }
 
 impl<'a> Token<'a> {
@@ -114,6 +119,11 @@ impl<'a> Token<'a> {
             StarEqual => format!("StarEqual"),
             SlashEqual => format!("SlashEqual"),
             PercentEqual => format!("PercentEqual"),
+            AmpersandEqual => format!("AmpersandEqual"),
+            PipeEqual => format!("PipeEqual"),
+            CaratEqual => format!("CaratEqual"),
+            LessThanLessThanEqual => format!("LessThanLessThanEqual"),
+            GreaterThanGreaterThanEqual => format!("GreaterThanGreaterThanEqual"),
         }
     }
 }
@@ -181,7 +191,10 @@ impl<'a> Lexer<'a> {
                 }
                 b'_' => tokens.push(Token::Underscore),
                 b'&' => {
-                    if idx < len - 1 && bytes[idx + 1] == b'&' {
+                    if idx < len - 1 && bytes[idx + 1] == b'=' {
+                        tokens.push(Token::AmpersandEqual);
+                        idx += 1;
+                    } else if idx < len - 1 && bytes[idx + 1] == b'&' {
                         tokens.push(Token::AmpersandAmpersand);
                         idx += 1;
                     } else {
@@ -194,9 +207,22 @@ impl<'a> Lexer<'a> {
                         idx += 2;
                         continue;
                     }
+                    if idx < len - 1 && bytes[idx + 1] == b'=' {
+                        tokens.push(Token::PipeEqual);
+                        idx += 2;
+                        continue;
+                    }
                     tokens.push(Token::Pipe);
                 }
-                b'^' => tokens.push(Token::Caret),
+                b'^' => {
+                    if idx < len - 1 && bytes[idx + 1] == b'=' {
+                        tokens.push(Token::CaratEqual);
+                        idx += 2;
+                        continue;
+                    }
+
+                    tokens.push(Token::Caret);
+                }
                 b'-' => {
                     // first, check if we could be processing a double hyphen
                     if idx < len - 1 && bytes[idx + 1] == b'-' {
@@ -291,6 +317,11 @@ impl<'a> Lexer<'a> {
                 }
                 b'>' => {
                     if idx < len - 1 && bytes[idx + 1] == b'>' {
+                        if idx < len - 2 && bytes[idx + 2] == b'=' {
+                            tokens.push(Token::GreaterThanGreaterThanEqual);
+                            idx += 3;
+                            continue;
+                        }
                         // shift right, so increment idx once and capture the token
                         tokens.push(Token::GreaterThanGreaterThan);
                         idx += 2;
@@ -303,6 +334,11 @@ impl<'a> Lexer<'a> {
                     tokens.push(Token::GreaterThan);
                 }
                 b'<' => {
+                    if idx < len - 2 && bytes[idx + 2] == b'=' {
+                        tokens.push(Token::LessThanLessThanEqual);
+                        idx += 3;
+                        continue;
+                    }
                     if idx < len - 1 && bytes[idx + 1] == b'<' {
                         tokens.push(Token::LessThanLessThan);
                         idx += 2;
@@ -523,7 +559,7 @@ bloop blorp */
     }
     #[test]
     fn test_binary_operators() {
-        let source = "+*/% += -= /= *= %=";
+        let source = "+*/% += -= /= *= %= <<= >>=";
         let lexer = Lexer::lex(source);
         assert!(lexer.is_ok());
         let lexer = lexer.unwrap();
@@ -537,6 +573,8 @@ bloop blorp */
         assert_eq!(Some(&Token::SlashEqual), tokens.next());
         assert_eq!(Some(&Token::StarEqual), tokens.next());
         assert_eq!(Some(&Token::PercentEqual), tokens.next());
+        assert_eq!(Some(&Token::LessThanLessThanEqual), tokens.next());
+        assert_eq!(Some(&Token::GreaterThanGreaterThanEqual), tokens.next());
         assert_eq!(None, tokens.next());
     }
 

@@ -86,13 +86,17 @@ pub enum BinaryOp {
     GreaterOrEqual,
     BinAnd,
     BinOr,
-    // temporary operators to
-    // construct new nodes
+    // Compound assignment operators
     AddAssign,
     MinusAssign,
     MultiplyAssign,
     DivideAssign,
     RemainderAssign,
+    BitwiseAndAssign,
+    BitwiseOrAssign,
+    XorAssign,
+    ShiftLeftAssign,
+    ShiftRightAssign,
 }
 
 pub struct Parser<'a> {
@@ -236,6 +240,11 @@ impl<'a> Parser<'a> {
             Some(Token::StarEqual) => Ok(BinaryOp::MultiplyAssign),
             Some(Token::SlashEqual) => Ok(BinaryOp::DivideAssign),
             Some(Token::PercentEqual) => Ok(BinaryOp::RemainderAssign),
+            Some(Token::AmpersandEqual) => Ok(BinaryOp::BitwiseAndAssign),
+            Some(Token::PipeEqual) => Ok(BinaryOp::BitwiseOrAssign),
+            Some(Token::CaratEqual) => Ok(BinaryOp::XorAssign),
+            Some(Token::LessThanLessThanEqual) => Ok(BinaryOp::ShiftLeftAssign),
+            Some(Token::GreaterThanGreaterThanEqual) => Ok(BinaryOp::ShiftRightAssign),
             Some(t) => Err(ParserError::MissingBinop(t.into_string())),
             None => Err(ParserError::OutOfTokens),
         }
@@ -276,7 +285,12 @@ impl<'a> Parser<'a> {
                 | Some(t @ Token::HyphenEqual)
                 | Some(t @ Token::StarEqual)
                 | Some(t @ Token::SlashEqual)
-                | Some(t @ Token::PercentEqual) => {
+                | Some(t @ Token::PercentEqual)
+                | Some(t @ Token::AmpersandEqual)
+                | Some(t @ Token::PipeEqual)
+                | Some(t @ Token::CaratEqual)
+                | Some(t @ Token::LessThanLessThanEqual)
+                | Some(t @ Token::GreaterThanGreaterThanEqual) => {
                     let new_prec = Self::precedence(*t)?;
                     if new_prec < min_precedence {
                         break;
@@ -365,7 +379,12 @@ impl<'a> Parser<'a> {
             | Token::HyphenEqual
             | Token::StarEqual
             | Token::SlashEqual
-            | Token::PercentEqual => Ok(2),
+            | Token::PercentEqual
+            | Token::AmpersandEqual
+            | Token::PipeEqual
+            | Token::CaratEqual
+            | Token::LessThanLessThanEqual
+            | Token::GreaterThanGreaterThanEqual => Ok(2),
             t => Err(ParserError::NoPrecedenceForToken(t.into_string())),
         }
     }

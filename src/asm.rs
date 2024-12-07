@@ -160,15 +160,9 @@ impl<'a> Asm<'a> {
                     dst,
                 } => vec![
                     Mov(src1.into(), Operand::Reg(Register::AX)),
-                    Cdq,
                     Binary(
                         BinaryOp::ShiftRight,
                         src2.into(),
-                        Operand::Reg(Register::AX),
-                    ),
-                    Binary(
-                        BinaryOp::BitwiseOr,
-                        Operand::Reg(Register::DX),
                         Operand::Reg(Register::AX),
                     ),
                     Mov(Operand::Reg(Register::AX), dst.into()),
@@ -784,15 +778,9 @@ mod tests {
                 Instruction::Unary(UnaryOp::Neg, Operand::Stack(-4)),
                 // tmp1 = tmp.0 >> 30
                 Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::AX)),
-                Instruction::Cdq,
                 Instruction::Binary(
                     BinaryOp::ShiftRight,
                     Operand::Imm(30),
-                    Operand::Reg(Register::AX),
-                ),
-                Instruction::Binary(
-                    BinaryOp::BitwiseOr,
-                    Operand::Reg(Register::DX),
                     Operand::Reg(Register::AX),
                 ),
                 Instruction::Mov(Operand::Reg(Register::AX), Operand::Stack(-8)),

@@ -176,10 +176,14 @@ impl<'a> Tacky<'a> {
             | Expression::Binary(op @ ParserBinaryOp::MinusAssign, left, right)
             | Expression::Binary(op @ ParserBinaryOp::MultiplyAssign, left, right)
             | Expression::Binary(op @ ParserBinaryOp::DivideAssign, left, right)
-            | Expression::Binary(op @ ParserBinaryOp::RemainderAssign, left, right) => {
+            | Expression::Binary(op @ ParserBinaryOp::RemainderAssign, left, right)
+            | Expression::Binary(op @ ParserBinaryOp::BitwiseAndAssign, left, right)
+            | Expression::Binary(op @ ParserBinaryOp::BitwiseOrAssign, left, right)
+            | Expression::Binary(op @ ParserBinaryOp::XorAssign, left, right)
+            | Expression::Binary(op @ ParserBinaryOp::ShiftLeftAssign, left, right)
+            | Expression::Binary(op @ ParserBinaryOp::ShiftRightAssign, left, right) => {
                 self.parse_eager_compound_binary_expression(op, left, right, instructions)
             }
-
             Expression::Binary(op, left, right) => {
                 self.parse_eager_binary_expression(op, left, right, instructions)
             }
@@ -390,6 +394,11 @@ impl<'a> Tacky<'a> {
             PBO::MultiplyAssign => BinaryOp::Multiply,
             PBO::DivideAssign => BinaryOp::Divide,
             PBO::RemainderAssign => BinaryOp::Remainder,
+            PBO::BitwiseOrAssign => BinaryOp::BitwiseOr,
+            PBO::BitwiseAndAssign => BinaryOp::BitwiseAnd,
+            PBO::XorAssign => BinaryOp::Xor,
+            PBO::ShiftLeftAssign => BinaryOp::ShiftLeft,
+            PBO::ShiftRightAssign => BinaryOp::ShiftRight,
             _ => unreachable!("Unexpected compound binary operator"),
         };
 
@@ -442,7 +451,12 @@ impl<'a> Tacky<'a> {
             | PBO::MinusAssign
             | PBO::MultiplyAssign
             | PBO::DivideAssign
-            | PBO::RemainderAssign => {
+            | PBO::RemainderAssign
+            | PBO::BitwiseAndAssign
+            | PBO::BitwiseOrAssign
+            | PBO::XorAssign
+            | PBO::ShiftLeftAssign
+            | PBO::ShiftRightAssign => {
                 unreachable!(
                     "We handle compound assignment in parse_eager_compound_binary_expression"
                 )

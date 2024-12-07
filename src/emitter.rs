@@ -73,19 +73,24 @@ impl<'a> Emitter<'a> {
                 Self::emit_op(operand, RegisterSize::FourByte, output)?;
                 write!(output, "\n")?;
             }
+            asm::Instruction::Binary(binop @ asm::BinaryOp::ShiftLeft, src, dst)
+            | asm::Instruction::Binary(binop @ asm::BinaryOp::ShiftRight, src, dst) => {
+                // shift left and right use the lower 8 bits of ECX to read
+                write!(output, "  ")?;
+                Self::emit_binary(binop, output)?;
+                // assume emit_binary handles proper space formatting!
+                Self::emit_op(src, RegisterSize::OneByte, output)?;
+                write!(output, ", ")?;
+                Self::emit_op(dst, RegisterSize::FourByte, output)?;
+                write!(output, "\n")?;
+            }
             asm::Instruction::Binary(binop, src, dst) => {
                 write!(output, "  ")?;
                 Self::emit_binary(binop, output)?;
                 // assume emit_binary handles proper space formatting!
                 Self::emit_op(src, RegisterSize::FourByte, output)?;
                 write!(output, ", ")?;
-                // shift left and right use the lower 8 bits of ECX to read
-                match binop {
-                    asm::BinaryOp::ShiftLeft | asm::BinaryOp::ShiftRight => {
-                        Self::emit_op(dst, RegisterSize::OneByte, output)?
-                    }
-                    _op => Self::emit_op(dst, RegisterSize::FourByte, output)?,
-                };
+                Self::emit_op(dst, RegisterSize::FourByte, output)?;
                 write!(output, "\n")?;
             }
             asm::Instruction::AllocateStack(n) => {
@@ -168,7 +173,7 @@ impl<'a> Emitter<'a> {
             asm::BinaryOp::BitwiseOr => write!(output, "orl    ")?,
             asm::BinaryOp::Xor => write!(output, "xorl   ")?,
             asm::BinaryOp::ShiftLeft => write!(output, "shll   ")?,
-            asm::BinaryOp::ShiftRight => write!(output, "shrl   ")?,
+            asm::BinaryOp::ShiftRight => write!(output, "sarl   ")?,
         }
         Ok(())
     }
