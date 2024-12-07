@@ -71,6 +71,8 @@ pub enum Token<'a> {
     CaratEqual,
     LessThanLessThanEqual,
     GreaterThanGreaterThanEqual,
+    // increment/decrement
+    PlusPlus,
 }
 
 impl<'a> Token<'a> {
@@ -124,6 +126,7 @@ impl<'a> Token<'a> {
             CaratEqual => format!("CaratEqual"),
             LessThanLessThanEqual => format!("LessThanLessThanEqual"),
             GreaterThanGreaterThanEqual => format!("GreaterThanGreaterThanEqual"),
+            PlusPlus => format!("PlusPlus"),
         }
     }
 }
@@ -169,9 +172,11 @@ impl<'a> Lexer<'a> {
                     if idx < len - 1 && bytes[idx + 1] == b'=' {
                         tokens.push(Token::PlusEqual);
                         idx += 1;
-                    } else {
+                    } else if idx < len - 1 && bytes[idx + 1] == b'+' {
+                        tokens.push(Token::PlusPlus);
+                        idx += 1;
+                        }
                         tokens.push(Token::Plus);
-                    }
                 }
                 b'*' => {
                     if idx < len - 1 && bytes[idx + 1] == b'=' {
