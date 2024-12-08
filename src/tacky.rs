@@ -200,6 +200,7 @@ impl<'a> Tacky<'a> {
                 });
                 Ok(Val::Var(ident.clone()))
             }
+            Expression::Conditional { .. } => todo!(),
         }
     }
 

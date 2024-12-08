@@ -134,6 +134,7 @@ fn resolve_expr(
             resolve_expr(&mut *lhs, resolver)?;
             resolve_expr(&mut *rhs, resolver)?;
         }
+        Expression::Conditional { .. } => todo!(),
     };
     Ok(())
 }

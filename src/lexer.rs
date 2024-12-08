@@ -350,12 +350,12 @@ impl<'a> Lexer<'a> {
                     tokens.push(Token::GreaterThan);
                 }
                 b'<' => {
-                    if idx < len - 2 && bytes[idx + 2] == b'=' {
-                        tokens.push(Token::LessThanLessThanEqual);
-                        idx += 3;
-                        continue;
-                    }
                     if idx < len - 1 && bytes[idx + 1] == b'<' {
+                        if idx < len - 2 && bytes[idx + 2] == b'=' {
+                            tokens.push(Token::LessThanLessThanEqual);
+                            idx += 3;
+                            continue;
+                        }
                         tokens.push(Token::LessThanLessThan);
                         idx += 2;
                         continue;
@@ -609,7 +609,6 @@ bloop blorp */
         assert!(lexer.is_ok());
         let lexer = lexer.unwrap();
         let mut tokens = lexer.tokens();
-        eprintln!("{tokens:?}");
         assert_eq!(Some(&Token::Plus), tokens.next());
         assert_eq!(Some(&Token::Star), tokens.next());
         assert_eq!(Some(&Token::Slash), tokens.next());
@@ -641,7 +640,7 @@ bloop blorp */
 
     #[test]
     fn test_logical_operators_and_longest_match() {
-        let source = "!= ! <= &&| >= == || < >";
+        let source = "!= ! <= &&| >= == || < > < = ";
         let lexer = Lexer::lex(source);
         assert!(lexer.is_ok());
         let lexer = lexer.unwrap();
@@ -656,6 +655,8 @@ bloop blorp */
         assert_eq!(Some(&Token::PipePipe), tokens.next());
         assert_eq!(Some(&Token::LessThan), tokens.next());
         assert_eq!(Some(&Token::GreaterThan), tokens.next());
+        assert_eq!(Some(&Token::LessThan), tokens.next());
+        assert_eq!(Some(&Token::Equal), tokens.next());
         assert_eq!(None, tokens.next());
     }
 

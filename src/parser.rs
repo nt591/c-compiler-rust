@@ -17,6 +17,8 @@ pub enum ParserError {
     MissingBinop(String),
     #[error("Tried to calculate precedence for token {0}")]
     NoPrecedenceForToken(String),
+    #[error("Expected colon after then-expr in conditional")]
+    UnexpectedTokenInConditional,
 }
 
 // super basic AST model
@@ -62,6 +64,11 @@ pub enum Expression {
     Unary(UnaryOp, Box<Expression>),
     Binary(BinaryOp, Box<Expression>, Box<Expression>),
     Assignment(Box<Expression>, Box<Expression>), // LHS, RHS
+    Conditional {
+        condition: Box<Expression>,
+        then: Box<Expression>,
+        else_: Box<Expression>,
+    },
 }
 
 #[derive(Debug, PartialEq)]
@@ -214,6 +221,7 @@ impl<'a> Parser<'a> {
             Some(Token::If) => {
                 self.tokens.next();
                 // parse_expression consumes parentheses
+                self.expect_peek(Token::LeftParen)?;
                 let condition = self.parse_expression(0)?;
                 let then = Box::new(self.parse_statement()?);
                 // if we see an else token, we have an optional else clause
@@ -334,6 +342,27 @@ impl<'a> Parser<'a> {
                     let right = self.parse_expression(new_prec)?;
                     left = Expression::Assignment(Box::new(left), Box::new(right));
                 }
+                Some(t @ Token::QuestionMark) => {
+                    // we're parsing a conditional AKA ternary. We throw away
+                    // the question mark, grab an inner expression,
+                    // assert we see a colon and throw it away
+                    // We must grab another expression.
+                    let new_prec = Self::precedence(*t)?;
+                    if new_prec < min_precedence {
+                        break;
+                    }
+                    self.tokens.next(); // throw away question mark
+                    let then = self.parse_expression(0)?; // reset precedence
+                    let Some(Token::Colon) = self.tokens.next() else {
+                        return Err(ParserError::UnexpectedTokenInConditional);
+                    };
+                    let else_ = self.parse_expression(new_prec)?;
+                    left = Expression::Conditional {
+                        condition: Box::new(left),
+                        then: Box::new(then),
+                        else_: Box::new(else_),
+                    }
+                }
                 _ => break,
             }
         }
@@ -369,8 +398,14 @@ impl<'a> Parser<'a> {
     }
 
     fn expect(&mut self, expected: Token<'a>) -> Result<(), ParserError> {
-        match self.tokens.next() {
-            Some(token) if std::mem::discriminant(token) == std::mem::discriminant(&expected) => {
+        self.expect_peek(expected)?;
+        self.tokens.next();
+        Ok(())
+    }
+
+    fn expect_peek(&mut self, expected: Token<'a>) -> Result<(), ParserError> {
+        match self.tokens.peek() {
+            Some(token) if std::mem::discriminant(*token) == std::mem::discriminant(&expected) => {
                 Ok(())
             }
             Some(token) => Err(ParserError::UnexpectedToken(
@@ -398,6 +433,8 @@ impl<'a> Parser<'a> {
             Token::Pipe => Ok(30),
             Token::AmpersandAmpersand => Ok(25),
             Token::PipePipe => Ok(24),
+            // we may never look at the colon, but copying from the docs
+            Token::QuestionMark | Token::Colon => Ok(3),
             Token::Equal
             | Token::PlusEqual
             | Token::HyphenEqual
@@ -1344,6 +1381,70 @@ mod tests {
                 }),
                 else_: None,
             })],
+        }));
+
+        assert_eq!(ast.unwrap(), expected);
+    }
+
+    #[test]
+    fn test_conditional_expressions() {
+        let src = r#"
+        int main(void) {
+            a ? b ? 1 : 2 : 3;
+            a ? 1 : b ? 2 : 3;
+            a || b ? 2 : 3;
+            x ? x = 1 : 2;
+        }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_ok());
+
+        let expected = AST::Program(Box::new(AST::Function {
+            name: "main",
+            body: vec![
+                // first example:  we nest inner expression
+                BlockItem::Stmt(Statement::Expr(Expression::Conditional {
+                    condition: Box::new(Expression::Var("a".into())),
+                    then: Box::new(Expression::Conditional {
+                        condition: Box::new(Expression::Var("b".into())),
+                        then: Box::new(Expression::Constant(1)),
+                        else_: Box::new(Expression::Constant(2)),
+                    }),
+                    else_: Box::new(Expression::Constant(3)),
+                })),
+                // second example: else statement is nested parse
+                BlockItem::Stmt(Statement::Expr(Expression::Conditional {
+                    condition: Box::new(Expression::Var("a".into())),
+                    then: Box::new(Expression::Constant(1)),
+                    else_: Box::new(Expression::Conditional {
+                        condition: Box::new(Expression::Var("b".into())),
+                        then: Box::new(Expression::Constant(2)),
+                        else_: Box::new(Expression::Constant(3)),
+                    }),
+                })),
+                // third example: the conditional is a short-circuit expr
+                BlockItem::Stmt(Statement::Expr(Expression::Conditional {
+                    condition: Box::new(Expression::Binary(
+                        BinaryOp::BinOr,
+                        Box::new(Expression::Var("a".into())),
+                        Box::new(Expression::Var("b".into())),
+                    )),
+                    then: Box::new(Expression::Constant(2)),
+                    else_: Box::new(Expression::Constant(3)),
+                })),
+                // fourth example: then should be an assignment
+                BlockItem::Stmt(Statement::Expr(Expression::Conditional {
+                    condition: Box::new(Expression::Var("x".into())),
+                    then: Box::new(Expression::Assignment(
+                        Box::new(Expression::Var("x".into())),
+                        Box::new(Expression::Constant(1)),
+                    )),
+                    else_: Box::new(Expression::Constant(2)),
+                })),
+            ],
         }));
 
         assert_eq!(ast.unwrap(), expected);
