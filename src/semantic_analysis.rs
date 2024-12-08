@@ -101,6 +101,7 @@ fn resolve_statement(
         Statement::Null => (),
         Statement::Expr(expr) => resolve_expr(&mut *expr, resolver)?,
         Statement::Return(expr) => resolve_expr(&mut *expr, resolver)?,
+        Statement::If { .. } => todo!(),
     };
     Ok(())
 }

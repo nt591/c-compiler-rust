@@ -32,6 +32,11 @@ pub enum AST<'a> {
 pub enum Statement {
     Return(Expression),
     Expr(Expression),
+    If {
+        condition: Expression,
+        then: Box<Statement>,
+        else_: Option<Box<Statement>>,
+    },
     Null,
 }
 
@@ -205,6 +210,25 @@ impl<'a> Parser<'a> {
             Some(Token::Semicolon) => {
                 self.tokens.next();
                 Ok(Statement::Null)
+            }
+            Some(Token::If) => {
+                self.tokens.next();
+                // parse_expression consumes parentheses
+                let condition = self.parse_expression(0)?;
+                let then = Box::new(self.parse_statement()?);
+                // if we see an else token, we have an optional else clause
+                let else_ = match self.tokens.peek() {
+                    Some(Token::Else) => {
+                        self.tokens.next();
+                        Some(Box::new(self.parse_statement()?))
+                    }
+                    _ => None,
+                };
+                Ok(Statement::If {
+                    condition,
+                    then,
+                    else_,
+                })
             }
             Some(_other) => {
                 let val = self.parse_expression(0)?;
@@ -1282,5 +1306,46 @@ mod tests {
         }));
 
         assert_eq!(expected, actual)
+    }
+
+    #[test]
+    fn test_dangling_else() {
+        let src = r#"
+        int main(void) {
+            if (a)
+                if (a > 10)
+                    return a;
+                else
+                    return 10 - a;
+        }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_ok());
+
+        let expected = AST::Program(Box::new(AST::Function {
+            name: "main",
+            body: vec![BlockItem::Stmt(Statement::If {
+                condition: Expression::Var("a".into()),
+                then: Box::new(Statement::If {
+                    condition: Expression::Binary(
+                        BinaryOp::GreaterThan,
+                        Box::new(Expression::Var("a".into())),
+                        Box::new(Expression::Constant(10)),
+                    ),
+                    then: Box::new(Statement::Return(Expression::Var("a".into()))),
+                    else_: Some(Box::new(Statement::Return(Expression::Binary(
+                        BinaryOp::Subtract,
+                        Box::new(Expression::Constant(10)),
+                        Box::new(Expression::Var("a".into())),
+                    )))),
+                }),
+                else_: None,
+            })],
+        }));
+
+        assert_eq!(ast.unwrap(), expected);
     }
 }

@@ -489,6 +489,7 @@ impl<'a> Tacky<'a> {
                 BlockItem::Stmt(Statement::Expr(expr)) => {
                     self.parse_expression(expr, &mut instructions)?;
                 }
+                BlockItem::Stmt(Statement::If { .. }) => todo!(),
                 BlockItem::Decl(Declaration {
                     name: _,
                     init: None,
