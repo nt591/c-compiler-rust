@@ -185,8 +185,9 @@ impl<'a> Lexer<'a> {
                     } else if idx < len - 1 && bytes[idx + 1] == b'+' {
                         tokens.push(Token::PlusPlus);
                         idx += 1;
+                    } else {
+                        tokens.push(Token::Plus);
                     }
-                    tokens.push(Token::Plus);
                 }
                 b'*' => {
                     if idx < len - 1 && bytes[idx + 1] == b'=' {
@@ -608,6 +609,7 @@ bloop blorp */
         assert!(lexer.is_ok());
         let lexer = lexer.unwrap();
         let mut tokens = lexer.tokens();
+        eprintln!("{tokens:?}");
         assert_eq!(Some(&Token::Plus), tokens.next());
         assert_eq!(Some(&Token::Star), tokens.next());
         assert_eq!(Some(&Token::Slash), tokens.next());
