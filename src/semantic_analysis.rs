@@ -101,7 +101,17 @@ fn resolve_statement(
         Statement::Null => (),
         Statement::Expr(expr) => resolve_expr(&mut *expr, resolver)?,
         Statement::Return(expr) => resolve_expr(&mut *expr, resolver)?,
-        Statement::If { .. } => todo!(),
+        Statement::If {
+            condition,
+            then,
+            else_,
+        } => {
+            resolve_expr(&mut *condition, resolver)?;
+            resolve_statement(&mut *then, resolver)?;
+            if let Some(expr) = else_ {
+                resolve_statement(&mut **expr, resolver)?;
+            };
+        }
     };
     Ok(())
 }
@@ -134,7 +144,15 @@ fn resolve_expr(
             resolve_expr(&mut *lhs, resolver)?;
             resolve_expr(&mut *rhs, resolver)?;
         }
-        Expression::Conditional { .. } => todo!(),
+        Expression::Conditional {
+            condition,
+            then,
+            else_,
+        } => {
+            resolve_expr(&mut *condition, resolver)?;
+            resolve_expr(&mut *then, resolver)?;
+            resolve_expr(&mut *else_, resolver)?;
+        }
     };
     Ok(())
 }
