@@ -30,6 +30,7 @@ pub enum Token<'a> {
     Return,
     If,
     Else,
+    Goto,
     // special symbols
     LeftParen,
     RightParen,
@@ -94,6 +95,7 @@ impl<'a> Token<'a> {
             Return => format!("Return"),
             If => format!("If"),
             Else => format!("Else"),
+            Goto => format!("Goto"),
             LeftParen => format!("LeftParen"),
             RightParen => format!("RightParen"),
             LeftBrace => format!("LeftBrace"),
@@ -430,6 +432,7 @@ impl<'a> Lexer<'a> {
             "void" => Some(Token::Void),
             "if" => Some(Token::If),
             "else" => Some(Token::Else),
+            "goto" => Some(Token::Goto),
             _ => None,
         }
     }
@@ -548,6 +551,7 @@ bloop blorp */
         let source = r#"
     if (true) { return 1; } else { return 2; };
     int x = true ? 1 : 5;
+    goto banana:
     return --2;
 "#;
         let lexer = Lexer::lex(source);
@@ -579,6 +583,9 @@ bloop blorp */
         assert_eq!(Some(&Token::Colon), tokens.next());
         assert_eq!(Some(&Token::Constant(5)), tokens.next());
         assert_eq!(Some(&Token::Semicolon), tokens.next());
+        assert_eq!(Some(&Token::Goto), tokens.next());
+        assert_eq!(Some(&Token::Identifier("banana")), tokens.next());
+        assert_eq!(Some(&Token::Colon), tokens.next());
         assert_eq!(Some(&Token::Return), tokens.next());
         assert_eq!(Some(&Token::DoubleHyphen), tokens.next());
         assert_eq!(Some(&Token::Constant(2)), tokens.next());

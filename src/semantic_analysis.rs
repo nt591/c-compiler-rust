@@ -112,6 +112,8 @@ fn resolve_statement(
                 resolve_statement(&mut **expr, resolver)?;
             };
         }
+        Statement::Goto(_) => todo!(),
+        Statement::Labelled { .. } => todo!(),
     };
     Ok(())
 }

@@ -32,6 +32,11 @@ pub enum AST<'a> {
 
 #[derive(Debug, PartialEq)]
 pub enum Statement {
+    Goto(String),
+    Labelled {
+        label: String,
+        statement: Box<Statement>,
+    },
     Return(Expression),
     Expr(Expression),
     If {
@@ -237,6 +242,48 @@ impl<'a> Parser<'a> {
                     then,
                     else_,
                 })
+            }
+            Some(Token::Goto) => {
+                self.tokens.next();
+                // we must have an identifier here, which will be our label.
+                let label = match self.tokens.next() {
+                    Some(Token::Identifier(ident)) => *ident,
+                    None => return Err(ParserError::OutOfTokens),
+                    Some(token) => {
+                        return Err(ParserError::UnexpectedToken(
+                            Token::Identifier("anything").into_string(),
+                            token.into_string(),
+                        ))
+                    }
+                };
+                self.expect(Token::Semicolon)?;
+                Ok(Statement::Goto(label.into()))
+            }
+            Some(Token::Identifier(_)) => {
+                // if we have a colon after this, maybe we treat this as a label. Else, parse expr.
+                // we've peeked at the identifier, so index = 1 is
+                // second element
+                // SUPER HACKY CLONE! TODO - fix!
+                let mut it = multipeek::multipeek(self.tokens.clone());
+                match it.peek_nth(1) {
+                    Some(Token::Colon) => {
+                        let Token::Identifier(ident) = self.tokens.next().unwrap() else {
+                            panic!();
+                        };
+                        self.expect(Token::Colon)?;
+                        let statement = self.parse_statement()?;
+                        Ok(Statement::Labelled {
+                            label: ident.to_string(),
+                            statement: Box::new(statement),
+                        })
+                    }
+                    _ => {
+                        // bail out, we could be doing something like "a = 1 + 2;"
+                        let val = self.parse_expression(0)?;
+                        self.expect(Token::Semicolon)?;
+                        Ok(Statement::Expr(val))
+                    }
+                }
             }
             Some(_other) => {
                 let val = self.parse_expression(0)?;
@@ -1444,6 +1491,39 @@ mod tests {
                     )),
                     else_: Box::new(Expression::Constant(2)),
                 })),
+            ],
+        }));
+
+        assert_eq!(ast.unwrap(), expected);
+    }
+
+    #[test]
+    fn test_goto_and_labelled_statements() {
+        let src = r#"
+        int main(void) {
+            goto foo;
+            foo:
+                return 1 + 2;
+        }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_ok());
+
+        let expected = AST::Program(Box::new(AST::Function {
+            name: "main",
+            body: vec![
+                BlockItem::Stmt(Statement::Goto("foo".into())),
+                BlockItem::Stmt(Statement::Labelled {
+                    label: "foo".into(),
+                    statement: Box::new(Statement::Return(Expression::Binary(
+                        BinaryOp::Add,
+                        Box::new(Expression::Constant(1)),
+                        Box::new(Expression::Constant(2)),
+                    ))),
+                }),
             ],
         }));
 

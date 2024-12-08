@@ -612,6 +612,8 @@ impl<'a> Tacky<'a> {
                 then,
                 else_: Some(else_),
             } => self.parse_if_then_else(condition, then.as_ref(), else_.as_ref(), instructions),
+            Statement::Goto(_) => todo!(),
+            Statement::Labelled { .. } => todo!(),
         }
     }
 
