@@ -590,34 +590,28 @@ impl<'a> Tacky<'a> {
         &mut self,
         statement: &Statement,
         instructions: &mut Vec<Instruction>,
-    ) -> Result<Option<Val>, TackyError> {
+    ) -> Result<(), TackyError> {
         match statement {
             Statement::Return(body) => {
                 let val = self.parse_expression(body, instructions)?;
                 instructions.push(Instruction::Ret(val.clone()));
-                Ok(Some(val))
+                Ok(())
             }
-            Statement::Null => Ok(None),
+            Statement::Null => Ok(()),
             Statement::Expr(expr) => {
-                let val = self.parse_expression(expr, instructions)?;
-                Ok(Some(val))
+                self.parse_expression(expr, instructions)?;
+                Ok(())
             }
             Statement::If {
                 condition,
                 then,
                 else_: None,
-            } => {
-                self.parse_if_then(condition, then.as_ref(), instructions)?;
-                Ok(None)
-            }
+            } => self.parse_if_then(condition, then.as_ref(), instructions),
             Statement::If {
                 condition,
                 then,
                 else_: Some(else_),
-            } => {
-                self.parse_if_then_else(condition, then.as_ref(), else_.as_ref(), instructions)?;
-                Ok(None)
-            }
+            } => self.parse_if_then_else(condition, then.as_ref(), else_.as_ref(), instructions),
         }
     }
 
