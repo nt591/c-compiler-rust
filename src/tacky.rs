@@ -201,7 +201,11 @@ impl<'a> Tacky<'a> {
                 });
                 Ok(Val::Var(ident.clone()))
             }
-            Expression::Conditional { .. } => todo!(),
+            Expression::Conditional {
+                condition,
+                then,
+                else_,
+            } => self.parse_conditional(condition, then, else_, instructions),
         }
     }
 
@@ -222,6 +226,52 @@ impl<'a> Tacky<'a> {
             }
             _ => unreachable!(),
         }
+    }
+
+    fn parse_conditional(
+        &mut self,
+        condition: &Expression,
+        then: &Expression,
+        else_: &Expression,
+        instructions: &mut Vec<Instruction>,
+    ) -> Result<Val, TackyError> {
+        let else_label = self.make_label("else_label");
+        let end_label = self.make_label("end_label");
+        let cond = self.parse_expression(condition, instructions)?;
+        // move cond into a tmp
+        let dst1_name = self.make_temporary();
+        let dst1 = Val::Var(dst1_name);
+
+        instructions.push(Instruction::Copy {
+            src: cond,
+            dst: dst1.clone(),
+        });
+        instructions.push(Instruction::JumpIfZero {
+            cond: dst1.clone(),
+            target: else_label.clone(),
+        });
+        // temporary for result: We'll copy the then/else logic into it and return
+        // result at the end
+        let res_name = self.make_temporary();
+        let result = Val::Var(res_name);
+
+        let v1 = self.parse_expression(then, instructions)?;
+        instructions.push(Instruction::Copy {
+            src: v1,
+            dst: result.clone(),
+        });
+
+        instructions.push(Instruction::Jump(end_label.clone()));
+        instructions.push(Instruction::Label(else_label));
+        let v2 = self.parse_expression(else_, instructions)?;
+        instructions.push(Instruction::Copy {
+            src: v2,
+            dst: result.clone(),
+        });
+
+        instructions.push(Instruction::Label(end_label));
+
+        Ok(result)
     }
 
     // short circuiting means that we first
@@ -540,15 +590,17 @@ impl<'a> Tacky<'a> {
         &mut self,
         statement: &Statement,
         instructions: &mut Vec<Instruction>,
-    ) -> Result<(), TackyError> {
+    ) -> Result<Option<Val>, TackyError> {
         match statement {
             Statement::Return(body) => {
                 let val = self.parse_expression(body, instructions)?;
-                instructions.push(Instruction::Ret(val));
+                instructions.push(Instruction::Ret(val.clone()));
+                Ok(Some(val))
             }
-            Statement::Null => (),
+            Statement::Null => Ok(None),
             Statement::Expr(expr) => {
-                self.parse_expression(expr, instructions)?;
+                let val = self.parse_expression(expr, instructions)?;
+                Ok(Some(val))
             }
             Statement::If {
                 condition,
@@ -556,6 +608,7 @@ impl<'a> Tacky<'a> {
                 else_: None,
             } => {
                 self.parse_if_then(condition, then.as_ref(), instructions)?;
+                Ok(None)
             }
             Statement::If {
                 condition,
@@ -563,9 +616,9 @@ impl<'a> Tacky<'a> {
                 else_: Some(else_),
             } => {
                 self.parse_if_then_else(condition, then.as_ref(), else_.as_ref(), instructions)?;
+                Ok(None)
             }
         }
-        Ok(())
     }
 
     fn parse_instructions(
@@ -577,7 +630,9 @@ impl<'a> Tacky<'a> {
         let mut instructions = vec![];
         for body_item in body {
             match body_item {
-                BlockItem::Stmt(stmt) => self.parse_statement(stmt, &mut instructions)?,
+                BlockItem::Stmt(stmt) => {
+                    self.parse_statement(stmt, &mut instructions)?;
+                }
                 BlockItem::Decl(Declaration {
                     name: _,
                     init: None,
@@ -1386,6 +1441,56 @@ mod tests {
                 Instruction::Label("else_label.1".into()),
                 Instruction::Ret(Val::Constant(3)),
                 Instruction::Label("end_label.2".into()),
+                Instruction::Ret(Val::Constant(0)),
+            ],
+        });
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn test_conditional() {
+        let src = r#"
+            int main(void) {
+                int a = 1;
+                a ? 1 : 2;
+            }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = crate::parser::Parser::new(&tokens);
+        let mut ast = parse.into_ast().unwrap();
+        crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let asm = Tacky::new(ast);
+        let assembly = asm.into_ast();
+        let Ok(actual) = assembly else {
+            panic!();
+        };
+        let expected = AST::Program(Function {
+            name: "main",
+            instructions: vec![
+                Instruction::Copy {
+                    src: Val::Constant(1),
+                    dst: Val::Var("a.0.decl".into()),
+                },
+                Instruction::Copy {
+                    src: Val::Var("a.0.decl".into()),
+                    dst: Val::Var("tmp.0".into()),
+                },
+                Instruction::JumpIfZero {
+                    cond: Val::Var("tmp.0".into()),
+                    target: "else_label.0".into(),
+                },
+                Instruction::Copy {
+                    src: Val::Constant(1),
+                    dst: Val::Var("tmp.1".into()),
+                },
+                Instruction::Jump("end_label.1".into()),
+                Instruction::Label("else_label.0".into()),
+                Instruction::Copy {
+                    src: Val::Constant(2),
+                    dst: Val::Var("tmp.1".into()),
+                },
+                Instruction::Label("end_label.1".into()),
                 Instruction::Ret(Val::Constant(0)),
             ],
         });
