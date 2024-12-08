@@ -4,6 +4,7 @@
 use crate::parser;
 use crate::parser::BinaryOp as ParserBinaryOp;
 use crate::parser::Expression;
+use crate::parser::Statement;
 use crate::parser::UnaryOp as ParserUnaryOp;
 use crate::parser::AST as ParserAST;
 use thiserror::Error;
@@ -367,6 +368,69 @@ impl<'a> Tacky<'a> {
         Ok(result)
     }
 
+    fn parse_if_then(
+        &mut self,
+        condition: &Expression,
+        then: &Statement,
+        instructions: &mut Vec<Instruction>,
+    ) -> Result<(), TackyError> {
+        let label = self.make_label("end_label");
+        let cond = self.parse_expression(condition, instructions)?;
+        // move cond into a tmp
+        let dst1_name = self.make_temporary();
+        let dst1 = Val::Var(dst1_name);
+        instructions.push(Instruction::Copy {
+            src: cond,
+            dst: dst1.clone(),
+        });
+        instructions.push(Instruction::JumpIfZero {
+            cond: dst1.clone(),
+            target: label.clone(),
+        });
+        self.parse_statement(&then, instructions)?;
+        instructions.push(Instruction::Label(label));
+        Ok(())
+    }
+
+    /*
+     * evaluate condition
+     * if it's false/zero, jump to the else label
+     *   evaluate then:
+     *   jump to end
+     *   else_label:
+     *       evaluate else_
+     *   end_label:
+     */
+    fn parse_if_then_else(
+        &mut self,
+        condition: &Expression,
+        then: &Statement,
+        else_: &Statement,
+        instructions: &mut Vec<Instruction>,
+    ) -> Result<(), TackyError> {
+        let else_label = self.make_label("else_label");
+        let end_label = self.make_label("end_label");
+        let cond = self.parse_expression(condition, instructions)?;
+        // move cond into a tmp
+        let dst1_name = self.make_temporary();
+        let dst1 = Val::Var(dst1_name);
+        instructions.push(Instruction::Copy {
+            src: cond,
+            dst: dst1.clone(),
+        });
+        instructions.push(Instruction::JumpIfZero {
+            cond: dst1.clone(),
+            target: else_label.clone(),
+        });
+        self.parse_statement(&then, instructions)?;
+        instructions.push(Instruction::Jump(end_label.clone()));
+        instructions.push(Instruction::Label(else_label));
+        self.parse_statement(&else_, instructions)?;
+        instructions.push(Instruction::Label(end_label));
+
+        Ok(())
+    }
+
     fn parse_eager_compound_binary_expression(
         &mut self,
         op: &ParserBinaryOp,
@@ -472,25 +536,48 @@ impl<'a> Tacky<'a> {
         Ok(dst)
     }
 
+    fn parse_statement(
+        &mut self,
+        statement: &Statement,
+        instructions: &mut Vec<Instruction>,
+    ) -> Result<(), TackyError> {
+        match statement {
+            Statement::Return(body) => {
+                let val = self.parse_expression(body, instructions)?;
+                instructions.push(Instruction::Ret(val));
+            }
+            Statement::Null => (),
+            Statement::Expr(expr) => {
+                self.parse_expression(expr, instructions)?;
+            }
+            Statement::If {
+                condition,
+                then,
+                else_: None,
+            } => {
+                self.parse_if_then(condition, then.as_ref(), instructions)?;
+            }
+            Statement::If {
+                condition,
+                then,
+                else_: Some(else_),
+            } => {
+                self.parse_if_then_else(condition, then.as_ref(), else_.as_ref(), instructions)?;
+            }
+        }
+        Ok(())
+    }
+
     fn parse_instructions(
         &mut self,
         body: &[parser::BlockItem],
     ) -> Result<Vec<Instruction>, TackyError> {
         use parser::BlockItem;
         use parser::Declaration;
-        use parser::Statement;
         let mut instructions = vec![];
         for body_item in body {
             match body_item {
-                BlockItem::Stmt(Statement::Return(body)) => {
-                    let val = self.parse_expression(body, &mut instructions)?;
-                    instructions.push(Instruction::Ret(val));
-                }
-                BlockItem::Stmt(Statement::Null) => (),
-                BlockItem::Stmt(Statement::Expr(expr)) => {
-                    self.parse_expression(expr, &mut instructions)?;
-                }
-                BlockItem::Stmt(Statement::If { .. }) => todo!(),
+                BlockItem::Stmt(stmt) => self.parse_statement(stmt, &mut instructions)?,
                 BlockItem::Decl(Declaration {
                     name: _,
                     init: None,
@@ -1236,5 +1323,72 @@ mod tests {
         let tacky = Tacky::new(ast);
         let assembly = tacky.into_ast();
         assert!(assembly.is_err());
+    }
+
+    #[test]
+    fn test_if_then_else() {
+        let src = r#"
+            int main(void) {
+                int a = 1;
+                int b = 0;
+                if (a)
+                    return 1;
+
+                if (b) 
+                    return 2; 
+                else 
+                    return 3;
+            }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = crate::parser::Parser::new(&tokens);
+        let mut ast = parse.into_ast().unwrap();
+        crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let asm = Tacky::new(ast);
+        let assembly = asm.into_ast();
+        let Ok(actual) = assembly else {
+            panic!();
+        };
+        let expected = AST::Program(Function {
+            name: "main",
+            instructions: vec![
+                // first one: if/then
+                Instruction::Copy {
+                    src: Val::Constant(1),
+                    dst: Val::Var("a.0.decl".into()),
+                },
+                Instruction::Copy {
+                    src: Val::Constant(0),
+                    dst: Val::Var("b.1.decl".into()),
+                },
+                Instruction::Copy {
+                    src: Val::Var("a.0.decl".into()),
+                    dst: Val::Var("tmp.0".into()),
+                },
+                Instruction::JumpIfZero {
+                    cond: Val::Var("tmp.0".into()),
+                    target: "end_label.0".into(),
+                },
+                Instruction::Ret(Val::Constant(1)),
+                Instruction::Label("end_label.0".into()),
+                // second if/then/else
+                Instruction::Copy {
+                    src: Val::Var("b.1.decl".into()),
+                    dst: Val::Var("tmp.1".into()),
+                },
+                Instruction::JumpIfZero {
+                    cond: Val::Var("tmp.1".into()),
+                    target: "else_label.1".into(),
+                },
+                Instruction::Ret(Val::Constant(2)),
+                Instruction::Jump("end_label.2".into()),
+                Instruction::Label("else_label.1".into()),
+                Instruction::Ret(Val::Constant(3)),
+                Instruction::Label("end_label.2".into()),
+                Instruction::Ret(Val::Constant(0)),
+            ],
+        });
+        assert_eq!(expected, actual);
     }
 }
