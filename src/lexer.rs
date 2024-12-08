@@ -28,6 +28,8 @@ pub enum Token<'a> {
     Main,
     Void,
     Return,
+    If,
+    Else,
     // special symbols
     LeftParen,
     RightParen,
@@ -41,6 +43,8 @@ pub enum Token<'a> {
     Star,
     Slash,
     Percent,
+    QuestionMark,
+    Colon,
     // bitwise
     Ampersand,
     Pipe,
@@ -88,6 +92,8 @@ impl<'a> Token<'a> {
             Main => format!("Main"),
             Void => format!("Void"),
             Return => format!("Return"),
+            If => format!("If"),
+            Else => format!("Else"),
             LeftParen => format!("LeftParen"),
             RightParen => format!("RightParen"),
             LeftBrace => format!("LeftBrace"),
@@ -100,6 +106,8 @@ impl<'a> Token<'a> {
             Star => format!("Star"),
             Slash => format!("Slash"),
             Percent => format!("Percent"),
+            QuestionMark => format!("QuestionMark"),
+            Colon => format!("Colon"),
             Ampersand => format!("Ampersand"),
             Pipe => format!("Pipe"),
             Caret => format!("Caret"),
@@ -168,6 +176,8 @@ impl<'a> Lexer<'a> {
                 b')' => tokens.push(Token::RightParen),
                 b';' => tokens.push(Token::Semicolon),
                 b'~' => tokens.push(Token::Tilde),
+                b'?' => tokens.push(Token::QuestionMark),
+                b':' => tokens.push(Token::Colon),
                 b'+' => {
                     if idx < len - 1 && bytes[idx + 1] == b'=' {
                         tokens.push(Token::PlusEqual);
@@ -175,8 +185,8 @@ impl<'a> Lexer<'a> {
                     } else if idx < len - 1 && bytes[idx + 1] == b'+' {
                         tokens.push(Token::PlusPlus);
                         idx += 1;
-                        }
-                        tokens.push(Token::Plus);
+                    }
+                    tokens.push(Token::Plus);
                 }
                 b'*' => {
                     if idx < len - 1 && bytes[idx + 1] == b'=' {
@@ -417,6 +427,8 @@ impl<'a> Lexer<'a> {
             "main" => Some(Token::Main),
             "return" => Some(Token::Return),
             "void" => Some(Token::Void),
+            "if" => Some(Token::If),
+            "else" => Some(Token::Else),
             _ => None,
         }
     }
@@ -531,14 +543,41 @@ bloop blorp */
     }
 
     #[test]
-    fn lexes_double_hyphen() {
+    fn complex_lex() {
         let source = r#"
+    if (true) { return 1; } else { return 2; };
+    int x = true ? 1 : 5;
     return --2;
 "#;
         let lexer = Lexer::lex(source);
         assert!(lexer.is_ok());
         let lexer = lexer.unwrap();
         let mut tokens = lexer.tokens();
+        assert_eq!(Some(&Token::If), tokens.next());
+        assert_eq!(Some(&Token::LeftParen), tokens.next());
+        assert_eq!(Some(&Token::Identifier("true")), tokens.next());
+        assert_eq!(Some(&Token::RightParen), tokens.next());
+        assert_eq!(Some(&Token::LeftBrace), tokens.next());
+        assert_eq!(Some(&Token::Return), tokens.next());
+        assert_eq!(Some(&Token::Constant(1)), tokens.next());
+        assert_eq!(Some(&Token::Semicolon), tokens.next());
+        assert_eq!(Some(&Token::RightBrace), tokens.next());
+        assert_eq!(Some(&Token::Else), tokens.next());
+        assert_eq!(Some(&Token::LeftBrace), tokens.next());
+        assert_eq!(Some(&Token::Return), tokens.next());
+        assert_eq!(Some(&Token::Constant(2)), tokens.next());
+        assert_eq!(Some(&Token::Semicolon), tokens.next());
+        assert_eq!(Some(&Token::RightBrace), tokens.next());
+        assert_eq!(Some(&Token::Semicolon), tokens.next());
+        assert_eq!(Some(&Token::Int), tokens.next());
+        assert_eq!(Some(&Token::Identifier("x")), tokens.next());
+        assert_eq!(Some(&Token::Equal), tokens.next());
+        assert_eq!(Some(&Token::Identifier("true")), tokens.next());
+        assert_eq!(Some(&Token::QuestionMark), tokens.next());
+        assert_eq!(Some(&Token::Constant(1)), tokens.next());
+        assert_eq!(Some(&Token::Colon), tokens.next());
+        assert_eq!(Some(&Token::Constant(5)), tokens.next());
+        assert_eq!(Some(&Token::Semicolon), tokens.next());
         assert_eq!(Some(&Token::Return), tokens.next());
         assert_eq!(Some(&Token::DoubleHyphen), tokens.next());
         assert_eq!(Some(&Token::Constant(2)), tokens.next());
