@@ -1,3 +1,6 @@
 int main(void) {
-  return -5 >> 30;
+    goto foo;
+    foo:
+        return 1 + 2;
 }
+

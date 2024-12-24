@@ -248,6 +248,7 @@ impl<'a> Parser<'a> {
                 // we must have an identifier here, which will be our label.
                 let label = match self.tokens.next() {
                     Some(Token::Identifier(ident)) => *ident,
+                    Some(Token::Main) => "main",
                     None => return Err(ParserError::OutOfTokens),
                     Some(token) => {
                         return Err(ParserError::UnexpectedToken(
@@ -259,7 +260,8 @@ impl<'a> Parser<'a> {
                 self.expect(Token::Semicolon)?;
                 Ok(Statement::Goto(label.into()))
             }
-            Some(Token::Identifier(_)) => {
+            Some(Token::Identifier(_)) | Some(Token::Main) => {
+                // We specially allow `main` to be a label, for some reason.
                 // if we have a colon after this, maybe we treat this as a label. Else, parse expr.
                 // we've peeked at the identifier, so index = 1 is
                 // second element
@@ -267,8 +269,10 @@ impl<'a> Parser<'a> {
                 let mut it = multipeek::multipeek(self.tokens.clone());
                 match it.peek_nth(1) {
                     Some(Token::Colon) => {
-                        let Token::Identifier(ident) = self.tokens.next().unwrap() else {
-                            panic!();
+                        let ident = match self.tokens.next() {
+                            Some(Token::Identifier(ident)) => ident,
+                            Some(Token::Main) => "main",
+                            _ => panic!(),
                         };
                         self.expect(Token::Colon)?;
                         let statement = self.parse_statement()?;

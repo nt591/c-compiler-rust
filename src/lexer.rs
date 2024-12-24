@@ -207,7 +207,7 @@ impl<'a> Lexer<'a> {
                         tokens.push(Token::Percent);
                     }
                 }
-                b'_' => tokens.push(Token::Underscore),
+                b'_' if idx < len - 1 && bytes[idx + 1] == b' ' => tokens.push(Token::Underscore),
                 b'&' => {
                     if idx < len - 1 && bytes[idx + 1] == b'=' {
                         tokens.push(Token::AmpersandEqual);
@@ -368,7 +368,8 @@ impl<'a> Lexer<'a> {
                     }
                     tokens.push(Token::LessThan);
                 }
-                b'a'..=b'z' | b'A'..=b'Z' => {
+                b'_' | b'a'..=b'z' | b'A'..=b'Z' => {
+                    // Identifiers can also start with an underscore
                     // starts with a letter, just walk until the end.
                     let start = idx;
                     let mut end = idx;

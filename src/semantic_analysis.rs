@@ -3,6 +3,7 @@ use crate::parser::Declaration;
 use crate::parser::Expression;
 use crate::parser::Statement;
 use crate::parser::AST;
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use thiserror::Error;
 
@@ -18,12 +19,18 @@ pub enum SemanticAnalysisError {
     UndeclaredVariableInInitializer(String),
     #[error("Found non-var node on lefthand side of assignment")]
     InvalidLhsAssignmentNode,
+    #[error("Found duplicate label declaration: {0}")]
+    DuplicateLabel(String),
+    #[error("Undeclared label {0}")]
+    UndeclaredLabel(String),
 }
 
 // maps variable names to a unique identifier
 #[derive(Debug)]
 struct Resolver {
     renamed_variables: HashMap<String, String>,
+    // stored as (resolved_string, is_declared)
+    labels: HashMap<String, (String, bool)>,
     var_counter: usize,
 }
 
@@ -31,6 +38,7 @@ impl Resolver {
     fn new() -> Self {
         Self {
             renamed_variables: HashMap::new(),
+            labels: HashMap::new(),
             var_counter: 0,
         }
     }
@@ -49,11 +57,54 @@ impl Resolver {
             })
             .clone()
     }
+
+    // RULES: If unseen, add an entry. Return name.
+    // If trying to declare but already seen and declared, return error .
+    // If seen but not yet declared and trying to declare, update in place.
+    fn resolve_label(
+        &mut self,
+        name: &str,
+        declaration: bool,
+    ) -> Result<String, SemanticAnalysisError> {
+        match self.labels.entry(name.into()) {
+            Entry::Vacant(v) => {
+                let count = self.var_counter;
+                self.var_counter += 1;
+                let s = format!("{name}.{count}.label");
+                v.insert((s.clone(), declaration));
+                Ok(s)
+            }
+            Entry::Occupied(mut o) => {
+                let already_declared = o.get().1;
+                // Did we already define "foo:"?
+                if already_declared && declaration {
+                    Err(SemanticAnalysisError::DuplicateLabel(name.to_string()))
+                } else {
+                    // At this point, we know that we already saw the label in some context.
+                    // Just write the declaration to either what's existing in place, or the
+                    // incoming.
+                    o.get_mut().1 = already_declared || declaration;
+                    Ok(o.get().0.clone())
+                }
+            }
+        }
+    }
 }
 
 pub fn resolve<'a>(ast: &mut AST<'a>) -> Result<(), SemanticAnalysisError> {
     let mut resolver = Resolver::new();
-    resolve_ast(ast, &mut resolver)
+    resolve_ast(ast, &mut resolver)?;
+    validate_labels(&resolver)
+}
+
+fn validate_labels<'a>(resolver: &Resolver) -> Result<(), SemanticAnalysisError> {
+    for (label, declaration_status) in resolver.labels.values() {
+        if !declaration_status {
+            return Err(SemanticAnalysisError::UndeclaredLabel(label.clone()));
+        }
+    }
+
+    Ok(())
 }
 
 fn resolve_ast<'a>(
@@ -112,8 +163,15 @@ fn resolve_statement(
                 resolve_statement(&mut **expr, resolver)?;
             };
         }
-        Statement::Goto(_) => todo!(),
-        Statement::Labelled { .. } => todo!(),
+        Statement::Goto(lbl) => {
+            let renamed = resolver.resolve_label(lbl, false)?;
+            *lbl = renamed;
+        }
+        Statement::Labelled { label, statement } => {
+            let renamed = resolver.resolve_label(label, true)?;
+            *label = renamed;
+            resolve_statement(&mut *statement, resolver)?;
+        }
     };
     Ok(())
 }
@@ -296,5 +354,50 @@ mod tests {
 
         // mutates taken value
         assert_eq!(before, expected);
+    }
+
+    #[test]
+    fn test_repeated_labels() {
+        let src = r#"
+            int main(void) {
+                goto foo;
+                foo:
+                    return 1 + 2;
+                foo:
+                    return 3 + 4;
+            }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = crate::parser::Parser::new(&tokens);
+        let mut ast = parse.into_ast().unwrap();
+        let analysis = resolve(&mut ast);
+        assert!(analysis.is_err());
+        assert_eq!(
+            analysis,
+            Err(SemanticAnalysisError::DuplicateLabel("foo".into()))
+        );
+    }
+
+    #[test]
+    fn test_undeclared_labels() {
+        let src = r#"
+            int main(void) {
+                goto bar;
+                goto foo;
+                bar:
+                    return 0;
+            }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = crate::parser::Parser::new(&tokens);
+        let mut ast = parse.into_ast().unwrap();
+        let analysis = resolve(&mut ast);
+        assert!(analysis.is_err());
+        assert_eq!(
+            analysis,
+            Err(SemanticAnalysisError::UndeclaredLabel("foo.1.label".into()))
+        );
     }
 }

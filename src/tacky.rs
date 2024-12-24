@@ -612,8 +612,15 @@ impl<'a> Tacky<'a> {
                 then,
                 else_: Some(else_),
             } => self.parse_if_then_else(condition, then.as_ref(), else_.as_ref(), instructions),
-            Statement::Goto(_) => todo!(),
-            Statement::Labelled { .. } => todo!(),
+            Statement::Goto(lbl) => {
+                instructions.push(Instruction::Jump(lbl.into()));
+                Ok(())
+            }
+            Statement::Labelled { label, statement } => {
+                instructions.push(Instruction::Label(label.into()));
+                self.parse_statement(statement, instructions)?;
+                Ok(())
+            }
         }
     }
 
@@ -1487,6 +1494,43 @@ mod tests {
                     dst: Val::Var("tmp.1".into()),
                 },
                 Instruction::Label("end_label.1".into()),
+                Instruction::Ret(Val::Constant(0)),
+            ],
+        });
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn test_goto_and_labelled_statements() {
+        let src = r#"
+            int main(void) {
+                goto foo;
+                foo:
+                    return 1 + 2;
+            }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = crate::parser::Parser::new(&tokens);
+        let mut ast = parse.into_ast().unwrap();
+        crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let asm = Tacky::new(ast);
+        let assembly = asm.into_ast();
+        let Ok(actual) = assembly else {
+            panic!();
+        };
+        let expected = AST::Program(Function {
+            name: "main",
+            instructions: vec![
+                Instruction::Jump("foo.0.label".into()),
+                Instruction::Label("foo.0.label".into()),
+                Instruction::Binary {
+                    op: BinaryOp::Add,
+                    src1: Val::Constant(1),
+                    src2: Val::Constant(2),
+                    dst: Val::Var("tmp.0".into()),
+                },
+                Instruction::Ret(Val::Var("tmp.0".into())),
                 Instruction::Ret(Val::Constant(0)),
             ],
         });
