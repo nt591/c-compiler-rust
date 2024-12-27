@@ -3,6 +3,7 @@
 
 use crate::parser;
 use crate::parser::BinaryOp as ParserBinaryOp;
+use crate::parser::Block;
 use crate::parser::Expression;
 use crate::parser::Statement;
 use crate::parser::UnaryOp as ParserUnaryOp;
@@ -139,8 +140,7 @@ impl<'a> Tacky<'a> {
     fn parse_function(&mut self, parser: &ParserAST<'a>) -> Result<Function<'a>, TackyError> {
         match parser {
             ParserAST::Function { name, block } => {
-                let crate::parser::Block(body) = block;
-                let instructions = self.parse_instructions(body)?;
+                let instructions = self.parse_instructions(block)?;
                 Ok(Function { name, instructions })
             }
             _ => Err(TackyError::MissingFunction),
@@ -622,21 +622,33 @@ impl<'a> Tacky<'a> {
                 self.parse_statement(statement, instructions)?;
                 Ok(())
             }
-            Statement::Compound(_) => todo!(),
+            Statement::Compound(block) => self.parse_block(block, instructions),
         }
     }
 
-    fn parse_instructions(
+    fn parse_instructions(&mut self, block: &Block) -> Result<Vec<Instruction>, TackyError> {
+        let mut instructions = vec![];
+        self.parse_block(block, &mut instructions)?;
+        // temporary hack: always add a Return(Constant(0)) Instruction
+        // to handle functions that don't end with a return. If we already
+        // have a return, it doesn't run.
+        instructions.push(Instruction::Ret(Val::Constant(0)));
+        Ok(instructions)
+    }
+
+    fn parse_block(
         &mut self,
-        body: &[parser::BlockItem],
-    ) -> Result<Vec<Instruction>, TackyError> {
+        block: &Block,
+        instructions: &mut Vec<Instruction>,
+    ) -> Result<(), TackyError> {
         use parser::BlockItem;
         use parser::Declaration;
-        let mut instructions = vec![];
+
+        let Block(body) = block;
         for body_item in body {
             match body_item {
                 BlockItem::Stmt(stmt) => {
-                    self.parse_statement(stmt, &mut instructions)?;
+                    self.parse_statement(stmt, instructions)?;
                 }
                 BlockItem::Decl(Declaration {
                     name: _,
@@ -647,7 +659,7 @@ impl<'a> Tacky<'a> {
                     init: Some(init),
                 }) => {
                     // emit instructions for rhs, then copy into lhs
-                    let result = self.parse_expression(init, &mut instructions)?;
+                    let result = self.parse_expression(init, instructions)?;
                     instructions.push(Instruction::Copy {
                         src: result,
                         dst: Val::Var(ident.clone()),
@@ -655,12 +667,7 @@ impl<'a> Tacky<'a> {
                 }
             }
         }
-
-        // temporary hack: always add a Return(Constant(0)) Instruction
-        // to handle functions that don't end with a return. If we already
-        // have a return, it doesn't run.
-        instructions.push(Instruction::Ret(Val::Constant(0)));
-        Ok(instructions)
+        Ok(())
     }
 
     fn make_temporary(&mut self) -> String {
@@ -1548,6 +1555,58 @@ mod tests {
                     dst: Val::Var("tmp.0".into()),
                 },
                 Instruction::Ret(Val::Var("tmp.0".into())),
+                Instruction::Ret(Val::Constant(0)),
+            ],
+        });
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn compound_statements_and_blocks() {
+        let src = r#"
+            int main(void) {
+                if (1) {
+                    return 1;
+                } else {
+                    return 2;
+                }
+                {
+                    int x = 3;
+                    return x;
+                }
+            }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = crate::parser::Parser::new(&tokens);
+        let mut ast = parse.into_ast().unwrap();
+        crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let asm = Tacky::new(ast);
+        let assembly = asm.into_ast();
+        let Ok(actual) = assembly else {
+            panic!();
+        };
+        let expected = AST::Program(Function {
+            name: "main",
+            instructions: vec![
+                Instruction::Copy {
+                    src: Val::Constant(1),
+                    dst: Val::Var("tmp.0".into()),
+                },
+                Instruction::JumpIfZero {
+                    cond: Val::Var("tmp.0".into()),
+                    target: "else_label.0".into(),
+                },
+                Instruction::Ret(Val::Constant(1)),
+                Instruction::Jump("end_label.1".into()),
+                Instruction::Label("else_label.0".into()),
+                Instruction::Ret(Val::Constant(2)),
+                Instruction::Label("end_label.1".into()),
+                Instruction::Copy {
+                    src: Val::Constant(3),
+                    dst: Val::Var("x.0.decl".into()),
+                },
+                Instruction::Ret(Val::Var("x.0.decl".into())),
                 Instruction::Ret(Val::Constant(0)),
             ],
         });
