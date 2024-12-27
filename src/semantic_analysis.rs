@@ -27,9 +27,10 @@ pub enum SemanticAnalysisError {
 }
 
 // maps variable names to a unique identifier
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Resolver {
-    renamed_variables: HashMap<String, String>,
+    // stored as <resolved string, declared_in_current_block>
+    renamed_variables: HashMap<String, (String, bool)>,
     // stored as (resolved_string, is_declared)
     labels: HashMap<String, (String, bool)>,
     var_counter: usize,
@@ -44,19 +45,28 @@ impl Resolver {
         }
     }
 
-    fn seen(&self, name: &str) -> bool {
-        self.renamed_variables.contains_key(name)
+    fn make_temporary_variable(&mut self, name: &str) -> String {
+        let count = self.var_counter;
+        self.var_counter += 1;
+        format!("{name}.{count}.decl")
     }
 
-    fn resolve_variable(&mut self, name: &str) -> String {
+    fn resolve_variable(&mut self, name: &str, resolved_name: String, in_current_scope: bool) {
         self.renamed_variables
-            .entry(name.into())
-            .or_insert_with(|| {
-                let count = self.var_counter;
-                self.var_counter += 1;
-                format!("{name}.{count}.decl")
-            })
-            .clone()
+            .insert(name.into(), (resolved_name, in_current_scope));
+    }
+
+    fn get_resolved_variable(&self, name: &str) -> Option<String> {
+        self.renamed_variables
+            .get(name)
+            .map(|(name, _scope)| name.into())
+    }
+
+    fn variable_declared_in_current_block(&self, name: &str) -> bool {
+        self.renamed_variables
+            .get(name)
+            .map(|(_name, in_current_scope)| *in_current_scope)
+            .unwrap_or(false)
     }
 
     // RULES: If unseen, add an entry. Return name.
@@ -90,6 +100,14 @@ impl Resolver {
             }
         }
     }
+
+    fn copy_resolver_and_reset_scopes(&self) -> Self {
+        let mut new_resolver = self.clone();
+        for (_name, (_new_name, in_scope)) in new_resolver.renamed_variables.iter_mut() {
+            *in_scope = false;
+        }
+        new_resolver
+    }
 }
 
 pub fn resolve<'a>(ast: &mut AST<'a>) -> Result<(), SemanticAnalysisError> {
@@ -120,8 +138,14 @@ fn resolve_ast<'a>(
         return Err(SemanticAnalysisError::UnexpectedNonFunctionNode);
     };
 
-    let Block(ref mut body) = block;
+    resolve_block(block, resolver)
+}
 
+fn resolve_block<'a>(
+    block: &mut Block,
+    resolver: &mut Resolver,
+) -> Result<(), SemanticAnalysisError> {
+    let Block(ref mut body) = block;
     for body_item in body.iter_mut() {
         match body_item {
             BlockItem::Decl(declaration) => resolve_decl(declaration, resolver)?,
@@ -136,10 +160,11 @@ fn resolve_decl(
     decl: &mut Declaration,
     resolver: &mut Resolver,
 ) -> Result<(), SemanticAnalysisError> {
-    if resolver.seen(&decl.name) {
+    if resolver.variable_declared_in_current_block(&decl.name) {
         return Err(SemanticAnalysisError::DuplicateDecl(decl.name.clone()));
     };
-    let renamed_var = resolver.resolve_variable(&decl.name);
+    let renamed_var = resolver.make_temporary_variable(&decl.name);
+    resolver.resolve_variable(&decl.name, renamed_var.clone(), true);
     decl.name = renamed_var;
     if let Some(init) = &mut decl.init {
         resolve_expr(init, resolver)?;
@@ -175,7 +200,10 @@ fn resolve_statement(
             *label = renamed;
             resolve_statement(&mut *statement, resolver)?;
         }
-        Statement::Compound(_) => todo!(),
+        Statement::Compound(block) => {
+            let mut new_resolver = resolver.copy_resolver_and_reset_scopes();
+            resolve_block(block, &mut new_resolver)?;
+        }
     };
     Ok(())
 }
@@ -186,16 +214,14 @@ fn resolve_expr(
 ) -> Result<(), SemanticAnalysisError> {
     match expr {
         Expression::Constant(_) => (),
-        Expression::Var(ident) => {
-            if !resolver.seen(&ident) {
+        Expression::Var(ident) => match resolver.get_resolved_variable(&ident) {
+            Some(renamed) => *ident = renamed,
+            None => {
                 return Err(SemanticAnalysisError::UndeclaredVariableInInitializer(
                     ident.clone(),
-                ));
+                ))
             }
-
-            let renamed = resolver.resolve_variable(&ident);
-            *ident = renamed;
-        }
+        },
         Expression::Unary(_op, expr) => resolve_expr(expr, resolver)?,
         Expression::Binary(_op, lhs, rhs) => {
             resolve_expr(&mut *lhs, resolver)?;
@@ -404,5 +430,68 @@ mod tests {
             analysis,
             Err(SemanticAnalysisError::UndeclaredLabel("foo.1.label".into()))
         );
+    }
+
+    #[test]
+    fn test_duplicate_variable_decls_in_blocks_fails() {
+        let src = r#"
+            int main(void) {
+                int x = 1;
+                { 
+                    int b = 1;
+                    int b = 2;
+                }
+            }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = crate::parser::Parser::new(&tokens);
+        let mut ast = parse.into_ast().unwrap();
+        let analysis = resolve(&mut ast);
+        assert!(analysis.is_err());
+        assert_eq!(
+            analysis,
+            Err(SemanticAnalysisError::DuplicateDecl("b".into()))
+        );
+    }
+
+    #[test]
+    fn shadowing_variables_in_blocks_renames_inner_scope() {
+        let src = r#"
+            int main(void) {
+                int x = 1;
+                { 
+                    int x = 2;
+                }
+                return x;
+            }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = crate::parser::Parser::new(&tokens);
+        let mut ast = parse.into_ast().unwrap();
+        let analysis = resolve(&mut ast);
+        assert!(analysis.is_ok());
+
+        let expected = AST::Program(Box::new(AST::Function {
+            name: "main",
+            block: Block(vec![
+                BlockItem::Decl(Declaration {
+                    name: "x.0.decl".into(),
+                    init: Some(Expression::Constant(1)),
+                }),
+                BlockItem::Stmt(Statement::Compound(Block(vec![BlockItem::Decl(
+                    // Declaration is the same name, but has a new renamed variable
+                    // since we want to ensure any label is pinned to one value
+                    Declaration {
+                        name: "x.1.decl".into(),
+                        init: Some(Expression::Constant(2)),
+                    },
+                )]))),
+                BlockItem::Stmt(Statement::Return(Expression::Var("x.0.decl".into()))),
+            ]),
+        }));
+
+        assert_eq!(ast, expected);
     }
 }
