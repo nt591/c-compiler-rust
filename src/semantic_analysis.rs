@@ -1,3 +1,4 @@
+use crate::parser::Block;
 use crate::parser::BlockItem;
 use crate::parser::Declaration;
 use crate::parser::Expression;
@@ -115,9 +116,11 @@ fn resolve_ast<'a>(
         return Err(SemanticAnalysisError::UnexpectedNonProgramNode);
     };
 
-    let AST::Function { body, name: _ } = function.as_mut() else {
+    let AST::Function { block, name: _ } = function.as_mut() else {
         return Err(SemanticAnalysisError::UnexpectedNonFunctionNode);
     };
+
+    let Block(ref mut body) = block;
 
     for body_item in body.iter_mut() {
         match body_item {
@@ -172,6 +175,7 @@ fn resolve_statement(
             *label = renamed;
             resolve_statement(&mut *statement, resolver)?;
         }
+        Statement::Compound(_) => todo!(),
     };
     Ok(())
 }
@@ -221,6 +225,7 @@ fn resolve_expr(
 mod tests {
     use super::*;
     use crate::parser::BinaryOp;
+    use crate::parser::Block;
     use crate::parser::BlockItem;
     use crate::parser::Expression;
     use crate::parser::Statement;
@@ -230,7 +235,7 @@ mod tests {
     fn basic_resolve_repeated_variable() {
         let mut before = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![
+            block: Block(vec![
                 BlockItem::Decl(Declaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(1)),
@@ -240,7 +245,7 @@ mod tests {
                     init: Some(Expression::Constant(1)),
                 }),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
-            ],
+            ]),
         }));
 
         let actual = resolve(&mut before);
@@ -251,13 +256,13 @@ mod tests {
     fn basic_resolve_undeclared_variable() {
         let mut before = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![
+            block: Block(vec![
                 BlockItem::Decl(Declaration {
                     name: "a".into(),
                     init: Some(Expression::Var("c".into())),
                 }),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
-            ],
+            ]),
         }));
 
         let actual = resolve(&mut before);
@@ -268,7 +273,7 @@ mod tests {
     fn basic_resolve_successful() {
         let mut before = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![
+            block: Block(vec![
                 BlockItem::Decl(Declaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(1)),
@@ -278,14 +283,14 @@ mod tests {
                     init: Some(Expression::Var("a".into())),
                 }),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
-            ],
+            ]),
         }));
 
         let actual = resolve(&mut before);
         assert!(actual.is_ok());
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![
+            block: Block(vec![
                 BlockItem::Decl(Declaration {
                     name: "a.0.decl".into(),
                     init: Some(Expression::Constant(1)),
@@ -295,7 +300,7 @@ mod tests {
                     init: Some(Expression::Var("a.0.decl".into())),
                 }),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a.0.decl".into()))),
-            ],
+            ]),
         }));
 
         // mutates taken value
@@ -306,7 +311,7 @@ mod tests {
     fn complex_resolve_successful() {
         let mut before = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![
+            block: Block(vec![
                 BlockItem::Decl(Declaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(1)),
@@ -324,14 +329,14 @@ mod tests {
                     )),
                 }),
                 BlockItem::Stmt(Statement::Return(Expression::Var("c".into()))),
-            ],
+            ]),
         }));
 
         let actual = resolve(&mut before);
         assert!(actual.is_ok());
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![
+            block: Block(vec![
                 BlockItem::Decl(Declaration {
                     name: "a.0.decl".into(),
                     init: Some(Expression::Constant(1)),
@@ -349,7 +354,7 @@ mod tests {
                     )),
                 }),
                 BlockItem::Stmt(Statement::Return(Expression::Var("c.2.decl".into()))),
-            ],
+            ]),
         }));
 
         // mutates taken value

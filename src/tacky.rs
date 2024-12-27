@@ -120,7 +120,7 @@ impl<'a> Tacky<'a> {
             &mut self.parser,
             ParserAST::Function {
                 name: "empty",
-                body: vec![],
+                block: crate::parser::Block(vec![]),
             },
         );
         self.parse_program(&parser)
@@ -138,7 +138,8 @@ impl<'a> Tacky<'a> {
 
     fn parse_function(&mut self, parser: &ParserAST<'a>) -> Result<Function<'a>, TackyError> {
         match parser {
-            ParserAST::Function { name, body } => {
+            ParserAST::Function { name, block } => {
+                let crate::parser::Block(body) = block;
                 let instructions = self.parse_instructions(body)?;
                 Ok(Function { name, instructions })
             }
@@ -621,6 +622,7 @@ impl<'a> Tacky<'a> {
                 self.parse_statement(statement, instructions)?;
                 Ok(())
             }
+            Statement::Compound(_) => todo!(),
         }
     }
 
@@ -685,6 +687,7 @@ impl<'a> Tacky<'a> {
 mod tests {
     use super::*;
     use crate::parser::BinaryOp as ParserBinaryOp;
+    use crate::parser::Block;
     use crate::parser::BlockItem;
     use crate::parser::Declaration;
     use crate::parser::Statement;
@@ -695,9 +698,9 @@ mod tests {
     fn basic_parse() {
         let ast = ParserAST::Program(Box::new(ParserAST::Function {
             name: "main",
-            body: vec![BlockItem::Stmt(Statement::Return(Expression::Constant(
-                100,
-            )))],
+            block: Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Constant(100),
+            ))]),
         }));
 
         let expected = AST::Program(Function {
@@ -719,10 +722,10 @@ mod tests {
     fn unary_op_parse() {
         let ast = ParserAST::Program(Box::new(ParserAST::Function {
             name: "main",
-            body: vec![BlockItem::Stmt(Statement::Return(Expression::Unary(
+            block: Block(vec![BlockItem::Stmt(Statement::Return(Expression::Unary(
                 ParserUnaryOp::Negate,
                 Box::new(Expression::Constant(100)),
-            )))],
+            )))]),
         }));
 
         let expected = AST::Program(Function {
@@ -749,7 +752,7 @@ mod tests {
     fn complex_unary_parse() {
         let ast = ParserAST::Program(Box::new(ParserAST::Function {
             name: "main",
-            body: vec![BlockItem::Stmt(Statement::Return(Expression::Unary(
+            block: Block(vec![BlockItem::Stmt(Statement::Return(Expression::Unary(
                 ParserUnaryOp::Negate,
                 Box::new(Expression::Unary(
                     ParserUnaryOp::Complement,
@@ -758,7 +761,7 @@ mod tests {
                         Box::new(Expression::Constant(100)),
                     )),
                 )),
-            )))],
+            )))]),
         }));
 
         let expected = AST::Program(Function {
@@ -795,23 +798,25 @@ mod tests {
     fn complex_binary_parse() {
         let ast = ParserAST::Program(Box::new(ParserAST::Function {
             name: "main",
-            body: vec![BlockItem::Stmt(Statement::Return(Expression::Binary(
-                ParserBinaryOp::Subtract,
-                Box::new(Expression::Binary(
-                    ParserBinaryOp::Multiply,
-                    Box::new(Expression::Constant(1)),
-                    Box::new(Expression::Constant(2)),
-                )),
-                Box::new(Expression::Binary(
-                    ParserBinaryOp::Multiply,
-                    Box::new(Expression::Constant(3)),
+            block: Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Binary(
+                    ParserBinaryOp::Subtract,
                     Box::new(Expression::Binary(
-                        ParserBinaryOp::Add,
-                        Box::new(Expression::Constant(4)),
-                        Box::new(Expression::Constant(5)),
+                        ParserBinaryOp::Multiply,
+                        Box::new(Expression::Constant(1)),
+                        Box::new(Expression::Constant(2)),
                     )),
-                )),
-            )))],
+                    Box::new(Expression::Binary(
+                        ParserBinaryOp::Multiply,
+                        Box::new(Expression::Constant(3)),
+                        Box::new(Expression::Binary(
+                            ParserBinaryOp::Add,
+                            Box::new(Expression::Constant(4)),
+                            Box::new(Expression::Constant(5)),
+                        )),
+                    )),
+                ),
+            ))]),
         }));
         let expected = AST::Program(Function {
             name: "main",
@@ -856,27 +861,29 @@ mod tests {
     fn complex_binary_parse2() {
         let ast = ParserAST::Program(Box::new(ParserAST::Function {
             name: "main",
-            body: vec![BlockItem::Stmt(Statement::Return(Expression::Binary(
-                ParserBinaryOp::Subtract,
-                Box::new(Expression::Binary(
-                    ParserBinaryOp::Divide,
+            block: Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Binary(
+                    ParserBinaryOp::Subtract,
                     Box::new(Expression::Binary(
-                        ParserBinaryOp::Multiply,
-                        Box::new(Expression::Constant(5)),
-                        Box::new(Expression::Constant(4)),
-                    )),
-                    Box::new(Expression::Constant(2)),
-                )),
-                Box::new(Expression::Binary(
-                    ParserBinaryOp::Remainder,
-                    Box::new(Expression::Constant(3)),
-                    Box::new(Expression::Binary(
-                        ParserBinaryOp::Add,
+                        ParserBinaryOp::Divide,
+                        Box::new(Expression::Binary(
+                            ParserBinaryOp::Multiply,
+                            Box::new(Expression::Constant(5)),
+                            Box::new(Expression::Constant(4)),
+                        )),
                         Box::new(Expression::Constant(2)),
-                        Box::new(Expression::Constant(1)),
                     )),
-                )),
-            )))],
+                    Box::new(Expression::Binary(
+                        ParserBinaryOp::Remainder,
+                        Box::new(Expression::Constant(3)),
+                        Box::new(Expression::Binary(
+                            ParserBinaryOp::Add,
+                            Box::new(Expression::Constant(2)),
+                            Box::new(Expression::Constant(1)),
+                        )),
+                    )),
+                ),
+            ))]),
         }));
 
         let expected = AST::Program(Function {
@@ -928,23 +935,25 @@ mod tests {
     fn simple_bitwise() {
         let ast = ParserAST::Program(Box::new(ParserAST::Function {
             name: "main",
-            body: vec![BlockItem::Stmt(Statement::Return(Expression::Binary(
-                ParserBinaryOp::BitwiseOr,
-                Box::new(Expression::Binary(
-                    ParserBinaryOp::Multiply,
-                    Box::new(Expression::Constant(5)),
-                    Box::new(Expression::Constant(4)),
-                )),
-                Box::new(Expression::Binary(
-                    ParserBinaryOp::BitwiseAnd,
+            block: Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Binary(
+                    ParserBinaryOp::BitwiseOr,
                     Box::new(Expression::Binary(
-                        ParserBinaryOp::Subtract,
-                        Box::new(Expression::Constant(4)),
+                        ParserBinaryOp::Multiply,
                         Box::new(Expression::Constant(5)),
+                        Box::new(Expression::Constant(4)),
                     )),
-                    Box::new(Expression::Constant(6)),
-                )),
-            )))],
+                    Box::new(Expression::Binary(
+                        ParserBinaryOp::BitwiseAnd,
+                        Box::new(Expression::Binary(
+                            ParserBinaryOp::Subtract,
+                            Box::new(Expression::Constant(4)),
+                            Box::new(Expression::Constant(5)),
+                        )),
+                        Box::new(Expression::Constant(6)),
+                    )),
+                ),
+            ))]),
         }));
 
         let expected = AST::Program(Function {
@@ -990,15 +999,17 @@ mod tests {
     fn shiftleft() {
         let ast = ParserAST::Program(Box::new(ParserAST::Function {
             name: "main",
-            body: vec![BlockItem::Stmt(Statement::Return(Expression::Binary(
-                ParserBinaryOp::ShiftLeft,
-                Box::new(Expression::Binary(
-                    ParserBinaryOp::Multiply,
-                    Box::new(Expression::Constant(5)),
-                    Box::new(Expression::Constant(4)),
-                )),
-                Box::new(Expression::Constant(2)),
-            )))],
+            block: Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Binary(
+                    ParserBinaryOp::ShiftLeft,
+                    Box::new(Expression::Binary(
+                        ParserBinaryOp::Multiply,
+                        Box::new(Expression::Constant(5)),
+                        Box::new(Expression::Constant(4)),
+                    )),
+                    Box::new(Expression::Constant(2)),
+                ),
+            ))]),
         }));
         let expected = AST::Program(Function {
             name: "main",
@@ -1031,15 +1042,17 @@ mod tests {
     fn shiftleft_rhs_is_expr() {
         let ast = ParserAST::Program(Box::new(ParserAST::Function {
             name: "main",
-            body: vec![BlockItem::Stmt(Statement::Return(Expression::Binary(
-                ParserBinaryOp::ShiftLeft,
-                Box::new(Expression::Constant(5)),
-                Box::new(Expression::Binary(
-                    ParserBinaryOp::Add,
-                    Box::new(Expression::Constant(1)),
-                    Box::new(Expression::Constant(2)),
-                )),
-            )))],
+            block: Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Binary(
+                    ParserBinaryOp::ShiftLeft,
+                    Box::new(Expression::Constant(5)),
+                    Box::new(Expression::Binary(
+                        ParserBinaryOp::Add,
+                        Box::new(Expression::Constant(1)),
+                        Box::new(Expression::Constant(2)),
+                    )),
+                ),
+            ))]),
         }));
         let expected = AST::Program(Function {
             name: "main",
@@ -1072,15 +1085,17 @@ mod tests {
     fn test_short_circuit_and() {
         let ast = ParserAST::Program(Box::new(ParserAST::Function {
             name: "main",
-            body: vec![BlockItem::Stmt(Statement::Return(Expression::Binary(
-                ParserBinaryOp::BinAnd,
-                Box::new(Expression::Constant(5)),
-                Box::new(Expression::Binary(
-                    ParserBinaryOp::Add,
-                    Box::new(Expression::Constant(1)),
-                    Box::new(Expression::Constant(2)),
-                )),
-            )))],
+            block: Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Binary(
+                    ParserBinaryOp::BinAnd,
+                    Box::new(Expression::Constant(5)),
+                    Box::new(Expression::Binary(
+                        ParserBinaryOp::Add,
+                        Box::new(Expression::Constant(1)),
+                        Box::new(Expression::Constant(2)),
+                    )),
+                ),
+            ))]),
         }));
 
         let expected = AST::Program(Function {
@@ -1135,15 +1150,17 @@ mod tests {
     fn test_short_circuit_or() {
         let ast = ParserAST::Program(Box::new(ParserAST::Function {
             name: "main",
-            body: vec![BlockItem::Stmt(Statement::Return(Expression::Binary(
-                ParserBinaryOp::BinOr,
-                Box::new(Expression::Constant(5)),
-                Box::new(Expression::Binary(
-                    ParserBinaryOp::Add,
-                    Box::new(Expression::Constant(1)),
-                    Box::new(Expression::Constant(2)),
-                )),
-            )))],
+            block: Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Binary(
+                    ParserBinaryOp::BinOr,
+                    Box::new(Expression::Constant(5)),
+                    Box::new(Expression::Binary(
+                        ParserBinaryOp::Add,
+                        Box::new(Expression::Constant(1)),
+                        Box::new(Expression::Constant(2)),
+                    )),
+                ),
+            ))]),
         }));
 
         let expected = AST::Program(Function {
@@ -1198,7 +1215,7 @@ mod tests {
     fn basic_declarations() {
         let ast = ParserAST::Program(Box::new(ParserAST::Function {
             name: "main",
-            body: vec![
+            block: Block(vec![
                 BlockItem::Decl(Declaration {
                     name: "a.0.decl".into(),
                     init: Some(Expression::Constant(1)),
@@ -1216,7 +1233,7 @@ mod tests {
                     )),
                 }),
                 BlockItem::Stmt(Statement::Return(Expression::Var("c.2.decl".into()))),
-            ],
+            ]),
         }));
         let expected = AST::Program(Function {
             name: "main",
@@ -1255,7 +1272,7 @@ mod tests {
     fn test_compound_assignment() {
         let ast = ParserAST::Program(Box::new(ParserAST::Function {
             name: "main",
-            body: vec![
+            block: Block(vec![
                 BlockItem::Decl(Declaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(1)),
@@ -1286,7 +1303,7 @@ mod tests {
                     Box::new(Expression::Constant(2)),
                 ))),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
-            ],
+            ]),
         }));
 
         let expected = AST::Program(Function {
@@ -1362,7 +1379,7 @@ mod tests {
     fn test_invalid_lhs_compound_assignment() {
         let ast = ParserAST::Program(Box::new(ParserAST::Function {
             name: "main",
-            body: vec![
+            block: Block(vec![
                 BlockItem::Decl(Declaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(10)),
@@ -1376,7 +1393,7 @@ mod tests {
                     )),
                     Box::new(Expression::Constant(2)),
                 ))),
-            ],
+            ]),
         }));
         let tacky = Tacky::new(ast);
         let assembly = tacky.into_ast();

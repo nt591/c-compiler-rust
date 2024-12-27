@@ -27,7 +27,7 @@ use crate::lexer::Token;
 #[derive(Debug, PartialEq)]
 pub enum AST<'a> {
     Program(Box<AST<'a>>),
-    Function { name: &'a str, body: Vec<BlockItem> },
+    Function { name: &'a str, block: Block },
 }
 
 #[derive(Debug, PartialEq)]
@@ -44,6 +44,7 @@ pub enum Statement {
         then: Box<Statement>,
         else_: Option<Box<Statement>>,
     },
+    Compound(Block),
     Null,
 }
 
@@ -61,6 +62,9 @@ pub enum BlockItem {
     Stmt(Statement),
     Decl(Declaration),
 }
+
+#[derive(Debug, PartialEq)]
+pub struct Block(pub Vec<BlockItem>);
 
 #[derive(Debug, PartialEq)]
 pub enum Expression {
@@ -153,6 +157,12 @@ impl<'a> Parser<'a> {
         self.expect(Token::LeftParen)?;
         self.expect(Token::Void)?;
         self.expect(Token::RightParen)?;
+        let block = self.parse_block()?;
+
+        return Ok(AST::Function { name, block });
+    }
+
+    fn parse_block(&mut self) -> Result<Block, ParserError> {
         self.expect(Token::LeftBrace)?;
         let mut body = vec![];
 
@@ -165,7 +175,7 @@ impl<'a> Parser<'a> {
         }
         self.expect(Token::RightBrace)?;
 
-        return Ok(AST::Function { name, body });
+        Ok(Block(body))
     }
 
     fn parse_block_item(&mut self) -> Result<BlockItem, ParserError> {
@@ -210,9 +220,14 @@ impl<'a> Parser<'a> {
 
     // if it starts with return, it's a return Statement
     // if it's just a semi colon, it's Null
+    // If we start with a left brace, just treat as a block.
     // else, it's an expression
     fn parse_statement(&mut self) -> Result<Statement, ParserError> {
         match self.tokens.peek() {
+            Some(Token::LeftBrace) => {
+                let block = self.parse_block()?;
+                Ok(Statement::Compound(block))
+            }
             Some(Token::Return) => {
                 self.tokens.next();
                 let val = self.parse_expression(0)?;
@@ -531,7 +546,9 @@ mod tests {
         let ast = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![(BlockItem::Stmt(Statement::Return(Expression::Constant(100))))],
+            block: Block(vec![
+                (BlockItem::Stmt(Statement::Return(Expression::Constant(100)))),
+            ]),
         }));
         assert_eq!(expected, ast);
     }
@@ -585,10 +602,10 @@ mod tests {
         let ast = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![BlockItem::Stmt(Statement::Return(Expression::Unary(
+            block: Block(vec![BlockItem::Stmt(Statement::Return(Expression::Unary(
                 UnaryOp::Complement,
                 Box::new(Expression::Constant(100)),
-            )))],
+            )))]),
         }));
         assert_eq!(expected, ast);
     }
@@ -614,10 +631,10 @@ mod tests {
         let ast = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![BlockItem::Stmt(Statement::Return(Expression::Unary(
+            block: Block(vec![BlockItem::Stmt(Statement::Return(Expression::Unary(
                 UnaryOp::Negate,
                 Box::new(Expression::Constant(100)),
-            )))],
+            )))]),
         }));
         assert_eq!(expected, ast);
     }
@@ -645,10 +662,10 @@ mod tests {
         let ast = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![BlockItem::Stmt(Statement::Return(Expression::Unary(
+            block: Block(vec![BlockItem::Stmt(Statement::Return(Expression::Unary(
                 UnaryOp::Negate,
                 Box::new(Expression::Constant(100)),
-            )))],
+            )))]),
         }));
         assert_eq!(expected, ast);
     }
@@ -738,23 +755,25 @@ mod tests {
         let actual = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![BlockItem::Stmt(Statement::Return(Expression::Binary(
-                BinaryOp::Subtract,
-                Box::new(Expression::Binary(
-                    BinaryOp::Multiply,
-                    Box::new(Expression::Constant(1)),
-                    Box::new(Expression::Constant(2)),
-                )),
-                Box::new(Expression::Binary(
-                    BinaryOp::Multiply,
-                    Box::new(Expression::Constant(3)),
+            block: Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Binary(
+                    BinaryOp::Subtract,
                     Box::new(Expression::Binary(
-                        BinaryOp::Add,
-                        Box::new(Expression::Constant(4)),
-                        Box::new(Expression::Constant(5)),
+                        BinaryOp::Multiply,
+                        Box::new(Expression::Constant(1)),
+                        Box::new(Expression::Constant(2)),
                     )),
-                )),
-            )))],
+                    Box::new(Expression::Binary(
+                        BinaryOp::Multiply,
+                        Box::new(Expression::Constant(3)),
+                        Box::new(Expression::Binary(
+                            BinaryOp::Add,
+                            Box::new(Expression::Constant(4)),
+                            Box::new(Expression::Constant(5)),
+                        )),
+                    )),
+                ),
+            ))]),
         }));
 
         assert_eq!(expected, actual);
@@ -797,27 +816,29 @@ mod tests {
         let actual = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![BlockItem::Stmt(Statement::Return(Expression::Binary(
-                BinaryOp::Subtract,
-                Box::new(Expression::Binary(
-                    BinaryOp::Divide,
+            block: Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Binary(
+                    BinaryOp::Subtract,
                     Box::new(Expression::Binary(
-                        BinaryOp::Multiply,
-                        Box::new(Expression::Constant(5)),
-                        Box::new(Expression::Constant(4)),
-                    )),
-                    Box::new(Expression::Constant(2)),
-                )),
-                Box::new(Expression::Binary(
-                    BinaryOp::Remainder,
-                    Box::new(Expression::Constant(3)),
-                    Box::new(Expression::Binary(
-                        BinaryOp::Add,
+                        BinaryOp::Divide,
+                        Box::new(Expression::Binary(
+                            BinaryOp::Multiply,
+                            Box::new(Expression::Constant(5)),
+                            Box::new(Expression::Constant(4)),
+                        )),
                         Box::new(Expression::Constant(2)),
-                        Box::new(Expression::Constant(1)),
                     )),
-                )),
-            )))],
+                    Box::new(Expression::Binary(
+                        BinaryOp::Remainder,
+                        Box::new(Expression::Constant(3)),
+                        Box::new(Expression::Binary(
+                            BinaryOp::Add,
+                            Box::new(Expression::Constant(2)),
+                            Box::new(Expression::Constant(1)),
+                        )),
+                    )),
+                ),
+            ))]),
         }));
 
         assert_eq!(expected, actual);
@@ -856,23 +877,25 @@ mod tests {
         let actual = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![BlockItem::Stmt(Statement::Return(Expression::Binary(
-                BinaryOp::BitwiseOr,
-                Box::new(Expression::Binary(
-                    BinaryOp::Multiply,
-                    Box::new(Expression::Constant(5)),
-                    Box::new(Expression::Constant(4)),
-                )),
-                Box::new(Expression::Binary(
-                    BinaryOp::BitwiseAnd,
+            block: Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Binary(
+                    BinaryOp::BitwiseOr,
                     Box::new(Expression::Binary(
-                        BinaryOp::Subtract,
-                        Box::new(Expression::Constant(4)),
+                        BinaryOp::Multiply,
                         Box::new(Expression::Constant(5)),
+                        Box::new(Expression::Constant(4)),
                     )),
-                    Box::new(Expression::Constant(6)),
-                )),
-            )))],
+                    Box::new(Expression::Binary(
+                        BinaryOp::BitwiseAnd,
+                        Box::new(Expression::Binary(
+                            BinaryOp::Subtract,
+                            Box::new(Expression::Constant(4)),
+                            Box::new(Expression::Constant(5)),
+                        )),
+                        Box::new(Expression::Constant(6)),
+                    )),
+                ),
+            ))]),
         }));
 
         assert_eq!(expected, actual);
@@ -910,15 +933,17 @@ mod tests {
         // leftshift the result by 2
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![BlockItem::Stmt(Statement::Return(Expression::Binary(
-                BinaryOp::ShiftLeft,
-                Box::new(Expression::Binary(
-                    BinaryOp::Multiply,
-                    Box::new(Expression::Constant(5)),
-                    Box::new(Expression::Constant(4)),
-                )),
-                Box::new(Expression::Constant(2)),
-            )))],
+            block: Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Binary(
+                    BinaryOp::ShiftLeft,
+                    Box::new(Expression::Binary(
+                        BinaryOp::Multiply,
+                        Box::new(Expression::Constant(5)),
+                        Box::new(Expression::Constant(4)),
+                    )),
+                    Box::new(Expression::Constant(2)),
+                ),
+            ))]),
         }));
 
         assert_eq!(expected, actual);
@@ -955,15 +980,17 @@ mod tests {
         let actual = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![BlockItem::Stmt(Statement::Return(Expression::Binary(
-                BinaryOp::ShiftLeft,
-                Box::new(Expression::Constant(5)),
-                Box::new(Expression::Binary(
-                    BinaryOp::Add,
-                    Box::new(Expression::Constant(1)),
-                    Box::new(Expression::Constant(2)),
-                )),
-            )))],
+            block: Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Binary(
+                    BinaryOp::ShiftLeft,
+                    Box::new(Expression::Constant(5)),
+                    Box::new(Expression::Binary(
+                        BinaryOp::Add,
+                        Box::new(Expression::Constant(1)),
+                        Box::new(Expression::Constant(2)),
+                    )),
+                ),
+            ))]),
         }));
 
         assert_eq!(expected, actual);
@@ -1004,23 +1031,25 @@ mod tests {
         let actual = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![BlockItem::Stmt(Statement::Return(Expression::Binary(
-                BinaryOp::NotEqual,
-                Box::new(Expression::Binary(
-                    BinaryOp::LessOrEqual,
-                    Box::new(Expression::Constant(2)),
+            block: Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Binary(
+                    BinaryOp::NotEqual,
                     Box::new(Expression::Binary(
-                        BinaryOp::Subtract,
-                        Box::new(Expression::Constant(3)),
+                        BinaryOp::LessOrEqual,
                         Box::new(Expression::Constant(2)),
+                        Box::new(Expression::Binary(
+                            BinaryOp::Subtract,
+                            Box::new(Expression::Constant(3)),
+                            Box::new(Expression::Constant(2)),
+                        )),
                     )),
-                )),
-                Box::new(Expression::Binary(
-                    BinaryOp::Add,
-                    Box::new(Expression::Constant(4)),
-                    Box::new(Expression::Constant(5)),
-                )),
-            )))],
+                    Box::new(Expression::Binary(
+                        BinaryOp::Add,
+                        Box::new(Expression::Constant(4)),
+                        Box::new(Expression::Constant(5)),
+                    )),
+                ),
+            ))]),
         }));
 
         assert_eq!(expected, actual);
@@ -1057,13 +1086,13 @@ mod tests {
         let actual = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![
+            block: Block(vec![
                 BlockItem::Decl(Declaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(1)),
                 }),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
-            ],
+            ]),
         }));
 
         assert_eq!(expected, actual)
@@ -1102,7 +1131,7 @@ mod tests {
         let actual = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![
+            block: Block(vec![
                 BlockItem::Decl(Declaration {
                     name: "a".into(),
                     init: None,
@@ -1114,7 +1143,7 @@ mod tests {
                         Box::new(Expression::Var("c".into())),
                     )),
                 ))),
-            ],
+            ]),
         }));
 
         assert_eq!(expected, actual)
@@ -1150,14 +1179,14 @@ mod tests {
         let actual = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![
+            block: Block(vec![
                 BlockItem::Stmt(Statement::Expr(Expression::Binary(
                     BinaryOp::Add,
                     Box::new(Expression::Constant(2)),
                     Box::new(Expression::Constant(2)),
                 ))),
                 BlockItem::Stmt(Statement::Return(Expression::Constant(0))),
-            ],
+            ]),
         }));
 
         assert_eq!(expected, actual)
@@ -1219,7 +1248,7 @@ mod tests {
         let actual = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![
+            block: Block(vec![
                 BlockItem::Decl(Declaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(1)),
@@ -1250,7 +1279,7 @@ mod tests {
                     Box::new(Expression::Constant(2)),
                 ))),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
-            ],
+            ]),
         }));
 
         assert_eq!(expected, actual)
@@ -1308,7 +1337,7 @@ mod tests {
         let actual = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![
+            block: Block(vec![
                 BlockItem::Decl(Declaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(1)),
@@ -1334,7 +1363,7 @@ mod tests {
                     )),
                 ))),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
-            ],
+            ]),
         }));
 
         assert_eq!(expected, actual)
@@ -1376,7 +1405,7 @@ mod tests {
         let actual = ast.unwrap();
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![
+            block: Block(vec![
                 BlockItem::Decl(Declaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(10)),
@@ -1390,7 +1419,7 @@ mod tests {
                     )),
                     Box::new(Expression::Constant(2)),
                 ))),
-            ],
+            ]),
         }));
 
         assert_eq!(expected, actual)
@@ -1415,7 +1444,7 @@ mod tests {
 
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![BlockItem::Stmt(Statement::If {
+            block: Block(vec![BlockItem::Stmt(Statement::If {
                 condition: Expression::Var("a".into()),
                 then: Box::new(Statement::If {
                     condition: Expression::Binary(
@@ -1431,7 +1460,7 @@ mod tests {
                     )))),
                 }),
                 else_: None,
-            })],
+            })]),
         }));
 
         assert_eq!(ast.unwrap(), expected);
@@ -1455,7 +1484,7 @@ mod tests {
 
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![
+            block: Block(vec![
                 // first example:  we nest inner expression
                 BlockItem::Stmt(Statement::Expr(Expression::Conditional {
                     condition: Box::new(Expression::Var("a".into())),
@@ -1495,7 +1524,7 @@ mod tests {
                     )),
                     else_: Box::new(Expression::Constant(2)),
                 })),
-            ],
+            ]),
         }));
 
         assert_eq!(ast.unwrap(), expected);
@@ -1518,7 +1547,7 @@ mod tests {
 
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
-            body: vec![
+            block: Block(vec![
                 BlockItem::Stmt(Statement::Goto("foo".into())),
                 BlockItem::Stmt(Statement::Labelled {
                     label: "foo".into(),
@@ -1528,7 +1557,58 @@ mod tests {
                         Box::new(Expression::Constant(2)),
                     ))),
                 }),
-            ],
+            ]),
+        }));
+
+        assert_eq!(ast.unwrap(), expected);
+    }
+
+    #[test]
+    fn test_compound_statements_and_blocks() {
+        let src = r#"
+        int main(void) {
+            if (1) {
+                int x = 1;
+                return x;
+            }
+            {
+                int b = 2;
+                b + 1;
+            }
+        }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_ok());
+
+        let expected = AST::Program(Box::new(AST::Function {
+            name: "main",
+            block: Block(vec![
+                BlockItem::Stmt(Statement::If {
+                    condition: Expression::Constant(1),
+                    then: Box::new(Statement::Compound(Block(vec![
+                        BlockItem::Decl(Declaration {
+                            name: "x".into(),
+                            init: Some(Expression::Constant(1)),
+                        }),
+                        BlockItem::Stmt(Statement::Return(Expression::Var("x".into()))),
+                    ]))),
+                    else_: None,
+                }),
+                BlockItem::Stmt(Statement::Compound(Block(vec![
+                    BlockItem::Decl(Declaration {
+                        name: "b".into(),
+                        init: Some(Expression::Constant(2)),
+                    }),
+                    BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                        BinaryOp::Add,
+                        Box::new(Expression::Var("b".into())),
+                        Box::new(Expression::Constant(1)),
+                    ))),
+                ]))),
+            ]),
         }));
 
         assert_eq!(ast.unwrap(), expected);
