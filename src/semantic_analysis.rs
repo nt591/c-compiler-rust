@@ -2,6 +2,7 @@ use crate::parser::Block;
 use crate::parser::BlockItem;
 use crate::parser::Declaration;
 use crate::parser::Expression;
+use crate::parser::ForInit;
 use crate::parser::Statement;
 use crate::parser::AST;
 use std::collections::hash_map::Entry;
@@ -24,6 +25,10 @@ pub enum SemanticAnalysisError {
     DuplicateLabel(String),
     #[error("Undeclared label {0}")]
     UndeclaredLabel(String),
+    #[error("Found a Break statement outside of a loop")]
+    BreakWithoutLoopConstruct,
+    #[error("Found a Continue statement outside of a loop")]
+    ContinueWithoutLoopConstruct,
 }
 
 // maps variable names to a unique identifier
@@ -49,6 +54,12 @@ impl Resolver {
         let count = self.var_counter;
         self.var_counter += 1;
         format!("{name}.{count}.decl")
+    }
+
+    fn make_loop_label(&mut self, base: &str) -> String {
+        let count = self.var_counter;
+        self.var_counter += 1;
+        format!("{base}.{count}")
     }
 
     fn resolve_variable(&mut self, name: &str, resolved_name: String, in_current_scope: bool) {
@@ -113,7 +124,9 @@ impl Resolver {
 pub fn resolve<'a>(ast: &mut AST<'a>) -> Result<(), SemanticAnalysisError> {
     let mut resolver = Resolver::new();
     resolve_ast(ast, &mut resolver)?;
-    validate_labels(&resolver)
+    label_and_validate_loop_constructs(ast, &mut resolver)?;
+    validate_labels(&resolver)?;
+    Ok(())
 }
 
 fn validate_labels<'a>(resolver: &Resolver) -> Result<(), SemanticAnalysisError> {
@@ -204,12 +217,50 @@ fn resolve_statement(
             let mut new_resolver = resolver.copy_resolver_and_reset_scopes();
             resolve_block(block, &mut new_resolver)?;
         }
-        Statement::Break(_)
-        | Statement::Continue(_)
-        | Statement::For { .. }
-        | Statement::DoWhile { .. }
-        | Statement::While { .. } => todo!(),
+        Statement::Break(_lbl) | Statement::Continue(_lbl) => (),
+        Statement::DoWhile {
+            condition, body, ..
+        }
+        | Statement::While {
+            body, condition, ..
+        } => {
+            resolve_expr(&mut *condition, resolver)?;
+            resolve_statement(&mut **body, resolver)?;
+        }
+        Statement::For {
+            init,
+            condition,
+            post,
+            body,
+            ..
+        } => {
+            let mut new_resolver = resolver.copy_resolver_and_reset_scopes();
+            resolve_for_init(&mut *init, &mut new_resolver)?;
+            resolve_optional_expr(condition.as_mut(), &mut new_resolver)?;
+            resolve_optional_expr(post.as_mut(), &mut new_resolver)?;
+            resolve_statement(&mut **body, &mut new_resolver)?;
+        }
     };
+    Ok(())
+}
+
+fn resolve_for_init(
+    init: &mut ForInit,
+    resolver: &mut Resolver,
+) -> Result<(), SemanticAnalysisError> {
+    match init {
+        ForInit::InitDecl(ref mut decl) => resolve_decl(decl, resolver),
+        ForInit::InitExp(expr) => resolve_optional_expr(expr.as_mut(), resolver),
+    }
+}
+
+fn resolve_optional_expr(
+    mut expr: Option<&mut Expression>,
+    resolver: &mut Resolver,
+) -> Result<(), SemanticAnalysisError> {
+    if let Some(ref mut expression) = expr {
+        resolve_expr(expression, resolver)?;
+    }
     Ok(())
 }
 
@@ -250,6 +301,88 @@ fn resolve_expr(
         }
     };
     Ok(())
+}
+
+fn label_and_validate_loop_constructs<'a>(
+    ast: &mut AST,
+    resolver: &mut Resolver,
+) -> Result<(), SemanticAnalysisError> {
+    let AST::Program(function) = ast else {
+        return Err(SemanticAnalysisError::UnexpectedNonProgramNode);
+    };
+
+    let AST::Function { block, name: _ } = function.as_mut() else {
+        return Err(SemanticAnalysisError::UnexpectedNonFunctionNode);
+    };
+
+    label_block(block, None, resolver)
+}
+
+fn label_block<'a>(
+    block: &mut Block,
+    current_label: Option<String>,
+    resolver: &mut Resolver,
+) -> Result<(), SemanticAnalysisError> {
+    let Block(ref mut body) = block;
+    for body_item in body.iter_mut() {
+        if let BlockItem::Stmt(statement) = body_item {
+            label_statement(statement, current_label.clone(), resolver)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn label_statement<'a>(
+    statement: &mut Statement,
+    current_label: Option<String>,
+    resolver: &mut Resolver,
+) -> Result<(), SemanticAnalysisError> {
+    use Statement::*;
+    match statement {
+        Goto(_) | Return(_) | Expr(_) | Null => Ok(()),
+        Break(_) if current_label.is_none() => {
+            Err(SemanticAnalysisError::BreakWithoutLoopConstruct)
+        }
+        Break(lbl) => {
+            *lbl = current_label.unwrap().clone();
+            Ok(())
+        }
+        Continue(_) if current_label.is_none() => {
+            Err(SemanticAnalysisError::ContinueWithoutLoopConstruct)
+        }
+        Continue(lbl) => {
+            *lbl = current_label.unwrap().clone();
+            Ok(())
+        }
+        While { body, label, .. } => {
+            let new_label = resolver.make_loop_label("while_label");
+            label_statement(&mut *body, Some(new_label.clone()), resolver)?;
+            *label = new_label;
+            Ok(())
+        }
+        DoWhile { body, label, .. } => {
+            let new_label = resolver.make_loop_label("do_while_label");
+            label_statement(&mut *body, Some(new_label.clone()), resolver)?;
+            *label = new_label;
+            Ok(())
+        }
+        For { label, body, .. } => {
+            let new_label = resolver.make_loop_label("for_label");
+            label_statement(&mut *body, Some(new_label.clone()), resolver)?;
+            *label = new_label;
+            Ok(())
+        }
+        Labelled { statement, .. } => label_statement(&mut *statement, current_label, resolver),
+        Compound(block) => label_block(block, current_label, resolver),
+        If { then, else_, .. } => {
+            label_statement(then, current_label.clone(), resolver)?;
+            if let Some(stmt) = else_ {
+                label_statement(stmt, current_label, resolver)?;
+            }
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -498,5 +631,110 @@ mod tests {
         }));
 
         assert_eq!(ast, expected);
+    }
+
+    #[test]
+    fn loop_labeling_and_exit_statements() {
+        let src = r#"
+        int main(void) {
+            int a;
+            for (a = 1; a < 10; a = a + 1) {
+                continue; 
+            }
+            do {
+                continue;
+            } while (a < 0);
+            while (a > 0) 
+                break;
+        }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = crate::parser::Parser::new(&tokens);
+        let mut ast = parse.into_ast().unwrap();
+        let analysis = resolve(&mut ast);
+        assert!(analysis.is_ok());
+
+        let expected = AST::Program(Box::new(AST::Function {
+            name: "main",
+            block: Block(vec![
+                BlockItem::Decl(Declaration {
+                    name: "a.0.decl".into(),
+                    init: None,
+                }),
+                BlockItem::Stmt(Statement::For {
+                    init: ForInit::InitExp(Some(Expression::Assignment(
+                        Box::new(Expression::Var("a.0.decl".into())),
+                        Box::new(Expression::Constant(1)),
+                    ))),
+                    condition: Some(Expression::Binary(
+                        BinaryOp::LessThan,
+                        Box::new(Expression::Var("a.0.decl".into())),
+                        Box::new(Expression::Constant(10)),
+                    )),
+                    post: Some(Expression::Assignment(
+                        Box::new(Expression::Var("a.0.decl".into())),
+                        Box::new(Expression::Binary(
+                            BinaryOp::Add,
+                            Box::new(Expression::Var("a.0.decl".into())),
+                            Box::new(Expression::Constant(1)),
+                        )),
+                    )),
+                    body: Box::new(Statement::Compound(Block(vec![BlockItem::Stmt(
+                        Statement::Continue("for_label.1".into()),
+                    )]))),
+                    label: "for_label.1".into(),
+                }),
+                BlockItem::Stmt(Statement::DoWhile {
+                    body: Box::new(Statement::Compound(Block(vec![BlockItem::Stmt(
+                        Statement::Continue("do_while_label.2".into()),
+                    )]))),
+                    condition: Expression::Binary(
+                        BinaryOp::LessThan,
+                        Box::new(Expression::Var("a.0.decl".into())),
+                        Box::new(Expression::Constant(0)),
+                    ),
+                    label: "do_while_label.2".into(),
+                }),
+                BlockItem::Stmt(Statement::While {
+                    condition: Expression::Binary(
+                        BinaryOp::GreaterThan,
+                        Box::new(Expression::Var("a.0.decl".into())),
+                        Box::new(Expression::Constant(0)),
+                    ),
+                    body: Box::new(Statement::Break("while_label.3".into())),
+                    label: "while_label.3".into(),
+                }),
+            ]),
+        }));
+        assert_eq!(ast, expected);
+    }
+
+    #[test]
+    fn break_and_continue_must_be_in_loops() {
+        let src = r#"
+        int main(void) {
+            continue; 
+        }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = crate::parser::Parser::new(&tokens);
+        let mut ast = parse.into_ast().unwrap();
+        let analysis = resolve(&mut ast);
+        assert!(analysis.is_err());
+
+        let src = r#"
+            int main(void) {
+                while (1) continue;
+                break; 
+            }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = crate::parser::Parser::new(&tokens);
+        let mut ast = parse.into_ast().unwrap();
+        let analysis = resolve(&mut ast);
+        assert!(analysis.is_err());
     }
 }

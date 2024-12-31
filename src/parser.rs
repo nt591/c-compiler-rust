@@ -1728,7 +1728,8 @@ mod tests {
     fn test_loop_parsing() {
         let src = r#"
         int main(void) {
-            for (int a = 1; a < 10; a = a + 1) {
+            int a;
+            for (a = 1; a < 10; a = a + 1) {
                 continue; 
             }
             do {
@@ -1748,11 +1749,15 @@ mod tests {
         let expected = AST::Program(Box::new(AST::Function {
             name: "main",
             block: Block(vec![
+                BlockItem::Decl(Declaration {
+                    name: "a".into(),
+                    init: None,
+                }),
                 BlockItem::Stmt(Statement::For {
-                    init: ForInit::InitDecl(Declaration {
-                        name: "a".into(),
-                        init: Some(Expression::Constant(1)),
-                    }),
+                    init: ForInit::InitExp(Some(Expression::Assignment(
+                        Box::new(Expression::Var("a".into())),
+                        Box::new(Expression::Constant(1)),
+                    ))),
                     condition: Some(Expression::Binary(
                         BinaryOp::LessThan,
                         Box::new(Expression::Var("a".into())),
