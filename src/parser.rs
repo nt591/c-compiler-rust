@@ -1728,8 +1728,8 @@ mod tests {
     fn test_loop_parsing() {
         let src = r#"
         int main(void) {
-            int a;
-            for (a = 1; a < 10; a = a + 1) {
+            int a = 1;
+            for (int b = 1; b < 10; b = b + 1) {
                 continue; 
             }
             do {
@@ -1751,23 +1751,23 @@ mod tests {
             block: Block(vec![
                 BlockItem::Decl(Declaration {
                     name: "a".into(),
-                    init: None,
+                    init: Some(Expression::Constant(1)),
                 }),
                 BlockItem::Stmt(Statement::For {
-                    init: ForInit::InitExp(Some(Expression::Assignment(
-                        Box::new(Expression::Var("a".into())),
-                        Box::new(Expression::Constant(1)),
-                    ))),
+                    init: ForInit::InitDecl(Declaration {
+                        name: "b".into(),
+                        init: Some(Expression::Constant(1)),
+                    }),
                     condition: Some(Expression::Binary(
                         BinaryOp::LessThan,
-                        Box::new(Expression::Var("a".into())),
+                        Box::new(Expression::Var("b".into())),
                         Box::new(Expression::Constant(10)),
                     )),
                     post: Some(Expression::Assignment(
-                        Box::new(Expression::Var("a".into())),
+                        Box::new(Expression::Var("b".into())),
                         Box::new(Expression::Binary(
                             BinaryOp::Add,
-                            Box::new(Expression::Var("a".into())),
+                            Box::new(Expression::Var("b".into())),
                             Box::new(Expression::Constant(1)),
                         )),
                     )),

@@ -4,7 +4,9 @@
 use crate::parser;
 use crate::parser::BinaryOp as ParserBinaryOp;
 use crate::parser::Block;
+use crate::parser::Declaration;
 use crate::parser::Expression;
+use crate::parser::ForInit;
 use crate::parser::Statement;
 use crate::parser::UnaryOp as ParserUnaryOp;
 use crate::parser::AST as ParserAST;
@@ -623,11 +625,103 @@ impl<'a> Tacky<'a> {
                 Ok(())
             }
             Statement::Compound(block) => self.parse_block(block, instructions),
-            Statement::Break(_)
-            | Statement::Continue(_)
-            | Statement::For { .. }
-            | Statement::DoWhile { .. }
-            | Statement::While { .. } => todo!(),
+            Statement::Break(label) => {
+                instructions.push(Instruction::Jump(create_break_label(&label)));
+                Ok(())
+            }
+            Statement::Continue(label) => {
+                instructions.push(Instruction::Jump(create_continue_label(&label)));
+                Ok(())
+            }
+            Statement::DoWhile {
+                label,
+                body,
+                condition,
+            } => {
+                // push the label first, then we write the instructions for the body.
+                // At this point, we write the label for the continue, which
+                // ensures if our body had a Continue, we drop to this label.
+                // Then we check our condition, and JumpIfNotZero to the start.
+                // Then, we write out the label for the Break, so if our
+                // body saw a break, we drop out of the do-while construct
+                instructions.push(Instruction::Label(label.into()));
+                self.parse_statement(body.as_ref(), instructions)?;
+                instructions.push(Instruction::Label(create_continue_label(&label)));
+                let v = self.parse_expression(condition, instructions)?;
+                instructions.push(Instruction::JumpIfNotZero {
+                    cond: v,
+                    target: label.into(),
+                });
+                instructions.push(Instruction::Label(create_break_label(&label)));
+                Ok(())
+            }
+            Statement::While {
+                label,
+                body,
+                condition,
+            } => {
+                // As with do-while, we start by writing out the label.
+                // In this case, we'll emit the continue label at the top.
+                // This ensures we re-evaluate the condition each time.
+                // We emit the condition out, then
+                // we JumpIfZero to the end, our break-label. Afterwards
+                // we write out the body, jump to the start (our continue label),
+                // then emit our break label at the end.
+                let cont_label = create_continue_label(&label);
+                let break_label = create_break_label(&label);
+                instructions.push(Instruction::Label(cont_label.clone()));
+                let v = self.parse_expression(condition, instructions)?;
+                instructions.push(Instruction::JumpIfZero {
+                    cond: v,
+                    target: break_label.clone(),
+                });
+                self.parse_statement(body, instructions)?;
+                instructions.push(Instruction::Jump(cont_label));
+                instructions.push(Instruction::Label(break_label));
+                Ok(())
+            }
+            Statement::For {
+                init,
+                condition,
+                post,
+                body,
+                label,
+            } => {
+                // We write out instructions for our initializer. Then
+                // we construct a label to start our loop. We evaluate
+                // the condition, and JumpIfZero to the break label at the end.
+                // Then we evaluate the body, then write out our Continue label.
+                // Then write out the postcondition expression, so our continue
+                // hits this (eg. i++). After this, we jump to the start. Then we
+                // write out the Break label at the very end.
+                // Since we have so many optionals in our For construct, we
+                // will occasionally just omit some instructions in the None case.
+                match init {
+                    ForInit::InitDecl(declaration) => {
+                        self.emit_declaration(declaration, instructions)?;
+                    }
+                    ForInit::InitExp(Some(expr)) => {
+                        self.parse_expression(expr, instructions)?;
+                    }
+                    ForInit::InitExp(None) => (),
+                };
+                instructions.push(Instruction::Label(label.clone()));
+                if let Some(expr) = condition {
+                    let v = self.parse_expression(expr, instructions)?;
+                    instructions.push(Instruction::JumpIfZero {
+                        cond: v,
+                        target: create_break_label(&label),
+                    });
+                };
+                self.parse_statement(body.as_ref(), instructions)?;
+                instructions.push(Instruction::Label(create_continue_label(&label)));
+                if let Some(expr) = post {
+                    self.parse_expression(expr, instructions)?;
+                };
+                instructions.push(Instruction::Jump(label.clone()));
+                instructions.push(Instruction::Label(create_break_label(&label)));
+                Ok(())
+            }
         }
     }
 
@@ -647,30 +741,36 @@ impl<'a> Tacky<'a> {
         instructions: &mut Vec<Instruction>,
     ) -> Result<(), TackyError> {
         use parser::BlockItem;
-        use parser::Declaration;
-
         let Block(body) = block;
         for body_item in body {
             match body_item {
                 BlockItem::Stmt(stmt) => {
                     self.parse_statement(stmt, instructions)?;
                 }
-                BlockItem::Decl(Declaration {
-                    name: _,
-                    init: None,
-                }) => (),
-                BlockItem::Decl(Declaration {
-                    name: ident,
-                    init: Some(init),
-                }) => {
-                    // emit instructions for rhs, then copy into lhs
-                    let result = self.parse_expression(init, instructions)?;
-                    instructions.push(Instruction::Copy {
-                        src: result,
-                        dst: Val::Var(ident.clone()),
-                    });
+                BlockItem::Decl(declaration) => {
+                    self.emit_declaration(declaration, instructions)?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    fn emit_declaration(
+        &mut self,
+        decl: &Declaration,
+        instructions: &mut Vec<Instruction>,
+    ) -> Result<(), TackyError> {
+        if let Declaration {
+            name,
+            init: Some(init),
+        } = decl
+        {
+            // emit instructions for rhs, then copy into lhs
+            let result = self.parse_expression(init, instructions)?;
+            instructions.push(Instruction::Copy {
+                src: result,
+                dst: Val::Var(name.clone()),
+            });
         }
         Ok(())
     }
@@ -693,6 +793,14 @@ impl<'a> Tacky<'a> {
         self.label_counter = c + 1;
         s
     }
+}
+
+fn create_break_label(lbl: &str) -> String {
+    format!("break_{lbl}")
+}
+
+fn create_continue_label(lbl: &str) -> String {
+    format!("continue_{lbl}")
 }
 
 #[cfg(test)]
@@ -1612,6 +1720,177 @@ mod tests {
                     dst: Val::Var("x.0.decl".into()),
                 },
                 Instruction::Ret(Val::Var("x.0.decl".into())),
+                Instruction::Ret(Val::Constant(0)),
+            ],
+        });
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn loops_and_breaks() {
+        let src = r#"
+        int main(void) {
+            int a;
+            for (a = 1; a < 10; a = a + 1) {
+                continue; 
+            }
+            do {
+                continue;
+            } while (a < 0);
+            while (a > 0) 
+                break;
+        }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = crate::parser::Parser::new(&tokens);
+        let mut ast = parse.into_ast().unwrap();
+        crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let asm = Tacky::new(ast);
+        let assembly = asm.into_ast();
+        let Ok(actual) = assembly else {
+            panic!();
+        };
+        let expected = AST::Program(Function {
+            name: "main",
+            instructions: vec![
+                /* handle initializer, write out for loop label,
+                 * check condition, JumpIfZero, write out body, write out continue label,
+                 * write out post-condition, jump to start, then write break label
+                 */
+                Instruction::Copy {
+                    src: Val::Constant(1),
+                    dst: Val::Var("a.0.decl".into()),
+                },
+                Instruction::Label("for_label.1".into()),
+                Instruction::Binary {
+                    op: BinaryOp::LessThan,
+                    src1: Val::Var("a.0.decl".into()),
+                    src2: Val::Constant(10),
+                    dst: Val::Var("tmp.0".into()),
+                },
+                Instruction::JumpIfZero {
+                    cond: Val::Var("tmp.0".into()),
+                    target: "break_for_label.1".into(),
+                },
+                Instruction::Jump("continue_for_label.1".into()),
+                Instruction::Label("continue_for_label.1".into()),
+                Instruction::Binary {
+                    op: BinaryOp::Add,
+                    src1: Val::Var("a.0.decl".into()),
+                    src2: Val::Constant(1),
+                    dst: Val::Var("tmp.1".into()),
+                },
+                Instruction::Copy {
+                    src: Val::Var("tmp.1".into()),
+                    dst: Val::Var("a.0.decl".into()),
+                },
+                Instruction::Jump("for_label.1".into()),
+                Instruction::Label("break_for_label.1".into()),
+                /*
+                 * do-while: write starting label, eval body, write continue label out,
+                 * eval condition, JumpIfNotZero to starting label, write break label,
+                 */
+                Instruction::Label("do_while_label.2".into()),
+                Instruction::Jump("continue_do_while_label.2".into()),
+                Instruction::Label("continue_do_while_label.2".into()),
+                Instruction::Binary {
+                    op: BinaryOp::LessThan,
+                    src1: Val::Var("a.0.decl".into()),
+                    src2: Val::Constant(0),
+                    dst: Val::Var("tmp.2".into()),
+                },
+                Instruction::JumpIfNotZero {
+                    cond: Val::Var("tmp.2".into()),
+                    target: "do_while_label.2".into(),
+                },
+                Instruction::Label("break_do_while_label.2".into()),
+                /*
+                 * write out the continue label, then check condition. JumpIfZero to
+                 * break label. Evaluate body. Write continue label. Write break label.
+                 */
+                Instruction::Label("continue_while_label.3".into()),
+                Instruction::Binary {
+                    op: BinaryOp::GreaterThan,
+                    src1: Val::Var("a.0.decl".into()),
+                    src2: Val::Constant(0),
+                    dst: Val::Var("tmp.3".into()),
+                },
+                Instruction::JumpIfZero {
+                    cond: Val::Var("tmp.3".into()),
+                    target: "break_while_label.3".into(),
+                },
+                Instruction::Jump("break_while_label.3".into()),
+                Instruction::Jump("continue_while_label.3".into()),
+                Instruction::Label("break_while_label.3".into()),
+                // placeholder
+                Instruction::Ret(Val::Constant(0)),
+            ],
+        });
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn missing_condition_in_for_loop() {
+        let src = r#"
+        int main(void) {
+            for (int i = 400; ; i = i - 100)
+                if (i == 100)
+                    return 0;
+        }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = crate::parser::Parser::new(&tokens);
+        let mut ast = parse.into_ast().unwrap();
+        crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let asm = Tacky::new(ast);
+        let assembly = asm.into_ast();
+        let Ok(actual) = assembly else {
+            panic!();
+        };
+        let expected = AST::Program(Function {
+            name: "main",
+            instructions: vec![
+                /* handle initializer, write out for loop label,
+                 * check condition, JumpIfZero, write out body, write out continue label,
+                 * write out post-condition, jump to start, then write break label
+                 */
+                Instruction::Copy {
+                    src: Val::Constant(400),
+                    dst: Val::Var("i.0.decl".into()),
+                },
+                Instruction::Label("for_label.0".into()),
+                Instruction::Binary {
+                    op: BinaryOp::Equal,
+                    src1: Val::Var("i.0.decl".into()),
+                    src2: Val::Constant(100),
+                    dst: Val::Var("tmp.0".into()),
+                },
+                Instruction::Copy {
+                    src: Val::Var("tmp.0".into()),
+                    dst: Val::Var("tmp.1".into()),
+                },
+                Instruction::JumpIfZero {
+                    cond: Val::Var("tmp.1".into()),
+                    target: "end_label.0".into(),
+                },
+                Instruction::Ret(Val::Constant(0)),
+                Instruction::Label("end_label.0".into()),
+                Instruction::Label("continue_for_label.0".into()),
+                Instruction::Binary {
+                    op: BinaryOp::Subtract,
+                    src1: Val::Var("i.0.decl".into()),
+                    src2: Val::Constant(100),
+                    dst: Val::Var("tmp.2".into()),
+                },
+                Instruction::Copy {
+                    src: Val::Var("tmp.2".into()),
+                    dst: Val::Var("i.0.decl".into()),
+                },
+                Instruction::Jump("for_label.0".into()),
+                Instruction::Label("break_for_label.0".into()),
+                // placeholder
                 Instruction::Ret(Val::Constant(0)),
             ],
         });
