@@ -204,6 +204,11 @@ fn resolve_statement(
             let mut new_resolver = resolver.copy_resolver_and_reset_scopes();
             resolve_block(block, &mut new_resolver)?;
         }
+        Statement::Break(_)
+        | Statement::Continue(_)
+        | Statement::For { .. }
+        | Statement::DoWhile { .. }
+        | Statement::While { .. } => todo!(),
     };
     Ok(())
 }

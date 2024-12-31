@@ -31,6 +31,12 @@ pub enum AST<'a> {
 }
 
 #[derive(Debug, PartialEq)]
+pub enum ForInit {
+    InitDecl(Declaration),
+    InitExp(Option<Expression>),
+}
+
+#[derive(Debug, PartialEq)]
 pub enum Statement {
     Goto(String),
     Labelled {
@@ -45,6 +51,25 @@ pub enum Statement {
         else_: Option<Box<Statement>>,
     },
     Compound(Block),
+    Break(String),
+    Continue(String),
+    While {
+        condition: Expression,
+        body: Box<Statement>,
+        label: String,
+    },
+    DoWhile {
+        body: Box<Statement>,
+        condition: Expression,
+        label: String,
+    },
+    For {
+        init: ForInit,
+        condition: Option<Expression>,
+        post: Option<Expression>,
+        body: Box<Statement>,
+        label: String,
+    },
     Null,
 }
 
@@ -190,6 +215,35 @@ impl<'a> Parser<'a> {
         Ok(block_item)
     }
 
+    fn parse_for_init(&mut self) -> Result<ForInit, ParserError> {
+        if let Some(Token::Int) = self.tokens.peek() {
+            let decl = self.parse_declaration()?;
+            Ok(ForInit::InitDecl(decl))
+        } else {
+            let expr = self.parse_optional_expr(Token::Semicolon)?;
+            Ok(ForInit::InitExp(expr))
+        }
+    }
+
+    fn parse_optional_expr(
+        &mut self,
+        terminator: Token<'a>,
+    ) -> Result<Option<Expression>, ParserError> {
+        // if the next token is our termination token, just consume and return none.
+        // Else, parse an expression, ensure we end with the terminator and return the expr
+        match self.tokens.peek() {
+            Some(token) if **token == terminator => {
+                self.tokens.next();
+                Ok(None)
+            }
+            _ => {
+                let expr = self.parse_expression(0)?;
+                self.expect(terminator)?;
+                Ok(Some(expr))
+            }
+        }
+    }
+
     // "int" 'IDENTIFIER' [ '=' EXPR] ';'
     fn parse_declaration(&mut self) -> Result<Declaration, ParserError> {
         assert_eq!(
@@ -303,6 +357,57 @@ impl<'a> Parser<'a> {
                         Ok(Statement::Expr(val))
                     }
                 }
+            }
+            Some(Token::Break) => {
+                self.tokens.next();
+                self.expect(Token::Semicolon)?;
+                Ok(Statement::Break(self.dummy_label()))
+            }
+            Some(Token::Continue) => {
+                self.tokens.next();
+                self.expect(Token::Semicolon)?;
+                Ok(Statement::Continue(self.dummy_label()))
+            }
+            Some(Token::While) => {
+                self.tokens.next();
+                self.expect(Token::LeftParen)?;
+                let exp = self.parse_expression(0)?;
+                self.expect(Token::RightParen)?;
+                let stmt = self.parse_statement()?;
+                Ok(Statement::While {
+                    condition: exp,
+                    body: Box::new(stmt),
+                    label: self.dummy_label(),
+                })
+            }
+            Some(Token::Do) => {
+                self.tokens.next();
+                let stmt = self.parse_statement()?;
+                self.expect(Token::While)?;
+                self.expect(Token::LeftParen)?;
+                let exp = self.parse_expression(0)?;
+                self.expect(Token::RightParen)?;
+                self.expect(Token::Semicolon)?;
+                Ok(Statement::DoWhile {
+                    condition: exp,
+                    body: Box::new(stmt),
+                    label: self.dummy_label(),
+                })
+            }
+            Some(Token::For) => {
+                self.tokens.next();
+                self.expect(Token::LeftParen)?;
+                let for_init = self.parse_for_init()?;
+                let condition = self.parse_optional_expr(Token::Semicolon)?;
+                let post = self.parse_optional_expr(Token::RightParen)?;
+                let body = self.parse_statement()?;
+                Ok(Statement::For {
+                    init: for_init,
+                    condition,
+                    post,
+                    body: Box::new(body),
+                    label: self.dummy_label(),
+                })
             }
             Some(_other) => {
                 let val = self.parse_expression(0)?;
@@ -514,6 +619,11 @@ impl<'a> Parser<'a> {
             | Token::GreaterThanGreaterThanEqual => Ok(2),
             t => Err(ParserError::NoPrecedenceForToken(t.into_string())),
         }
+    }
+
+    #[inline(always)]
+    fn dummy_label(&self) -> String {
+        "".into()
     }
 }
 
@@ -1608,6 +1718,79 @@ mod tests {
                         Box::new(Expression::Constant(1)),
                     ))),
                 ]))),
+            ]),
+        }));
+
+        assert_eq!(ast.unwrap(), expected);
+    }
+
+    #[test]
+    fn test_loop_parsing() {
+        let src = r#"
+        int main(void) {
+            for (int a = 1; a < 10; a = a + 1) {
+                continue; 
+            }
+            do {
+                continue;
+            } while (a < 0);
+            while (a > 0) 
+                break;
+            
+        }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_ok());
+
+        let expected = AST::Program(Box::new(AST::Function {
+            name: "main",
+            block: Block(vec![
+                BlockItem::Stmt(Statement::For {
+                    init: ForInit::InitDecl(Declaration {
+                        name: "a".into(),
+                        init: Some(Expression::Constant(1)),
+                    }),
+                    condition: Some(Expression::Binary(
+                        BinaryOp::LessThan,
+                        Box::new(Expression::Var("a".into())),
+                        Box::new(Expression::Constant(10)),
+                    )),
+                    post: Some(Expression::Assignment(
+                        Box::new(Expression::Var("a".into())),
+                        Box::new(Expression::Binary(
+                            BinaryOp::Add,
+                            Box::new(Expression::Var("a".into())),
+                            Box::new(Expression::Constant(1)),
+                        )),
+                    )),
+                    body: Box::new(Statement::Compound(Block(vec![BlockItem::Stmt(
+                        Statement::Continue("".into()),
+                    )]))),
+                    label: "".into(),
+                }),
+                BlockItem::Stmt(Statement::DoWhile {
+                    body: Box::new(Statement::Compound(Block(vec![BlockItem::Stmt(
+                        Statement::Continue("".into()),
+                    )]))),
+                    condition: Expression::Binary(
+                        BinaryOp::LessThan,
+                        Box::new(Expression::Var("a".into())),
+                        Box::new(Expression::Constant(0)),
+                    ),
+                    label: "".into(),
+                }),
+                BlockItem::Stmt(Statement::While {
+                    condition: Expression::Binary(
+                        BinaryOp::GreaterThan,
+                        Box::new(Expression::Var("a".into())),
+                        Box::new(Expression::Constant(0)),
+                    ),
+                    body: Box::new(Statement::Break("".into())),
+                    label: "".into(),
+                }),
             ]),
         }));
 

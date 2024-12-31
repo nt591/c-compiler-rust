@@ -623,6 +623,11 @@ impl<'a> Tacky<'a> {
                 Ok(())
             }
             Statement::Compound(block) => self.parse_block(block, instructions),
+            Statement::Break(_)
+            | Statement::Continue(_)
+            | Statement::For { .. }
+            | Statement::DoWhile { .. }
+            | Statement::While { .. } => todo!(),
         }
     }
 
