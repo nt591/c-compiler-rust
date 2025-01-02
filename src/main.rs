@@ -42,6 +42,10 @@ struct Args {
     /// runs up to IR stage
     #[arg(long, conflicts_with_all = ["lex", "parse", "codegen", "validate"])]
     tacky: bool,
+
+    /// Compiles to an object file
+    #[arg(short = 'c')]
+    object: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -83,16 +87,39 @@ fn main() -> anyhow::Result<()> {
     let mut writer = BufWriter::new(output_file);
     emitter.emit(&mut writer)?;
 
+    if args.object {
+        compile_to_object(output_path)?;
+    } else {
+        compile_to_binary(output_path)?;
+    }
+    Ok(())
+}
+
+fn path_to_str(path: PathBuf) -> String {
+    path.into_os_string()
+        .into_string()
+        .expect("Should be valid string")
+}
+
+fn compile_to_binary(output_path: PathBuf) -> anyhow::Result<()> {
     let target = output_path.with_extension("");
 
-    // defer to GCC to assemble and link
-    let path_to_str = |p: PathBuf| {
-        p.into_os_string()
-            .into_string()
-            .expect("Should be valid string")
-    };
-    let _cmd = std::process::Command::new("gcc")
+    std::process::Command::new("gcc")
         .args([path_to_str(output_path), "-o".into(), path_to_str(target)])
+        .spawn()?;
+    Ok(())
+}
+
+fn compile_to_object(output_path: PathBuf) -> anyhow::Result<()> {
+    let target = output_path.with_extension("o");
+
+    std::process::Command::new("gcc")
+        .args([
+            "-c".into(),
+            path_to_str(output_path),
+            "-o".into(),
+            path_to_str(target),
+        ])
         .spawn()?;
     Ok(())
 }
