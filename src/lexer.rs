@@ -37,6 +37,7 @@ pub enum Token<'a> {
     Break,
     Continue,
     // special symbols
+    Comma,
     LeftParen,
     RightParen,
     LeftBrace,
@@ -106,6 +107,7 @@ impl<'a> Token<'a> {
             For => format!("For"),
             Break => format!("Break"),
             Continue => format!("Continue"),
+            Comma => format!("Comma"),
             LeftParen => format!("LeftParen"),
             RightParen => format!("RightParen"),
             LeftBrace => format!("LeftBrace"),
@@ -182,6 +184,7 @@ impl<'a> Lexer<'a> {
             let c = bytes[idx];
             match c {
                 c if c.is_ascii_whitespace() => (),
+                b',' => tokens.push(Token::Comma),
                 b'{' => tokens.push(Token::LeftBrace),
                 b'}' => tokens.push(Token::RightBrace),
                 b'(' => tokens.push(Token::LeftParen),
