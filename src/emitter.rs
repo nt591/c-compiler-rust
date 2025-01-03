@@ -5,8 +5,7 @@ use crate::asm;
 use crate::Asm;
 use std::io::Write;
 
-// lifetime bound to source text.
-pub struct Emitter<'a>(Asm<'a>);
+pub struct Emitter(Asm);
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 enum RegisterSize {
@@ -14,8 +13,8 @@ enum RegisterSize {
     OneByte,
 }
 
-impl<'a> Emitter<'a> {
-    pub fn new(asm: Asm<'a>) -> Self {
+impl Emitter {
+    pub fn new(asm: Asm) -> Self {
         Self(asm)
     }
 
@@ -24,7 +23,7 @@ impl<'a> Emitter<'a> {
         Self::emit_code(&self.0, output)
     }
 
-    fn emit_code<W: Write>(asm: &Asm<'a>, output: &mut W) -> std::io::Result<()> {
+    fn emit_code<W: Write>(asm: &Asm, output: &mut W) -> std::io::Result<()> {
         match asm {
             Asm::Program(func) => Self::emit_function(func, output)?,
         }
@@ -35,7 +34,7 @@ impl<'a> Emitter<'a> {
         writeln!(output, "                       # {}", comment)
     }
 
-    fn emit_function<W: Write>(func: &asm::Function<'a>, output: &mut W) -> std::io::Result<()> {
+    fn emit_function<W: Write>(func: &asm::Function, output: &mut W) -> std::io::Result<()> {
         let asm::Function { name, instructions } = func;
         writeln!(output, "  .globl _{}", name)?;
         writeln!(output, "_{}:", name)?;
@@ -241,7 +240,7 @@ mod tests {
     #[test]
     fn basic_emit() {
         let ast = Asm::Program(asm::Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 asm::Instruction::Mov(asm::Operand::Imm(100), asm::Operand::Reg(asm::Register::AX)),
                 asm::Instruction::Ret,
@@ -272,7 +271,7 @@ _main:
     #[test]
     fn complex_emit() {
         let ast = asm::Asm::Program(asm::Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 asm::Instruction::AllocateStack(-12),
                 asm::Instruction::Mov(asm::Operand::Imm(100), asm::Operand::Stack(-4)),
@@ -333,7 +332,7 @@ _main:
     #[test]
     fn binary_operators() {
         let ast = asm::Asm::Program(asm::Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 asm::Instruction::AllocateStack(-16),
                 // tmp0 = 1 * 2
@@ -423,7 +422,7 @@ _main:
     #[test]
     fn simple_bitwise() {
         let ast = asm::Asm::Program(asm::Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 asm::Instruction::AllocateStack(-16),
                 // tmp0 = 5 * 4
@@ -525,7 +524,7 @@ _main:
     #[test]
     fn shiftleft() {
         let ast = asm::Asm::Program(asm::Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 asm::Instruction::AllocateStack(-8),
                 // tmp0 = 5 * 4
@@ -596,7 +595,7 @@ _main:
     #[test]
     fn jump_cond() {
         let ast = Asm::Program(Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 Instruction::AllocateStack(-16),
                 Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),

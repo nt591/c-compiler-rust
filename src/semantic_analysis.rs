@@ -3,7 +3,9 @@ use crate::parser::BlockItem;
 use crate::parser::Declaration;
 use crate::parser::Expression;
 use crate::parser::ForInit;
+use crate::parser::FunctionDeclaration;
 use crate::parser::Statement;
+use crate::parser::VariableDeclaration;
 use crate::parser::AST;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -13,10 +15,6 @@ use thiserror::Error;
 pub enum SemanticAnalysisError {
     #[error("Got duplicate variable declaration {0}")]
     DuplicateDecl(String),
-    #[error("Expected top-level program node")]
-    UnexpectedNonProgramNode,
-    #[error("Expected function node inside program")]
-    UnexpectedNonFunctionNode,
     #[error("Found undeclared variable in initializer: {0}")]
     UndeclaredVariableInInitializer(String),
     #[error("Found non-var node on lefthand side of assignment")]
@@ -121,7 +119,7 @@ impl Resolver {
     }
 }
 
-pub fn resolve<'a>(ast: &mut AST<'a>) -> Result<(), SemanticAnalysisError> {
+pub fn resolve(ast: &mut AST) -> Result<(), SemanticAnalysisError> {
     let mut resolver = Resolver::new();
     resolve_ast(ast, &mut resolver)?;
     label_and_validate_loop_constructs(ast, &mut resolver)?;
@@ -129,7 +127,7 @@ pub fn resolve<'a>(ast: &mut AST<'a>) -> Result<(), SemanticAnalysisError> {
     Ok(())
 }
 
-fn validate_labels<'a>(resolver: &Resolver) -> Result<(), SemanticAnalysisError> {
+fn validate_labels(resolver: &Resolver) -> Result<(), SemanticAnalysisError> {
     for (label, declaration_status) in resolver.labels.values() {
         if !declaration_status {
             return Err(SemanticAnalysisError::UndeclaredLabel(label.clone()));
@@ -139,25 +137,19 @@ fn validate_labels<'a>(resolver: &Resolver) -> Result<(), SemanticAnalysisError>
     Ok(())
 }
 
-fn resolve_ast<'a>(
-    ast: &mut AST<'a>,
-    resolver: &mut Resolver,
-) -> Result<(), SemanticAnalysisError> {
-    let AST::Program(function) = ast else {
-        return Err(SemanticAnalysisError::UnexpectedNonProgramNode);
-    };
+fn resolve_ast(ast: &mut AST, resolver: &mut Resolver) -> Result<(), SemanticAnalysisError> {
+    let AST::Program(functions) = ast;
 
-    let AST::Function { block, name: _ } = function.as_mut() else {
-        return Err(SemanticAnalysisError::UnexpectedNonFunctionNode);
-    };
+    for function in functions {
+        let FunctionDeclaration { block, name: _, .. } = function;
+        let block = block.as_mut().expect("Should have one top-level function block");
 
-    resolve_block(block, resolver)
+        resolve_block(block, resolver)?;
+    }
+    Ok(())
 }
 
-fn resolve_block<'a>(
-    block: &mut Block,
-    resolver: &mut Resolver,
-) -> Result<(), SemanticAnalysisError> {
+fn resolve_block(block: &mut Block, resolver: &mut Resolver) -> Result<(), SemanticAnalysisError> {
     let Block(ref mut body) = block;
     for body_item in body.iter_mut() {
         match body_item {
@@ -173,14 +165,16 @@ fn resolve_decl(
     decl: &mut Declaration,
     resolver: &mut Resolver,
 ) -> Result<(), SemanticAnalysisError> {
-    if resolver.variable_declared_in_current_block(&decl.name) {
-        return Err(SemanticAnalysisError::DuplicateDecl(decl.name.clone()));
-    };
-    let renamed_var = resolver.make_temporary_variable(&decl.name);
-    resolver.resolve_variable(&decl.name, renamed_var.clone(), true);
-    decl.name = renamed_var;
-    if let Some(init) = &mut decl.init {
-        resolve_expr(init, resolver)?;
+    if let Declaration::VarDecl(VariableDeclaration { name, init }) = decl {
+        if resolver.variable_declared_in_current_block(&name) {
+            return Err(SemanticAnalysisError::DuplicateDecl(name.clone()));
+        };
+        let renamed_var = resolver.make_temporary_variable(&name);
+        resolver.resolve_variable(&name, renamed_var.clone(), true);
+        *name = renamed_var;
+        if let Some(init) = init {
+            resolve_expr(init, resolver)?;
+        };
     };
     Ok(())
 }
@@ -298,27 +292,29 @@ fn resolve_expr(
             resolve_expr(&mut *condition, resolver)?;
             resolve_expr(&mut *then, resolver)?;
             resolve_expr(&mut *else_, resolver)?;
-        }
+        },
+        Expression::FunctionCall { .. } => todo!(),
     };
     Ok(())
 }
 
-fn label_and_validate_loop_constructs<'a>(
+fn label_and_validate_loop_constructs(
     ast: &mut AST,
     resolver: &mut Resolver,
 ) -> Result<(), SemanticAnalysisError> {
-    let AST::Program(function) = ast else {
-        return Err(SemanticAnalysisError::UnexpectedNonProgramNode);
-    };
+    let AST::Program(functions) = ast;
 
-    let AST::Function { block, name: _ } = function.as_mut() else {
-        return Err(SemanticAnalysisError::UnexpectedNonFunctionNode);
-    };
+    for function in functions {
+        let FunctionDeclaration { block, name: _, .. } = function;
+        if let Some(block) = block.as_mut() {
+            label_block(block, None, resolver)?;
+        };
+    }
 
-    label_block(block, None, resolver)
+    Ok(())
 }
 
-fn label_block<'a>(
+fn label_block(
     block: &mut Block,
     current_label: Option<String>,
     resolver: &mut Resolver,
@@ -333,7 +329,7 @@ fn label_block<'a>(
     Ok(())
 }
 
-fn label_statement<'a>(
+fn label_statement(
     statement: &mut Statement,
     current_label: Option<String>,
     resolver: &mut Resolver,
@@ -394,23 +390,25 @@ mod tests {
     use crate::parser::Expression;
     use crate::parser::Statement;
     use crate::parser::AST;
+    use crate::parser::FunctionDeclaration;
 
     #[test]
     fn basic_resolve_repeated_variable() {
-        let mut before = AST::Program(Box::new(AST::Function {
-            name: "main",
-            block: Block(vec![
-                BlockItem::Decl(Declaration {
+        let mut before = AST::Program(vec![FunctionDeclaration {
+            name: "main".into(),
+            block: Some(Block(vec![
+                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(1)),
-                }),
-                BlockItem::Decl(Declaration {
+                })),
+                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(1)),
-                }),
+                })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
-            ]),
-        }));
+            ])),
+            identifiers: vec![],
+        }]);
 
         let actual = resolve(&mut before);
         assert!(actual.is_err());
@@ -418,16 +416,17 @@ mod tests {
 
     #[test]
     fn basic_resolve_undeclared_variable() {
-        let mut before = AST::Program(Box::new(AST::Function {
-            name: "main",
-            block: Block(vec![
-                BlockItem::Decl(Declaration {
+        let mut before = AST::Program(vec![FunctionDeclaration {
+            name: "main".into(),
+            block: Some(Block(vec![
+                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
                     init: Some(Expression::Var("c".into())),
-                }),
+                })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
-            ]),
-        }));
+            ])),
+            identifiers: vec![],
+        }]);
 
         let actual = resolve(&mut before);
         assert!(actual.is_err());
@@ -435,37 +434,39 @@ mod tests {
 
     #[test]
     fn basic_resolve_successful() {
-        let mut before = AST::Program(Box::new(AST::Function {
-            name: "main",
-            block: Block(vec![
-                BlockItem::Decl(Declaration {
+        let mut before = AST::Program(vec![FunctionDeclaration {
+            name: "main".into(),
+            block: Some(Block(vec![
+                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(1)),
-                }),
-                BlockItem::Decl(Declaration {
+                })),
+                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b".into(),
                     init: Some(Expression::Var("a".into())),
-                }),
+                })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
-            ]),
-        }));
+            ])),
+            identifiers: vec![],
+        }]);
 
         let actual = resolve(&mut before);
         assert!(actual.is_ok());
-        let expected = AST::Program(Box::new(AST::Function {
-            name: "main",
-            block: Block(vec![
-                BlockItem::Decl(Declaration {
+        let expected = AST::Program(vec![FunctionDeclaration {
+            name: "main".into(),
+            block: Some(Block(vec![
+                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a.0.decl".into(),
                     init: Some(Expression::Constant(1)),
-                }),
-                BlockItem::Decl(Declaration {
+                })),
+                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b.1.decl".into(),
                     init: Some(Expression::Var("a.0.decl".into())),
-                }),
+                })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a.0.decl".into()))),
-            ]),
-        }));
+            ])),
+            identifiers: vec![],
+        }]);
 
         // mutates taken value
         assert_eq!(before, expected);
@@ -473,53 +474,55 @@ mod tests {
 
     #[test]
     fn complex_resolve_successful() {
-        let mut before = AST::Program(Box::new(AST::Function {
-            name: "main",
-            block: Block(vec![
-                BlockItem::Decl(Declaration {
+        let mut before = AST::Program(vec![FunctionDeclaration {
+            name: "main".into(),
+            block: Some(Block(vec![
+                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(1)),
-                }),
-                BlockItem::Decl(Declaration {
+                })),
+                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b".into(),
                     init: Some(Expression::Var("a".into())),
-                }),
-                BlockItem::Decl(Declaration {
+                })),
+                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "c".into(),
                     init: Some(Expression::Binary(
                         BinaryOp::Add,
                         Box::new(Expression::Var("a".into())),
                         Box::new(Expression::Var("b".into())),
                     )),
-                }),
+                })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("c".into()))),
-            ]),
-        }));
+            ])),
+            identifiers: vec![],
+        }]);
 
         let actual = resolve(&mut before);
         assert!(actual.is_ok());
-        let expected = AST::Program(Box::new(AST::Function {
-            name: "main",
-            block: Block(vec![
-                BlockItem::Decl(Declaration {
+        let expected = AST::Program(vec![FunctionDeclaration {
+            name: "main".into(),
+            block: Some(Block(vec![
+                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a.0.decl".into(),
                     init: Some(Expression::Constant(1)),
-                }),
-                BlockItem::Decl(Declaration {
+                })),
+                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b.1.decl".into(),
                     init: Some(Expression::Var("a.0.decl".into())),
-                }),
-                BlockItem::Decl(Declaration {
+                })),
+                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "c.2.decl".into(),
                     init: Some(Expression::Binary(
                         BinaryOp::Add,
                         Box::new(Expression::Var("a.0.decl".into())),
                         Box::new(Expression::Var("b.1.decl".into())),
                     )),
-                }),
+                })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("c.2.decl".into()))),
-            ]),
-        }));
+            ])),
+            identifiers: vec![],
+        }]);
 
         // mutates taken value
         assert_eq!(before, expected);
@@ -611,24 +614,25 @@ mod tests {
         let analysis = resolve(&mut ast);
         assert!(analysis.is_ok());
 
-        let expected = AST::Program(Box::new(AST::Function {
-            name: "main",
-            block: Block(vec![
-                BlockItem::Decl(Declaration {
+        let expected = AST::Program(vec![FunctionDeclaration {
+            name: "main".into(),
+            block: Some(Block(vec![
+                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "x.0.decl".into(),
                     init: Some(Expression::Constant(1)),
-                }),
+                })),
                 BlockItem::Stmt(Statement::Compound(Block(vec![BlockItem::Decl(
                     // Declaration is the same name, but has a new renamed variable
                     // since we want to ensure any label is pinned to one value
-                    Declaration {
+                    Declaration::VarDecl(VariableDeclaration {
                         name: "x.1.decl".into(),
                         init: Some(Expression::Constant(2)),
-                    },
+                    }),
                 )]))),
                 BlockItem::Stmt(Statement::Return(Expression::Var("x.0.decl".into()))),
-            ]),
-        }));
+            ])),
+            identifiers: vec![],
+        }]);
 
         assert_eq!(ast, expected);
     }
@@ -655,13 +659,13 @@ mod tests {
         let analysis = resolve(&mut ast);
         assert!(analysis.is_ok());
 
-        let expected = AST::Program(Box::new(AST::Function {
-            name: "main",
-            block: Block(vec![
-                BlockItem::Decl(Declaration {
+        let expected = AST::Program(vec![FunctionDeclaration {
+            name: "main".into(),
+            block: Some(Block(vec![
+                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a.0.decl".into(),
                     init: None,
-                }),
+                })),
                 BlockItem::Stmt(Statement::For {
                     init: ForInit::InitExp(Some(Expression::Assignment(
                         Box::new(Expression::Var("a.0.decl".into())),
@@ -705,8 +709,9 @@ mod tests {
                     body: Box::new(Statement::Break("while_label.3".into())),
                     label: "while_label.3".into(),
                 }),
-            ]),
-        }));
+            ])),
+            identifiers: vec![],
+        }]);
         assert_eq!(ast, expected);
     }
 

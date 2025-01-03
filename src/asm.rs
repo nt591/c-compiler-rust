@@ -6,13 +6,13 @@ use std::collections::HashMap;
 // Lifetime of source test, since we need
 // names. TODO: Figure out how to remove this dep.
 #[derive(Debug, PartialEq)]
-pub enum Asm<'a> {
-    Program(Function<'a>),
+pub enum Asm {
+    Program(Function),
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Function<'a> {
-    pub name: &'a str,
+pub struct Function {
+    pub name: String,
     pub instructions: Vec<Instruction>,
 }
 
@@ -86,15 +86,15 @@ struct AsmGenerator {
     identifiers: HashMap<String, Operand>, // Tacky var ident -> Pseudo(string)
 }
 
-impl<'a> Asm<'a> {
-    pub fn from_tacky(tacky: tacky::AST<'a>) -> Asm<'a> {
+impl Asm {
+    pub fn from_tacky(tacky: tacky::AST) -> Asm {
         let mut asm = Self::parse_program(&tacky);
         let mut generator = AsmGenerator::default();
         Self::fixup(&mut asm, &mut generator);
         asm
     }
 
-    fn parse_program(tacky: &tacky::AST<'a>) -> Asm<'a> {
+    fn parse_program(tacky: &tacky::AST) -> Asm {
         match tacky {
             tacky::AST::Program(func) => {
                 let func = Self::parse_function(func);
@@ -103,10 +103,10 @@ impl<'a> Asm<'a> {
         }
     }
 
-    fn parse_function(func: &tacky::Function<'a>) -> Function<'a> {
+    fn parse_function(func: &tacky::Function) -> Function {
         let tacky::Function { name, instructions } = func;
         let instructions = Self::parse_instructions(&instructions);
-        Function { name, instructions }
+        Function { name: name.into(), instructions }
     }
 
     fn parse_instructions(ins: &[tacky::Instruction]) -> Vec<Instruction> {
@@ -249,12 +249,12 @@ impl<'a> Asm<'a> {
         ]
     }
 
-    fn fixup(asm: &mut Asm<'a>, gen: &mut AsmGenerator) {
+    fn fixup(asm: &mut Asm, gen: &mut AsmGenerator) {
         match asm {
             Asm::Program(ref mut func) => Self::fixup_function(func, gen),
         };
     }
-    fn fixup_function(func: &mut Function<'a>, gen: &mut AsmGenerator) {
+    fn fixup_function(func: &mut Function, gen: &mut AsmGenerator) {
         let Function {
             name: _name,
             ref mut instructions,
@@ -306,7 +306,7 @@ impl<'a> Asm<'a> {
         }
     }
 
-    fn insert_alloc_stack_func(func: &mut Function<'a>, gen: &AsmGenerator) {
+    fn insert_alloc_stack_func(func: &mut Function, gen: &AsmGenerator) {
         let old_ins = std::mem::take(&mut func.instructions);
         let mut v = vec![Instruction::AllocateStack(gen.stack_offset)];
         for i in old_ins.into_iter() {
@@ -315,7 +315,7 @@ impl<'a> Asm<'a> {
         func.instructions = v;
     }
 
-    fn fixup_invalid_memory_accesses(func: &mut Function<'a>) {
+    fn fixup_invalid_memory_accesses(func: &mut Function) {
         let old_ins = std::mem::take(&mut func.instructions);
         let mut v = Vec::with_capacity(old_ins.len());
         for ins in old_ins.into_iter() {
@@ -404,12 +404,12 @@ mod tests {
     #[test]
     fn basic_parse() {
         let ast = tacky::AST::Program(tacky::Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![tacky::Instruction::Ret(tacky::Val::Constant(100))],
         });
 
         let expected = Asm::Program(Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 Instruction::AllocateStack(0),
                 Instruction::Mov(Operand::Imm(100), Operand::Reg(Register::AX)),
@@ -424,7 +424,7 @@ mod tests {
     #[test]
     fn parse_with_pseudos() {
         let ast = tacky::AST::Program(tacky::Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 tacky::Instruction::Unary {
                     op: tacky::UnaryOp::Negate,
@@ -436,7 +436,7 @@ mod tests {
         });
 
         let expected = Asm::Program(Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 Instruction::AllocateStack(-4),
                 Instruction::Mov(Operand::Imm(100), Operand::Stack(-4)),
@@ -453,7 +453,7 @@ mod tests {
     #[test]
     fn parse_nested_unaries() {
         let ast = tacky::AST::Program(tacky::Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 tacky::Instruction::Unary {
                     op: tacky::UnaryOp::Negate,
@@ -475,7 +475,7 @@ mod tests {
         });
 
         let expected = Asm::Program(Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 Instruction::AllocateStack(-12),
                 Instruction::Mov(Operand::Imm(100), Operand::Stack(-4)),
@@ -498,7 +498,7 @@ mod tests {
     #[test]
     fn generate_binary_expressions() {
         let ast = tacky::AST::Program(tacky::Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Multiply,
@@ -528,7 +528,7 @@ mod tests {
             ],
         });
         let expected = Asm::Program(Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 Instruction::AllocateStack(-16),
                 // tmp0 = 1 * 2
@@ -562,7 +562,7 @@ mod tests {
     #[test]
     fn complex_binary_expressions() {
         let ast = tacky::AST::Program(tacky::Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Multiply,
@@ -599,7 +599,7 @@ mod tests {
         });
 
         let expected = Asm::Program(Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 Instruction::AllocateStack(-20),
                 // tmp0 = 5 * 4 = 20
@@ -643,7 +643,7 @@ mod tests {
     #[test]
     fn simple_bitwise() {
         let ast = tacky::AST::Program(tacky::Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Multiply,
@@ -673,7 +673,7 @@ mod tests {
             ],
         });
         let expected = Asm::Program(Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 Instruction::AllocateStack(-16),
                 // tmp0 = 5 * 4
@@ -709,7 +709,7 @@ mod tests {
     #[test]
     fn shiftleft() {
         let ast = tacky::AST::Program(tacky::Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Multiply,
@@ -728,7 +728,7 @@ mod tests {
         });
 
         let expected = Asm::Program(Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 Instruction::AllocateStack(-8),
                 // tmp0 = 5 * 4
@@ -753,7 +753,7 @@ mod tests {
     #[test]
     fn shiftright_lhs_is_negative() {
         let ast = tacky::AST::Program(tacky::Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 tacky::Instruction::Unary {
                     op: tacky::UnaryOp::Negate,
@@ -770,7 +770,7 @@ mod tests {
             ],
         });
         let expected = Asm::Program(Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 Instruction::AllocateStack(-8),
                 // tmp0 = -5
@@ -796,7 +796,7 @@ mod tests {
     #[test]
     fn shiftleft_rhs_is_expr() {
         let ast = tacky::AST::Program(tacky::Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Add,
@@ -814,7 +814,7 @@ mod tests {
             ],
         });
         let expected = Asm::Program(Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 Instruction::AllocateStack(-8),
                 // tmp0 = 1 + 2
@@ -840,7 +840,7 @@ mod tests {
     #[test]
     fn unary_not() {
         let ast = tacky::AST::Program(tacky::Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 tacky::Instruction::Unary {
                     op: TUOp::Not,
@@ -851,7 +851,7 @@ mod tests {
             ],
         });
         let expected = Asm::Program(Function {
-            name: "main",
+            name: "main".into(),
             // move 1 into register 11,
             // then check if 1 == 0
             // clear out the next address, then check if cmp set ZF
@@ -874,7 +874,7 @@ mod tests {
     #[test]
     fn binary_greater_or_equal() {
         let ast = tacky::AST::Program(tacky::Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::GreaterOrEqual,
@@ -886,7 +886,7 @@ mod tests {
             ],
         });
         let expected = Asm::Program(Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 Instruction::AllocateStack(-8),
                 Instruction::Cmp(Operand::Imm(2), Operand::Stack(-4)),
@@ -903,7 +903,7 @@ mod tests {
     #[test]
     fn jump_if_zero() {
         let ast = tacky::AST::Program(tacky::Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 tacky::Instruction::Copy {
                     src: tacky::Val::Constant(5),
@@ -943,7 +943,7 @@ mod tests {
         });
 
         let expected = Asm::Program(Function {
-            name: "main",
+            name: "main".into(),
             instructions: vec![
                 Instruction::AllocateStack(-16),
                 Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),

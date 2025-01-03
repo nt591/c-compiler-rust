@@ -158,9 +158,7 @@ fn compile_to_binary(paths: Vec<PathBuf>) -> anyhow::Result<()> {
     args.push("-o".into());
     args.push(path_to_str(target));
 
-    std::process::Command::new("gcc")
-        .args(args)
-        .spawn()?;
+    std::process::Command::new("gcc").args(args).spawn()?;
     Ok(())
 }
 
@@ -173,7 +171,7 @@ fn compile_to_object(paths: Vec<PathBuf>) -> anyhow::Result<()> {
             let path = paths[..].first().unwrap().to_owned();
             Some(path_to_str(path))
         }
-        _otherwise => None
+        _otherwise => None,
     };
 
     let mut args: Vec<String> = Vec::with_capacity(paths.len() + 1);
@@ -183,8 +181,6 @@ fn compile_to_object(paths: Vec<PathBuf>) -> anyhow::Result<()> {
         args.push("-o".into());
         args.push(target);
     };
-    std::process::Command::new("gcc")
-        .args(args)
-        .spawn()?;
+    std::process::Command::new("gcc").args(args).spawn()?;
     Ok(())
 }
