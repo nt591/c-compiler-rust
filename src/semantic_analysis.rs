@@ -29,11 +29,16 @@ pub enum SemanticAnalysisError {
     ContinueWithoutLoopConstruct,
 }
 
-// maps variable names to a unique identifier
+#[derive(Debug, Clone)]
+struct ResolvedIdentifier {
+    name: String,
+    in_current_scope: bool,
+    has_linkage: bool,
+}
+
 #[derive(Debug, Clone)]
 struct Resolver {
-    // stored as <resolved string, declared_in_current_block>
-    renamed_variables: HashMap<String, (String, bool)>,
+    renamed_variables: HashMap<String, ResolvedIdentifier>,
     // stored as (resolved_string, is_declared)
     labels: HashMap<String, (String, bool)>,
     var_counter: usize,
@@ -60,21 +65,21 @@ impl Resolver {
         format!("{base}.{count}")
     }
 
-    fn resolve_variable(&mut self, name: &str, resolved_name: String, in_current_scope: bool) {
+    fn resolve_variable(&mut self, name: &str, resolved_name: String, in_current_scope: bool, has_linkage: bool) {
         self.renamed_variables
-            .insert(name.into(), (resolved_name, in_current_scope));
+            .insert(name.into(), ResolvedIdentifier { name: resolved_name, in_current_scope, has_linkage });
     }
 
     fn get_resolved_variable(&self, name: &str) -> Option<String> {
         self.renamed_variables
             .get(name)
-            .map(|(name, _scope)| name.into())
+            .map(|x| x.name.clone())
     }
 
     fn variable_declared_in_current_block(&self, name: &str) -> bool {
         self.renamed_variables
             .get(name)
-            .map(|(_name, in_current_scope)| *in_current_scope)
+            .map(|x| x.in_current_scope)
             .unwrap_or(false)
     }
 
@@ -112,8 +117,8 @@ impl Resolver {
 
     fn copy_resolver_and_reset_scopes(&self) -> Self {
         let mut new_resolver = self.clone();
-        for (_name, (_new_name, in_scope)) in new_resolver.renamed_variables.iter_mut() {
-            *in_scope = false;
+        for (_name, x) in new_resolver.renamed_variables.iter_mut() {
+            x.in_current_scope = false;
         }
         new_resolver
     }
@@ -175,7 +180,7 @@ fn resolve_decl(
         return Err(SemanticAnalysisError::DuplicateDecl(name.clone()));
     };
     let renamed_var = resolver.make_temporary_variable(&name);
-    resolver.resolve_variable(&name, renamed_var.clone(), true);
+    resolver.resolve_variable(&name, renamed_var.clone(), true, false);
     *name = renamed_var;
     if let Some(init) = init {
         resolve_expr(init, resolver)?;
@@ -297,7 +302,9 @@ fn resolve_expr(
             resolve_expr(&mut *then, resolver)?;
             resolve_expr(&mut *else_, resolver)?;
         }
-        Expression::FunctionCall { .. } => todo!(),
+        Expression::FunctionCall { name, args } => {
+
+        },
     };
     Ok(())
 }
