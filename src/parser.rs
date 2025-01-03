@@ -34,7 +34,7 @@ pub enum AST {
 #[derive(Debug, PartialEq)]
 pub struct FunctionDeclaration {
     pub name: String,
-    pub identifiers: Vec<String>, // should this be owned?
+    pub params: Vec<String>, // should this be owned?
     pub block: Option<Block>,
 }
 
@@ -208,7 +208,7 @@ impl<'a> Parser<'a> {
         // check if we're void, or taking a param list
         // Should we store Void in the identifier list?
         // Emptiness is a way of knowing it's a void function.
-        let mut identifiers: Vec<String> = vec![];
+        let mut params: Vec<String> = vec![];
         if let Some(Token::Void) = self.tokens.peek() {
             self.expect(Token::Void)?;
             self.expect(Token::RightParen)?;
@@ -218,7 +218,7 @@ impl<'a> Parser<'a> {
                 let Some(Token::Identifier(ident)) = self.tokens.next() else {
                     return Err(ParserError::ExpectedIdentifierAfterType);
                 };
-                identifiers.push(ident.to_string());
+                params.push(ident.to_string());
                 if let Some(Token::RightParen) = self.tokens.peek() {
                     // consume the right paren
                     self.tokens.next();
@@ -241,7 +241,7 @@ impl<'a> Parser<'a> {
         return Ok(FunctionDeclaration {
             name: name.into(),
             block,
-            identifiers,
+            params,
         });
     }
 
@@ -766,7 +766,7 @@ mod tests {
                 block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                     Expression::Constant(100),
                 ))])),
-                identifiers: vec![],
+                params: vec![],
             }),
         ]);
         assert_eq!(expected, ast);
@@ -824,7 +824,7 @@ mod tests {
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Unary(UnaryOp::Complement, Box::new(Expression::Constant(100))),
             ))])),
-            identifiers: vec![],
+            params: vec![],
         }]);
         assert_eq!(expected, ast);
     }
@@ -853,7 +853,7 @@ mod tests {
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Unary(UnaryOp::Negate, Box::new(Expression::Constant(100))),
             ))])),
-            identifiers: vec![],
+            params: vec![],
         }]);
         assert_eq!(expected, ast);
     }
@@ -884,7 +884,7 @@ mod tests {
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Unary(UnaryOp::Negate, Box::new(Expression::Constant(100))),
             ))])),
-            identifiers: vec![],
+            params: vec![],
         }]);
         assert_eq!(expected, ast);
     }
@@ -993,7 +993,7 @@ mod tests {
                     )),
                 ),
             ))])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         assert_eq!(expected, actual);
@@ -1059,7 +1059,7 @@ mod tests {
                     )),
                 ),
             ))])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         assert_eq!(expected, actual);
@@ -1117,7 +1117,7 @@ mod tests {
                     )),
                 ),
             ))])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         assert_eq!(expected, actual);
@@ -1166,7 +1166,7 @@ mod tests {
                     Box::new(Expression::Constant(2)),
                 ),
             ))])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         assert_eq!(expected, actual);
@@ -1214,7 +1214,7 @@ mod tests {
                     )),
                 ),
             ))])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         assert_eq!(expected, actual);
@@ -1274,7 +1274,7 @@ mod tests {
                     )),
                 ),
             ))])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         assert_eq!(expected, actual);
@@ -1318,7 +1318,7 @@ mod tests {
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
             ])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         assert_eq!(expected, actual)
@@ -1370,7 +1370,7 @@ mod tests {
                     )),
                 ))),
             ])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         assert_eq!(expected, actual)
@@ -1414,7 +1414,7 @@ mod tests {
                 ))),
                 BlockItem::Stmt(Statement::Return(Expression::Constant(0))),
             ])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         assert_eq!(expected, actual)
@@ -1508,7 +1508,7 @@ mod tests {
                 ))),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
             ])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         assert_eq!(expected, actual)
@@ -1593,7 +1593,7 @@ mod tests {
                 ))),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
             ])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         assert_eq!(expected, actual)
@@ -1650,7 +1650,7 @@ mod tests {
                     Box::new(Expression::Constant(2)),
                 ))),
             ])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         assert_eq!(expected, actual)
@@ -1692,7 +1692,7 @@ mod tests {
                 }),
                 else_: None,
             })])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         assert_eq!(ast.unwrap(), expected);
@@ -1757,7 +1757,7 @@ mod tests {
                     else_: Box::new(Expression::Constant(2)),
                 })),
             ])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         assert_eq!(ast.unwrap(), expected);
@@ -1791,7 +1791,7 @@ mod tests {
                     ))),
                 }),
             ])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         assert_eq!(ast.unwrap(), expected);
@@ -1843,7 +1843,7 @@ mod tests {
                     ))),
                 ]))),
             ])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         assert_eq!(ast.unwrap(), expected);
@@ -1922,7 +1922,7 @@ mod tests {
                     label: "".into(),
                 }),
             ])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         assert_eq!(ast.unwrap(), expected);
@@ -1949,7 +1949,7 @@ mod tests {
             FunctionDeclaration {
                 name: "bar".into(),
                 block: None,
-                identifiers: vec!["a".into()],
+                params: vec!["a".into()],
             },
             FunctionDeclaration {
                 name: "foo".into(),
@@ -1960,7 +1960,7 @@ mod tests {
                         Box::new(Expression::Var("y".into())),
                     ),
                 ))])),
-                identifiers: vec!["x".into(), "y".into()],
+                params: vec!["x".into(), "y".into()],
             },
             FunctionDeclaration {
                 name: "main".into(),
@@ -1974,7 +1974,7 @@ mod tests {
                         Box::new(Expression::Constant(3)),
                     ),
                 ))])),
-                identifiers: vec![],
+                params: vec![],
             },
         ]);
 
@@ -2000,7 +2000,7 @@ mod tests {
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::FunDecl(FunctionDeclaration {
                     name: "foo".into(),
-                    identifiers: vec!["x".into(), "y".into()],
+                    params: vec!["x".into(), "y".into()],
                     block: None,
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Binary(
@@ -2012,7 +2012,7 @@ mod tests {
                     Box::new(Expression::Constant(3)),
                 ))),
             ])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         assert_eq!(ast.unwrap(), expected);

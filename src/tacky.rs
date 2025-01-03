@@ -814,7 +814,7 @@ mod tests {
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Constant(100),
             ))])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         let expected = AST::Program(Function {
@@ -839,7 +839,7 @@ mod tests {
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Unary(ParserUnaryOp::Negate, Box::new(Expression::Constant(100))),
             ))])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         let expected = AST::Program(Function {
@@ -878,7 +878,7 @@ mod tests {
                     )),
                 ),
             ))])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         let expected = AST::Program(Function {
@@ -934,7 +934,7 @@ mod tests {
                     )),
                 ),
             ))])),
-            identifiers: vec![],
+            params: vec![],
         }]);
         let expected = AST::Program(Function {
             name: "main".into(),
@@ -1002,7 +1002,7 @@ mod tests {
                     )),
                 ),
             ))])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         let expected = AST::Program(Function {
@@ -1073,7 +1073,7 @@ mod tests {
                     )),
                 ),
             ))])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         let expected = AST::Program(Function {
@@ -1130,7 +1130,7 @@ mod tests {
                     Box::new(Expression::Constant(2)),
                 ),
             ))])),
-            identifiers: vec![],
+            params: vec![],
         }]);
         let expected = AST::Program(Function {
             name: "main".into(),
@@ -1174,7 +1174,7 @@ mod tests {
                     )),
                 ),
             ))])),
-            identifiers: vec![],
+            params: vec![],
         }]);
         let expected = AST::Program(Function {
             name: "main".into(),
@@ -1218,7 +1218,7 @@ mod tests {
                     )),
                 ),
             ))])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         let expected = AST::Program(Function {
@@ -1284,7 +1284,7 @@ mod tests {
                     )),
                 ),
             ))])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         let expected = AST::Program(Function {
@@ -1358,7 +1358,7 @@ mod tests {
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("c.2.decl".into()))),
             ])),
-            identifiers: vec![],
+            params: vec![],
         }]);
         let expected = AST::Program(Function {
             name: "main".into(),
@@ -1429,7 +1429,7 @@ mod tests {
                 ))),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
             ])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         let expected = AST::Program(Function {
@@ -1520,7 +1520,7 @@ mod tests {
                     Box::new(Expression::Constant(2)),
                 ))),
             ])),
-            identifiers: vec![],
+            params: vec![],
         }]);
         let tacky = Tacky::new(ast);
         let assembly = tacky.into_ast();

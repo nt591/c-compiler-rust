@@ -411,7 +411,7 @@ mod tests {
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
             ])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         let actual = resolve(&mut before);
@@ -429,7 +429,7 @@ mod tests {
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
             ])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         let actual = resolve(&mut before);
@@ -451,7 +451,7 @@ mod tests {
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
             ])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         let actual = resolve(&mut before);
@@ -469,7 +469,7 @@ mod tests {
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a.0.decl".into()))),
             ])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         // mutates taken value
@@ -499,7 +499,7 @@ mod tests {
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("c".into()))),
             ])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         let actual = resolve(&mut before);
@@ -525,7 +525,7 @@ mod tests {
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("c.2.decl".into()))),
             ])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         // mutates taken value
@@ -635,7 +635,7 @@ mod tests {
                 )]))),
                 BlockItem::Stmt(Statement::Return(Expression::Var("x.0.decl".into()))),
             ])),
-            identifiers: vec![],
+            params: vec![],
         }]);
 
         assert_eq!(ast, expected);
@@ -714,7 +714,7 @@ mod tests {
                     label: "while_label.3".into(),
                 }),
             ])),
-            identifiers: vec![],
+            params: vec![],
         }]);
         assert_eq!(ast, expected);
     }
