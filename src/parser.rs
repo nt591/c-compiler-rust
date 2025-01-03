@@ -21,6 +21,8 @@ pub enum ParserError {
     UnexpectedTokenInConditional,
     #[error("Found a non-variable declaration in a For loop initializer")]
     WrongDeclarationInForInit,
+    #[error("Expected an identifier name after a type in a function parameter list")]
+    ExpectedIdentifierAfterType,
 }
 
 use crate::lexer::Token;
@@ -113,7 +115,7 @@ pub enum Expression {
         else_: Box<Expression>,
     },
     FunctionCall {
-        id: String,
+        name: String,
         args: Vec<Expression>,
     },
 }
@@ -180,10 +182,20 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_program(&mut self) -> Result<AST, ParserError> {
-        let val = self.parse_function()?;
-        Ok(AST::Program(vec![val]))
+        let mut funcs = vec![];
+        loop {
+            if self.tokens.peek().is_none() {
+                break;
+            }
+            funcs.push(self.parse_function()?);
+        }
+        Ok(AST::Program(funcs))
     }
 
+    /*
+     * "int" <identifier> "(" <param-list> ")" ( <block> | ";" )
+     * param-list ::= "void" | "int" <identifier> { "," "int" <identifier> }
+     */
     fn parse_function(&mut self) -> Result<FunctionDeclaration, ParserError> {
         // todo: set return type?
         self.expect(Token::Int)?;
@@ -193,14 +205,43 @@ impl<'a> Parser<'a> {
             _ => return Err(ParserError::UnexpectedName),
         };
         self.expect(Token::LeftParen)?;
-        self.expect(Token::Void)?;
-        self.expect(Token::RightParen)?;
-        let block = self.parse_block()?;
+        // check if we're void, or taking a param list
+        // Should we store Void in the identifier list?
+        // Emptiness is a way of knowing it's a void function.
+        let mut identifiers: Vec<String> = vec![];
+        if let Some(Token::Void) = self.tokens.peek() {
+            self.expect(Token::Void)?;
+            self.expect(Token::RightParen)?;
+        } else {
+            loop {
+                self.expect(Token::Int)?;
+                let Some(Token::Identifier(ident)) = self.tokens.next() else {
+                    return Err(ParserError::ExpectedIdentifierAfterType);
+                };
+                identifiers.push(ident.to_string());
+                if let Some(Token::RightParen) = self.tokens.peek() {
+                    // consume the right paren
+                    self.tokens.next();
+                    break;
+                };
+                self.expect(Token::Comma)?;
+            }
+        }
+        let block = match self.tokens.peek() {
+            Some(Token::Semicolon) => {
+                self.tokens.next();
+                None
+            }
+            _ => {
+                let block = self.parse_block()?;
+                Some(block)
+            }
+        };
 
         return Ok(FunctionDeclaration {
             name: name.into(),
-            block: Some(block),
-            identifiers: vec![],
+            block,
+            identifiers,
         });
     }
 
@@ -264,32 +305,46 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // "int" 'IDENTIFIER' [ '=' EXPR] ';'
+    /*
+     * var-decl ::= "int" <identifier> [ '=' <expr>] ';'
+     * fun-decl::= "int" <identifier> '(' <param-list> ')' ( <block> | ';' )
+     * param-list ::= "void" | "int" <identifier> { ',' "int" identifier }
+     *
+     * To validate, let's look forward three tokens. If it's a left paren,
+     * then we'll just go parse_function and get a fun-decl. Else, let's just try to
+     * parse a var-decl.
+     */
     fn parse_declaration(&mut self) -> Result<Declaration, ParserError> {
-        assert_eq!(
-            Some(Token::Int),
-            self.tokens.next().copied(),
-            "Expected to see 'int' token when parsing a declaration"
-        );
-        let name = match self.tokens.next() {
-            Some(Token::Main) => "main",
-            Some(Token::Identifier(ident)) => ident,
-            _ => return Err(ParserError::UnexpectedName),
-        };
-        let init = if let Some(Token::Equal) = self.tokens.peek() {
-            self.tokens.next();
-            let init = self.parse_expression(0)?;
-            self.expect(Token::Semicolon)?;
-            Some(init)
+        let lookahead = self.tokens.clone().take(3);
+        if let Some(Token::LeftParen) = lookahead.last() {
+            let func = self.parse_function()?;
+            Ok(Declaration::FunDecl(func))
         } else {
-            self.expect(Token::Semicolon)?;
-            None
-        };
+            assert_eq!(
+                Some(Token::Int),
+                self.tokens.next().copied(),
+                "Expected to see 'int' token when parsing a declaration"
+            );
+            let name = match self.tokens.next() {
+                Some(Token::Main) => "main",
+                Some(Token::Identifier(ident)) => ident,
+                _ => return Err(ParserError::UnexpectedName),
+            };
+            let init = if let Some(Token::Equal) = self.tokens.peek() {
+                self.tokens.next();
+                let init = self.parse_expression(0)?;
+                self.expect(Token::Semicolon)?;
+                Some(init)
+            } else {
+                self.expect(Token::Semicolon)?;
+                None
+            };
 
-        Ok(Declaration::VarDecl(VariableDeclaration {
-            name: name.into(),
-            init,
-        }))
+            Ok(Declaration::VarDecl(VariableDeclaration {
+                name: name.into(),
+                init,
+            }))
+        }
     }
 
     // if it starts with return, it's a return Statement
@@ -582,7 +637,37 @@ impl<'a> Parser<'a> {
                 self.expect(Token::RightParen)?;
                 Ok(inner_expr)
             }
-            Some(Token::Identifier(ident)) => Ok(Expression::Var(ident.to_string())),
+            Some(Token::Identifier(ident)) => {
+                if let Some(Token::LeftParen) = self.tokens.peek() {
+                    // function call, so get the inner expressions and attach
+                    self.tokens.next();
+                    // special case here, handle the empty argument list
+                    let args = match self.tokens.peek() {
+                        Some(Token::RightParen) => {
+                            self.tokens.next();
+                            vec![]
+                        }
+                        _ => {
+                            let mut args = vec![];
+                            loop {
+                                args.push(self.parse_expression(0)?);
+                                if let Some(Token::RightParen) = self.tokens.peek() {
+                                    self.tokens.next();
+                                    break;
+                                }
+                                self.expect(Token::Comma)?;
+                            }
+                            args
+                        }
+                    };
+                    Ok(Expression::FunctionCall {
+                        name: ident.to_string(),
+                        args,
+                    })
+                } else {
+                    Ok(Expression::Var(ident.to_string()))
+                }
+            }
             Some(t) => Err(ParserError::UnexpectedExpressionToken(t.into_string())),
             None => Err(ParserError::OutOfTokens),
         }
@@ -611,6 +696,7 @@ impl<'a> Parser<'a> {
     // List below must be high-to-low precedence to match link above
     fn precedence(token: &Token) -> Result<u8, ParserError> {
         match token {
+            Token::LeftParen => Ok(60),
             Token::Star | Token::Slash | Token::Percent => Ok(50),
             Token::Plus | Token::Hyphen => Ok(45),
             Token::LessThanLessThan | Token::GreaterThanGreaterThan => Ok(35),
@@ -707,7 +793,7 @@ mod tests {
         assert!(ast.is_err());
         assert_eq!(
             Err(ParserError::UnexpectedToken(
-                String::from("Void"),
+                String::from("Int"),
                 String::from("RightParen")
             )),
             ast
@@ -1835,6 +1921,96 @@ mod tests {
                     body: Box::new(Statement::Break("".into())),
                     label: "".into(),
                 }),
+            ])),
+            identifiers: vec![],
+        }]);
+
+        assert_eq!(ast.unwrap(), expected);
+    }
+
+    #[test]
+    fn test_functions() {
+        let src = r#"
+            int bar(int a);
+            int foo(int x, int y) { 
+                return x + y;
+            }
+            int main(void) {
+                return foo(1, 2) + 3;
+            }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_ok());
+
+        let expected = AST::Program(vec![
+            FunctionDeclaration {
+                name: "bar".into(),
+                block: None,
+                identifiers: vec!["a".into()],
+            },
+            FunctionDeclaration {
+                name: "foo".into(),
+                block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
+                    Expression::Binary(
+                        BinaryOp::Add,
+                        Box::new(Expression::Var("x".into())),
+                        Box::new(Expression::Var("y".into())),
+                    ),
+                ))])),
+                identifiers: vec!["x".into(), "y".into()],
+            },
+            FunctionDeclaration {
+                name: "main".into(),
+                block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
+                    Expression::Binary(
+                        BinaryOp::Add,
+                        Box::new(Expression::FunctionCall {
+                            name: "foo".into(),
+                            args: vec![Expression::Constant(1), Expression::Constant(2)],
+                        }),
+                        Box::new(Expression::Constant(3)),
+                    ),
+                ))])),
+                identifiers: vec![],
+            },
+        ]);
+
+        assert_eq!(ast.unwrap(), expected);
+    }
+
+    #[test]
+    fn test_nested_function_declarations() {
+        let src = r#"
+            int main(void) {
+                int foo(int x, int y);
+                return foo(1, 2) + 3;
+            }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert!(ast.is_ok());
+
+        let expected = AST::Program(vec![FunctionDeclaration {
+            name: "main".into(),
+            block: Some(Block(vec![
+                BlockItem::Decl(Declaration::FunDecl(FunctionDeclaration {
+                    name: "foo".into(),
+                    identifiers: vec!["x".into(), "y".into()],
+                    block: None,
+                })),
+                BlockItem::Stmt(Statement::Return(Expression::Binary(
+                    BinaryOp::Add,
+                    Box::new(Expression::FunctionCall {
+                        name: "foo".into(),
+                        args: vec![Expression::Constant(1), Expression::Constant(2)],
+                    }),
+                    Box::new(Expression::Constant(3)),
+                ))),
             ])),
             identifiers: vec![],
         }]);
