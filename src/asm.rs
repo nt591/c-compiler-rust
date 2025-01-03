@@ -106,7 +106,10 @@ impl Asm {
     fn parse_function(func: &tacky::Function) -> Function {
         let tacky::Function { name, instructions } = func;
         let instructions = Self::parse_instructions(&instructions);
-        Function { name: name.into(), instructions }
+        Function {
+            name: name.into(),
+            instructions,
+        }
     }
 
     fn parse_instructions(ins: &[tacky::Instruction]) -> Vec<Instruction> {

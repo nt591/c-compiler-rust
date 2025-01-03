@@ -142,7 +142,9 @@ fn resolve_ast(ast: &mut AST, resolver: &mut Resolver) -> Result<(), SemanticAna
 
     for function in functions {
         let FunctionDeclaration { block, name: _, .. } = function;
-        let block = block.as_mut().expect("Should have one top-level function block");
+        let block = block
+            .as_mut()
+            .expect("Should have one top-level function block");
 
         resolve_block(block, resolver)?;
     }
@@ -153,7 +155,10 @@ fn resolve_block(block: &mut Block, resolver: &mut Resolver) -> Result<(), Seman
     let Block(ref mut body) = block;
     for body_item in body.iter_mut() {
         match body_item {
-            BlockItem::Decl(declaration) => resolve_decl(declaration, resolver)?,
+            BlockItem::Decl(Declaration::VarDecl(declaration)) => {
+                resolve_decl(declaration, resolver)?
+            }
+            BlockItem::Decl(Declaration::FunDecl(_)) => todo!(),
             BlockItem::Stmt(statement) => resolve_statement(statement, resolver)?,
         }
     }
@@ -162,19 +167,18 @@ fn resolve_block(block: &mut Block, resolver: &mut Resolver) -> Result<(), Seman
 }
 
 fn resolve_decl(
-    decl: &mut Declaration,
+    decl: &mut VariableDeclaration,
     resolver: &mut Resolver,
 ) -> Result<(), SemanticAnalysisError> {
-    if let Declaration::VarDecl(VariableDeclaration { name, init }) = decl {
-        if resolver.variable_declared_in_current_block(&name) {
-            return Err(SemanticAnalysisError::DuplicateDecl(name.clone()));
-        };
-        let renamed_var = resolver.make_temporary_variable(&name);
-        resolver.resolve_variable(&name, renamed_var.clone(), true);
-        *name = renamed_var;
-        if let Some(init) = init {
-            resolve_expr(init, resolver)?;
-        };
+    let VariableDeclaration { name, init } = decl;
+    if resolver.variable_declared_in_current_block(&name) {
+        return Err(SemanticAnalysisError::DuplicateDecl(name.clone()));
+    };
+    let renamed_var = resolver.make_temporary_variable(&name);
+    resolver.resolve_variable(&name, renamed_var.clone(), true);
+    *name = renamed_var;
+    if let Some(init) = init {
+        resolve_expr(init, resolver)?;
     };
     Ok(())
 }
@@ -292,7 +296,7 @@ fn resolve_expr(
             resolve_expr(&mut *condition, resolver)?;
             resolve_expr(&mut *then, resolver)?;
             resolve_expr(&mut *else_, resolver)?;
-        },
+        }
         Expression::FunctionCall { .. } => todo!(),
     };
     Ok(())
@@ -388,9 +392,9 @@ mod tests {
     use crate::parser::Block;
     use crate::parser::BlockItem;
     use crate::parser::Expression;
+    use crate::parser::FunctionDeclaration;
     use crate::parser::Statement;
     use crate::parser::AST;
-    use crate::parser::FunctionDeclaration;
 
     #[test]
     fn basic_resolve_repeated_variable() {

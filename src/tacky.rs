@@ -4,10 +4,10 @@
 use crate::parser;
 use crate::parser::BinaryOp as ParserBinaryOp;
 use crate::parser::Block;
-use crate::parser::FunctionDeclaration;
 use crate::parser::Declaration;
 use crate::parser::Expression;
 use crate::parser::ForInit;
+use crate::parser::FunctionDeclaration;
 use crate::parser::Statement;
 use crate::parser::UnaryOp as ParserUnaryOp;
 use crate::parser::VariableDeclaration;
@@ -121,11 +121,11 @@ impl<'a> Tacky {
     }
 
     fn parse_program(&mut self, parser: ParserAST) -> Result<AST, TackyError> {
-            let ParserAST::Program(funcs) = parser;
-                let func = funcs.get(0).unwrap();
-                let func = self.parse_function(func)?;
-                Ok(AST::Program(func))
-        }
+        let ParserAST::Program(funcs) = parser;
+        let func = funcs.get(0).unwrap();
+        let func = self.parse_function(func)?;
+        Ok(AST::Program(func))
+    }
 
     fn parse_function(&mut self, function: &FunctionDeclaration) -> Result<Function, TackyError> {
         let FunctionDeclaration { name, block, .. } = function;
@@ -133,7 +133,10 @@ impl<'a> Tacky {
             Some(b) => self.parse_instructions(b)?,
             None => vec![],
         };
-        Ok(Function { name: name.into(), instructions })
+        Ok(Function {
+            name: name.into(),
+            instructions,
+        })
     }
 
     fn parse_expression(
@@ -735,9 +738,10 @@ impl<'a> Tacky {
                 BlockItem::Stmt(stmt) => {
                     self.parse_statement(stmt, instructions)?;
                 }
-                BlockItem::Decl(declaration) => {
+                BlockItem::Decl(Declaration::VarDecl(declaration)) => {
                     self.emit_declaration(declaration, instructions)?;
                 }
+                BlockItem::Decl(Declaration::FunDecl(_)) => todo!(),
             }
         }
         Ok(())
@@ -745,13 +749,13 @@ impl<'a> Tacky {
 
     fn emit_declaration(
         &mut self,
-        decl: &Declaration,
+        decl: &VariableDeclaration,
         instructions: &mut Vec<Instruction>,
     ) -> Result<(), TackyError> {
-        if let Declaration::VarDecl(VariableDeclaration {
+        if let VariableDeclaration {
             name,
             init: Some(init),
-        }) = decl
+        } = decl
         {
             // emit instructions for rhs, then copy into lhs
             let result = self.parse_expression(init, instructions)?;
@@ -798,10 +802,10 @@ mod tests {
     use crate::parser::Block;
     use crate::parser::BlockItem;
     use crate::parser::Declaration;
+    use crate::parser::FunctionDeclaration;
     use crate::parser::Statement;
     use crate::parser::UnaryOp as ParserUnaryOp;
     use crate::parser::AST as ParserAST;
-    use crate::parser::FunctionDeclaration;
 
     #[test]
     fn basic_parse() {
@@ -832,10 +836,9 @@ mod tests {
     fn unary_op_parse() {
         let ast = ParserAST::Program(vec![FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(Expression::Unary(
-                ParserUnaryOp::Negate,
-                Box::new(Expression::Constant(100)),
-            )))])),
+            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Unary(ParserUnaryOp::Negate, Box::new(Expression::Constant(100))),
+            ))])),
             identifiers: vec![],
         }]);
 
@@ -863,16 +866,18 @@ mod tests {
     fn complex_unary_parse() {
         let ast = ParserAST::Program(vec![FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(Expression::Unary(
-                ParserUnaryOp::Negate,
-                Box::new(Expression::Unary(
-                    ParserUnaryOp::Complement,
+            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Unary(
+                    ParserUnaryOp::Negate,
                     Box::new(Expression::Unary(
-                        ParserUnaryOp::Negate,
-                        Box::new(Expression::Constant(100)),
+                        ParserUnaryOp::Complement,
+                        Box::new(Expression::Unary(
+                            ParserUnaryOp::Negate,
+                            Box::new(Expression::Constant(100)),
+                        )),
                     )),
-                )),
-            )))])),
+                ),
+            ))])),
             identifiers: vec![],
         }]);
 

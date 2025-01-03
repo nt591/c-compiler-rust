@@ -19,6 +19,8 @@ pub enum ParserError {
     NoPrecedenceForToken(String),
     #[error("Expected colon after then-expr in conditional")]
     UnexpectedTokenInConditional,
+    #[error("Found a non-variable declaration in a For loop initializer")]
+    WrongDeclarationInForInit,
 }
 
 use crate::lexer::Token;
@@ -36,7 +38,7 @@ pub struct FunctionDeclaration {
 
 #[derive(Debug, PartialEq)]
 pub enum ForInit {
-    InitDecl(Declaration),
+    InitDecl(VariableDeclaration),
     InitExp(Option<Expression>),
 }
 
@@ -233,7 +235,10 @@ impl<'a> Parser<'a> {
     fn parse_for_init(&mut self) -> Result<ForInit, ParserError> {
         if let Some(Token::Int) = self.tokens.peek() {
             let decl = self.parse_declaration()?;
-            Ok(ForInit::InitDecl(decl))
+            let Declaration::VarDecl(var_decl) = decl else {
+                return Err(ParserError::WrongDeclarationInForInit);
+            };
+            Ok(ForInit::InitDecl(var_decl))
         } else {
             let expr = self.parse_optional_expr(Token::Semicolon)?;
             Ok(ForInit::InitExp(expr))
@@ -669,13 +674,15 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let ast = ast.unwrap();
-        let expected = AST::Program(vec![(FunctionDeclaration {
-            name: "main".into(),
-            block: Some(Block(vec![
-                BlockItem::Stmt(Statement::Return(Expression::Constant(100))),
-            ])),
-            identifiers: vec![],
-        })]);
+        let expected = AST::Program(vec![
+            (FunctionDeclaration {
+                name: "main".into(),
+                block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
+                    Expression::Constant(100),
+                ))])),
+                identifiers: vec![],
+            }),
+        ]);
         assert_eq!(expected, ast);
     }
 
@@ -728,11 +735,10 @@ mod tests {
         let ast = ast.unwrap();
         let expected = AST::Program(vec![FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(Expression::Unary(
-                UnaryOp::Complement,
-                Box::new(Expression::Constant(100)),
-            )))])),
-        identifiers: vec![],
+            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Unary(UnaryOp::Complement, Box::new(Expression::Constant(100))),
+            ))])),
+            identifiers: vec![],
         }]);
         assert_eq!(expected, ast);
     }
@@ -758,10 +764,9 @@ mod tests {
         let ast = ast.unwrap();
         let expected = AST::Program(vec![FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(Expression::Unary(
-                UnaryOp::Negate,
-                Box::new(Expression::Constant(100)),
-            )))])),
+            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Unary(UnaryOp::Negate, Box::new(Expression::Constant(100))),
+            ))])),
             identifiers: vec![],
         }]);
         assert_eq!(expected, ast);
@@ -790,10 +795,9 @@ mod tests {
         let ast = ast.unwrap();
         let expected = AST::Program(vec![FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(Expression::Unary(
-                UnaryOp::Negate,
-                Box::new(Expression::Constant(100)),
-            )))])),
+            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Unary(UnaryOp::Negate, Box::new(Expression::Constant(100))),
+            ))])),
             identifiers: vec![],
         }]);
         assert_eq!(expected, ast);
@@ -1789,10 +1793,10 @@ mod tests {
                     init: Some(Expression::Constant(1)),
                 })),
                 BlockItem::Stmt(Statement::For {
-                    init: ForInit::InitDecl(Declaration::VarDecl(VariableDeclaration {
+                    init: ForInit::InitDecl(VariableDeclaration {
                         name: "b".into(),
                         init: Some(Expression::Constant(1)),
-                    })),
+                    }),
                     condition: Some(Expression::Binary(
                         BinaryOp::LessThan,
                         Box::new(Expression::Var("b".into())),
