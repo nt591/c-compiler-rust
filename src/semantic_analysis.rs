@@ -28,7 +28,9 @@ pub enum SemanticAnalysisError {
     #[error("Found a Continue statement outside of a loop")]
     ContinueWithoutLoopConstruct,
     #[error("Undeclared function")]
-    UndeclaredFunction
+    UndeclaredFunction,
+    #[error("Duplicate function declaration {0}")]
+    DuplicateFunction(String),
 }
 
 #[derive(Debug, Clone)]
@@ -170,11 +172,39 @@ fn resolve_block(block: &mut Block, resolver: &mut Resolver) -> Result<(), Seman
             BlockItem::Decl(Declaration::VarDecl(declaration)) => {
                 resolve_decl(declaration, resolver)?
             }
-            BlockItem::Decl(Declaration::FunDecl(_)) => todo!(),
+            BlockItem::Decl(Declaration::FunDecl(decl)) => resolve_function_declaration(decl, resolver)?,
             BlockItem::Stmt(statement) => resolve_statement(statement, resolver)?,
         }
     }
 
+    Ok(())
+}
+
+fn resolve_function_declaration(decl: &mut FunctionDeclaration, resolver: &mut Resolver) -> Result<(), SemanticAnalysisError> {
+    if let Some(identifier) = resolver.get_identifier(&decl.name) {
+        if identifier.in_current_scope && !identifier.has_linkage {
+            return Err(SemanticAnalysisError::DuplicateFunction(decl.name.clone()))
+        }
+    };
+    
+    resolver.resolve_variable(&decl.name, decl.name.clone(), true, true);
+    let mut new_resolver = resolver.copy_resolver_and_reset_scopes();
+    for param in decl.params.iter_mut() {
+        resolve_param(param, &mut new_resolver)?;
+    }
+    if let Some(ref mut block) = decl.block {
+        resolve_block(block, &mut new_resolver)?;
+    }
+    Ok(())
+}
+
+fn resolve_param(name: &mut String, resolver: &mut Resolver) -> Result<(), SemanticAnalysisError> {
+    if resolver.variable_declared_in_current_block(&name) {
+        return Err(SemanticAnalysisError::DuplicateDecl(name.clone()));
+    };
+    let renamed_var = resolver.make_temporary_variable(&name);
+    resolver.resolve_variable(&name, renamed_var.clone(), true, false);
+    *name = renamed_var;
     Ok(())
 }
 
@@ -183,12 +213,7 @@ fn resolve_decl(
     resolver: &mut Resolver,
 ) -> Result<(), SemanticAnalysisError> {
     let VariableDeclaration { name, init } = decl;
-    if resolver.variable_declared_in_current_block(&name) {
-        return Err(SemanticAnalysisError::DuplicateDecl(name.clone()));
-    };
-    let renamed_var = resolver.make_temporary_variable(&name);
-    resolver.resolve_variable(&name, renamed_var.clone(), true, false);
-    *name = renamed_var;
+    resolve_param(name, resolver)?;
     if let Some(init) = init {
         resolve_expr(init, resolver)?;
     };
