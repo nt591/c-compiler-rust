@@ -27,6 +27,8 @@ pub enum SemanticAnalysisError {
     BreakWithoutLoopConstruct,
     #[error("Found a Continue statement outside of a loop")]
     ContinueWithoutLoopConstruct,
+    #[error("Undeclared function")]
+    UndeclaredFunction
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +76,11 @@ impl Resolver {
         self.renamed_variables
             .get(name)
             .map(|x| x.name.clone())
+    }
+
+    fn get_identifier(&self, name: &str) -> Option<&ResolvedIdentifier> {
+        self.renamed_variables
+            .get(name)
     }
 
     fn variable_declared_in_current_block(&self, name: &str) -> bool {
@@ -303,7 +310,12 @@ fn resolve_expr(
             resolve_expr(&mut *else_, resolver)?;
         }
         Expression::FunctionCall { name, args } => {
-
+            let ident = resolver.get_identifier(name).ok_or_else(|| SemanticAnalysisError::UndeclaredFunction)?;
+            // we reset the name here, just for typechecking
+            *name = ident.name.clone();
+            for arg in args.iter_mut() {
+                resolve_expr(arg, resolver)?;
+            }
         },
     };
     Ok(())
