@@ -31,6 +31,8 @@ pub enum SemanticAnalysisError {
     UndeclaredFunction,
     #[error("Duplicate function declaration {0}")]
     DuplicateFunction(String),
+    #[error("Nested function definitions are not allowed")]
+    NestedFunctionDefinitionsNotAllowed,
 }
 
 #[derive(Debug, Clone)]
@@ -124,12 +126,19 @@ impl Resolver {
         }
     }
 
+    // Every time we copy a resolver, we should
+    // run all validations of labels just in case we have malformed
+    // GOTO / labelled statements
     fn copy_resolver_and_reset_scopes(&self) -> Self {
         let mut new_resolver = self.clone();
         for (_name, x) in new_resolver.renamed_variables.iter_mut() {
             x.in_current_scope = false;
         }
         new_resolver
+    }
+
+    fn transfer_count(&mut self, other: &Resolver) {
+        self.var_counter = other.var_counter;
     }
 }
 
@@ -155,12 +164,7 @@ fn resolve_ast(ast: &mut AST, resolver: &mut Resolver) -> Result<(), SemanticAna
     let AST::Program(functions) = ast;
 
     for function in functions {
-        let FunctionDeclaration { block, name: _, .. } = function;
-        let block = block
-            .as_mut()
-            .expect("Should have one top-level function block");
-
-        resolve_block(block, resolver)?;
+        resolve_function_declaration(function, resolver)?;
     }
     Ok(())
 }
@@ -172,7 +176,13 @@ fn resolve_block(block: &mut Block, resolver: &mut Resolver) -> Result<(), Seman
             BlockItem::Decl(Declaration::VarDecl(declaration)) => {
                 resolve_decl(declaration, resolver)?
             }
-            BlockItem::Decl(Declaration::FunDecl(decl)) => resolve_function_declaration(decl, resolver)?,
+            BlockItem::Decl(Declaration::FunDecl(decl)) => {
+                if decl.block.is_some() {
+                    // Nested function definitions are not permitted
+                    return Err(SemanticAnalysisError::NestedFunctionDefinitionsNotAllowed);
+                }
+                resolve_function_declaration(decl, resolver)?;
+            }
             BlockItem::Stmt(statement) => resolve_statement(statement, resolver)?,
         }
     }
@@ -195,6 +205,8 @@ fn resolve_function_declaration(decl: &mut FunctionDeclaration, resolver: &mut R
     if let Some(ref mut block) = decl.block {
         resolve_block(block, &mut new_resolver)?;
     }
+    validate_labels(&new_resolver)?;
+    resolver.transfer_count(&new_resolver);
     Ok(())
 }
 
@@ -251,6 +263,8 @@ fn resolve_statement(
         Statement::Compound(block) => {
             let mut new_resolver = resolver.copy_resolver_and_reset_scopes();
             resolve_block(block, &mut new_resolver)?;
+            validate_labels(&new_resolver)?;
+            resolver.transfer_count(&new_resolver);
         }
         Statement::Break(_lbl) | Statement::Continue(_lbl) => (),
         Statement::DoWhile {
@@ -274,6 +288,8 @@ fn resolve_statement(
             resolve_optional_expr(condition.as_mut(), &mut new_resolver)?;
             resolve_optional_expr(post.as_mut(), &mut new_resolver)?;
             resolve_statement(&mut **body, &mut new_resolver)?;
+            validate_labels(&new_resolver)?;
+            resolver.transfer_count(&new_resolver);
         }
     };
     Ok(())

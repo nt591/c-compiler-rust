@@ -1867,7 +1867,7 @@ mod tests {
                     src: Val::Constant(400),
                     dst: Val::Var("i.0.decl".into()),
                 },
-                Instruction::Label("for_label.0".into()),
+                Instruction::Label("for_label.1".into()),
                 Instruction::Binary {
                     op: BinaryOp::Equal,
                     src1: Val::Var("i.0.decl".into()),
@@ -1884,7 +1884,7 @@ mod tests {
                 },
                 Instruction::Ret(Val::Constant(0)),
                 Instruction::Label("end_label.0".into()),
-                Instruction::Label("continue_for_label.0".into()),
+                Instruction::Label("continue_for_label.1".into()),
                 Instruction::Binary {
                     op: BinaryOp::Subtract,
                     src1: Val::Var("i.0.decl".into()),
@@ -1895,8 +1895,8 @@ mod tests {
                     src: Val::Var("tmp.2".into()),
                     dst: Val::Var("i.0.decl".into()),
                 },
-                Instruction::Jump("for_label.0".into()),
-                Instruction::Label("break_for_label.0".into()),
+                Instruction::Jump("for_label.1".into()),
+                Instruction::Label("break_for_label.1".into()),
                 // placeholder
                 Instruction::Ret(Val::Constant(0)),
             ],
