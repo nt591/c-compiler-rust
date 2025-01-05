@@ -33,6 +33,14 @@ pub enum SemanticAnalysisError {
     DuplicateFunction(String),
     #[error("Nested function definitions are not allowed")]
     NestedFunctionDefinitionsNotAllowed,
+    #[error("Expected a function name but found a variable: {0}")]
+    VariableUsedAsFunctionName(String),
+    #[error("Expected a variable name but found a function: {0}")]
+    FunctionUsedAsVariableName(String),
+    #[error("Function called with wrong number of arguments")]
+    FunctionCalledWithWrongNumOfArgs,
+    #[error("Incompatible function declaration")]
+    IncompatibleFunctionDeclaration,
 }
 
 #[derive(Debug, Clone)]
@@ -71,20 +79,29 @@ impl Resolver {
         format!("{base}.{count}")
     }
 
-    fn resolve_variable(&mut self, name: &str, resolved_name: String, in_current_scope: bool, has_linkage: bool) {
-        self.renamed_variables
-            .insert(name.into(), ResolvedIdentifier { name: resolved_name, in_current_scope, has_linkage });
+    fn resolve_variable(
+        &mut self,
+        name: &str,
+        resolved_name: String,
+        in_current_scope: bool,
+        has_linkage: bool,
+    ) {
+        self.renamed_variables.insert(
+            name.into(),
+            ResolvedIdentifier {
+                name: resolved_name,
+                in_current_scope,
+                has_linkage,
+            },
+        );
     }
 
     fn get_resolved_variable(&self, name: &str) -> Option<String> {
-        self.renamed_variables
-            .get(name)
-            .map(|x| x.name.clone())
+        self.renamed_variables.get(name).map(|x| x.name.clone())
     }
 
     fn get_identifier(&self, name: &str) -> Option<&ResolvedIdentifier> {
-        self.renamed_variables
-            .get(name)
+        self.renamed_variables.get(name)
     }
 
     fn variable_declared_in_current_block(&self, name: &str) -> bool {
@@ -142,12 +159,223 @@ impl Resolver {
     }
 }
 
+// BEGIN: typechecking constructs
+#[derive(PartialEq)]
+enum CType {
+    Int,
+    FunType(usize), // param_count
+}
+
+// TODO: lazy_static this bad boy
+// If type is FunType, store if we've seen a definition (func body)
+type SymbolTable = HashMap<String, (CType, Option<bool>)>;
+// END: typechecking constructs
+
 pub fn resolve(ast: &mut AST) -> Result<(), SemanticAnalysisError> {
     let mut resolver = Resolver::new();
     resolve_ast(ast, &mut resolver)?;
     label_and_validate_loop_constructs(ast, &mut resolver)?;
     validate_labels(&resolver)?;
+    let mut table = SymbolTable::new();
+    typecheck_ast(ast, &mut table)?;
     Ok(())
+}
+
+fn typecheck_ast(ast: &AST, symbol_table: &mut SymbolTable) -> Result<(), SemanticAnalysisError> {
+    let AST::Program(functions) = ast;
+
+    for function in functions {
+        typecheck_function_declaration(function, symbol_table)?;
+    }
+    Ok(())
+}
+
+fn typecheck_function_declaration(
+    decl: &FunctionDeclaration,
+    symbol_table: &mut SymbolTable,
+) -> Result<(), SemanticAnalysisError> {
+    let already_defined = match symbol_table.get(&decl.name) {
+        None => Ok(false),
+        Some((CType::Int, _)) => Err(SemanticAnalysisError::IncompatibleFunctionDeclaration),
+        Some((CType::FunType(count), _)) if *count != decl.params.len() => {
+            Err(SemanticAnalysisError::IncompatibleFunctionDeclaration)
+        }
+        Some((_old_decl, Some(true))) if decl.block.is_some() => {
+            Err(SemanticAnalysisError::DuplicateFunction(decl.name.clone()))
+        }
+        Some((_old_decl, Some(def))) => Ok(*def),
+        Some((_, None)) => unreachable!(
+            "Somehow found a function stored in the symbol table without an already_defined value"
+        ),
+    }?;
+    symbol_table.insert(
+        decl.name.clone(),
+        (
+            CType::FunType(decl.params.len()),
+            Some(already_defined || decl.block.is_some()),
+        ),
+    );
+    if let Some(block) = &decl.block {
+        for param in decl.params.iter() {
+            symbol_table.insert(param.clone(), (CType::Int, None));
+        }
+        typecheck_block(&block, symbol_table)?;
+    }
+    Ok(())
+}
+
+fn typecheck_block(
+    decl: &Block,
+    symbol_table: &mut SymbolTable,
+) -> Result<(), SemanticAnalysisError> {
+    let Block(body) = decl;
+    for body_item in body.iter() {
+        match body_item {
+            BlockItem::Decl(Declaration::VarDecl(declaration)) => {
+                typecheck_decl(declaration, symbol_table)?
+            }
+            BlockItem::Decl(Declaration::FunDecl(decl)) => {
+                typecheck_function_declaration(decl, symbol_table)?;
+            }
+            BlockItem::Stmt(statement) => typecheck_statement(statement, symbol_table)?,
+        }
+    }
+
+    Ok(())
+}
+
+fn typecheck_decl(
+    decl: &VariableDeclaration,
+    symbol_table: &mut SymbolTable,
+) -> Result<(), SemanticAnalysisError> {
+    let VariableDeclaration { init, name } = decl;
+    symbol_table.insert(name.clone(), (CType::Int, None));
+    if let Some(init) = init {
+        typecheck_expr(init, symbol_table)?;
+    };
+    Ok(())
+}
+
+fn typecheck_statement(
+    statement: &Statement,
+    symbol_table: &mut SymbolTable,
+) -> Result<(), SemanticAnalysisError> {
+    match statement {
+        Statement::Null => (),
+        Statement::Expr(expr) => typecheck_expr(expr, symbol_table)?,
+        Statement::Return(expr) => typecheck_expr(expr, symbol_table)?,
+        Statement::If {
+            condition,
+            then,
+            else_,
+        } => {
+            typecheck_expr(condition, symbol_table)?;
+            typecheck_statement(then, symbol_table)?;
+            if let Some(expr) = else_ {
+                typecheck_statement(expr, symbol_table)?;
+            };
+        }
+        Statement::Goto(_lbl) => (),
+        Statement::Labelled { statement, .. } => {
+            typecheck_statement(statement, symbol_table)?;
+        }
+        Statement::Compound(block) => {
+            typecheck_block(block, symbol_table)?;
+        }
+        Statement::Break(_lbl) | Statement::Continue(_lbl) => (),
+        Statement::DoWhile {
+            condition, body, ..
+        }
+        | Statement::While {
+            body, condition, ..
+        } => {
+            typecheck_expr(condition, symbol_table)?;
+            typecheck_statement(body, symbol_table)?;
+        }
+        Statement::For {
+            init,
+            condition,
+            post,
+            body,
+            ..
+        } => {
+            typecheck_for_init(init, symbol_table)?;
+            typecheck_optional_expr(condition.as_ref(), symbol_table)?;
+            typecheck_optional_expr(post.as_ref(), symbol_table)?;
+            typecheck_statement(body.as_ref(), symbol_table)?;
+        }
+    };
+    Ok(())
+}
+
+fn typecheck_for_init(
+    init: &ForInit,
+    symbol_table: &mut SymbolTable,
+) -> Result<(), SemanticAnalysisError> {
+    match init {
+        ForInit::InitDecl(decl) => typecheck_decl(decl, symbol_table),
+        ForInit::InitExp(expr) => typecheck_optional_expr(expr.as_ref(), symbol_table),
+    }
+}
+
+fn typecheck_optional_expr(
+    expr: Option<&Expression>,
+    symbol_table: &mut SymbolTable,
+) -> Result<(), SemanticAnalysisError> {
+    if let Some(expression) = expr {
+        typecheck_expr(expression, symbol_table)?;
+    }
+    Ok(())
+}
+
+fn typecheck_expr(
+    expr: &Expression,
+    symbol_table: &mut SymbolTable,
+) -> Result<(), SemanticAnalysisError> {
+    match expr {
+        Expression::FunctionCall { name, args } => {
+            let stored_type = symbol_table.get(name); // TODO: Can this be None?
+            let Some((CType::FunType(count), _)) = stored_type else {
+                return Err(SemanticAnalysisError::VariableUsedAsFunctionName(name.clone()));
+            };
+            if args.len() != *count {
+                return Err(SemanticAnalysisError::FunctionCalledWithWrongNumOfArgs);
+            }
+            for arg in args {
+                typecheck_expr(arg, symbol_table)?;
+            }
+            Ok(())
+        }
+        Expression::Var(name) => {
+            let stored_type = symbol_table.get(name); // TODO: Can this be None?
+            let Some((CType::Int, None)) = stored_type else {
+                return Err(SemanticAnalysisError::FunctionUsedAsVariableName(name.clone()));
+            };
+            Ok(())
+        }
+        Expression::Constant(_) => Ok(()),
+        Expression::Binary(_op, lhs, rhs) => {
+            typecheck_expr(lhs.as_ref(), symbol_table)?;
+            typecheck_expr(rhs.as_ref(), symbol_table)?;
+            Ok(())
+        }
+        Expression::Unary(_op, expr) => {typecheck_expr(expr.as_ref(), symbol_table)?; Ok(()) }
+        Expression::Conditional {
+            condition,
+            then,
+            else_
+        } => {
+            typecheck_expr(condition.as_ref(), symbol_table)?;
+            typecheck_expr(then.as_ref(), symbol_table)?;
+            typecheck_expr(else_.as_ref(), symbol_table)?;
+            Ok(())
+        },
+        Expression::Assignment(lhs, rhs) => {
+            typecheck_expr(lhs.as_ref(), symbol_table)?;
+            typecheck_expr(rhs.as_ref(), symbol_table)?;
+            Ok(())
+        }
+    }
 }
 
 fn validate_labels(resolver: &Resolver) -> Result<(), SemanticAnalysisError> {
@@ -190,13 +418,16 @@ fn resolve_block(block: &mut Block, resolver: &mut Resolver) -> Result<(), Seman
     Ok(())
 }
 
-fn resolve_function_declaration(decl: &mut FunctionDeclaration, resolver: &mut Resolver) -> Result<(), SemanticAnalysisError> {
+fn resolve_function_declaration(
+    decl: &mut FunctionDeclaration,
+    resolver: &mut Resolver,
+) -> Result<(), SemanticAnalysisError> {
     if let Some(identifier) = resolver.get_identifier(&decl.name) {
         if identifier.in_current_scope && !identifier.has_linkage {
-            return Err(SemanticAnalysisError::DuplicateFunction(decl.name.clone()))
+            return Err(SemanticAnalysisError::DuplicateFunction(decl.name.clone()));
         }
     };
-    
+
     resolver.resolve_variable(&decl.name, decl.name.clone(), true, true);
     let mut new_resolver = resolver.copy_resolver_and_reset_scopes();
     for param in decl.params.iter_mut() {
@@ -351,13 +582,15 @@ fn resolve_expr(
             resolve_expr(&mut *else_, resolver)?;
         }
         Expression::FunctionCall { name, args } => {
-            let ident = resolver.get_identifier(name).ok_or_else(|| SemanticAnalysisError::UndeclaredFunction)?;
+            let ident = resolver
+                .get_identifier(name)
+                .ok_or_else(|| SemanticAnalysisError::UndeclaredFunction)?;
             // we reset the name here, just for typechecking
             *name = ident.name.clone();
             for arg in args.iter_mut() {
                 resolve_expr(arg, resolver)?;
             }
-        },
+        }
     };
     Ok(())
 }
