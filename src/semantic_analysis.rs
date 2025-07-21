@@ -336,7 +336,9 @@ fn typecheck_expr(
         Expression::FunctionCall { name, args } => {
             let stored_type = symbol_table.get(name); // TODO: Can this be None?
             let Some((CType::FunType(count), _)) = stored_type else {
-                return Err(SemanticAnalysisError::VariableUsedAsFunctionName(name.clone()));
+                return Err(SemanticAnalysisError::VariableUsedAsFunctionName(
+                    name.clone(),
+                ));
             };
             if args.len() != *count {
                 return Err(SemanticAnalysisError::FunctionCalledWithWrongNumOfArgs);
@@ -349,7 +351,9 @@ fn typecheck_expr(
         Expression::Var(name) => {
             let stored_type = symbol_table.get(name); // TODO: Can this be None?
             let Some((CType::Int, None)) = stored_type else {
-                return Err(SemanticAnalysisError::FunctionUsedAsVariableName(name.clone()));
+                return Err(SemanticAnalysisError::FunctionUsedAsVariableName(
+                    name.clone(),
+                ));
             };
             Ok(())
         }
@@ -359,17 +363,20 @@ fn typecheck_expr(
             typecheck_expr(rhs.as_ref(), symbol_table)?;
             Ok(())
         }
-        Expression::Unary(_op, expr) => {typecheck_expr(expr.as_ref(), symbol_table)?; Ok(()) }
+        Expression::Unary(_op, expr) => {
+            typecheck_expr(expr.as_ref(), symbol_table)?;
+            Ok(())
+        }
         Expression::Conditional {
             condition,
             then,
-            else_
+            else_,
         } => {
             typecheck_expr(condition.as_ref(), symbol_table)?;
             typecheck_expr(then.as_ref(), symbol_table)?;
             typecheck_expr(else_.as_ref(), symbol_table)?;
             Ok(())
-        },
+        }
         Expression::Assignment(lhs, rhs) => {
             typecheck_expr(lhs.as_ref(), symbol_table)?;
             typecheck_expr(rhs.as_ref(), symbol_table)?;

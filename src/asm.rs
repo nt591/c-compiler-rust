@@ -96,7 +96,8 @@ impl Asm {
 
     fn parse_program(tacky: &tacky::AST) -> Asm {
         match tacky {
-            tacky::AST::Program(func) => {
+            tacky::AST::Program(funcs) => {
+                let func = funcs.get(0).unwrap();
                 let func = Self::parse_function(func);
                 Asm::Program(func)
             }
@@ -104,7 +105,12 @@ impl Asm {
     }
 
     fn parse_function(func: &tacky::Function) -> Function {
-        let tacky::Function { name, instructions } = func;
+        let tacky::Function {
+            name,
+            instructions,
+            params,
+        } = func;
+        let _ = params;
         let instructions = Self::parse_instructions(&instructions);
         Function {
             name: name.into(),
@@ -218,6 +224,7 @@ impl Asm {
                 TIns::Label(ident) => vec![Label(ident.clone())],
                 TIns::Copy { src, dst } => vec![Mov(src.into(), dst.into())],
                 TIns::Jump(ident) => vec![Jmp(ident.clone())],
+                TIns::FunCall { .. } => todo!(),
             })
             .collect::<Vec<_>>()
     }
@@ -406,10 +413,11 @@ mod tests {
     use crate::tacky::UnaryOp as TUOp;
     #[test]
     fn basic_parse() {
-        let ast = tacky::AST::Program(tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![tacky::Instruction::Ret(tacky::Val::Constant(100))],
-        });
+        }]);
 
         let expected = Asm::Program(Function {
             name: "main".into(),
@@ -426,8 +434,9 @@ mod tests {
 
     #[test]
     fn parse_with_pseudos() {
-        let ast = tacky::AST::Program(tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 tacky::Instruction::Unary {
                     op: tacky::UnaryOp::Negate,
@@ -436,7 +445,7 @@ mod tests {
                 },
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.0".into())),
             ],
-        });
+        }]);
 
         let expected = Asm::Program(Function {
             name: "main".into(),
@@ -455,8 +464,9 @@ mod tests {
 
     #[test]
     fn parse_nested_unaries() {
-        let ast = tacky::AST::Program(tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 tacky::Instruction::Unary {
                     op: tacky::UnaryOp::Negate,
@@ -475,7 +485,7 @@ mod tests {
                 },
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.2".into())),
             ],
-        });
+        }]);
 
         let expected = Asm::Program(Function {
             name: "main".into(),
@@ -500,8 +510,9 @@ mod tests {
 
     #[test]
     fn generate_binary_expressions() {
-        let ast = tacky::AST::Program(tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Multiply,
@@ -529,7 +540,7 @@ mod tests {
                 },
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.3".into())),
             ],
-        });
+        }]);
         let expected = Asm::Program(Function {
             name: "main".into(),
             instructions: vec![
@@ -564,8 +575,9 @@ mod tests {
 
     #[test]
     fn complex_binary_expressions() {
-        let ast = tacky::AST::Program(tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Multiply,
@@ -599,7 +611,7 @@ mod tests {
                 },
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.4".into())),
             ],
-        });
+        }]);
 
         let expected = Asm::Program(Function {
             name: "main".into(),
@@ -645,8 +657,9 @@ mod tests {
 
     #[test]
     fn simple_bitwise() {
-        let ast = tacky::AST::Program(tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Multiply,
@@ -674,7 +687,7 @@ mod tests {
                 },
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.3".into())),
             ],
-        });
+        }]);
         let expected = Asm::Program(Function {
             name: "main".into(),
             instructions: vec![
@@ -711,8 +724,9 @@ mod tests {
 
     #[test]
     fn shiftleft() {
-        let ast = tacky::AST::Program(tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Multiply,
@@ -728,7 +742,7 @@ mod tests {
                 },
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.1".into())),
             ],
-        });
+        }]);
 
         let expected = Asm::Program(Function {
             name: "main".into(),
@@ -755,8 +769,9 @@ mod tests {
 
     #[test]
     fn shiftright_lhs_is_negative() {
-        let ast = tacky::AST::Program(tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 tacky::Instruction::Unary {
                     op: tacky::UnaryOp::Negate,
@@ -771,7 +786,7 @@ mod tests {
                 },
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.1".into())),
             ],
-        });
+        }]);
         let expected = Asm::Program(Function {
             name: "main".into(),
             instructions: vec![
@@ -798,8 +813,9 @@ mod tests {
 
     #[test]
     fn shiftleft_rhs_is_expr() {
-        let ast = tacky::AST::Program(tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Add,
@@ -815,7 +831,7 @@ mod tests {
                 },
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.1".into())),
             ],
-        });
+        }]);
         let expected = Asm::Program(Function {
             name: "main".into(),
             instructions: vec![
@@ -842,8 +858,9 @@ mod tests {
 
     #[test]
     fn unary_not() {
-        let ast = tacky::AST::Program(tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 tacky::Instruction::Unary {
                     op: TUOp::Not,
@@ -852,7 +869,7 @@ mod tests {
                 },
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.0".into())),
             ],
-        });
+        }]);
         let expected = Asm::Program(Function {
             name: "main".into(),
             // move 1 into register 11,
@@ -876,8 +893,9 @@ mod tests {
 
     #[test]
     fn binary_greater_or_equal() {
-        let ast = tacky::AST::Program(tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::GreaterOrEqual,
@@ -887,7 +905,7 @@ mod tests {
                 },
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.1".into())),
             ],
-        });
+        }]);
         let expected = Asm::Program(Function {
             name: "main".into(),
             instructions: vec![
@@ -905,8 +923,9 @@ mod tests {
 
     #[test]
     fn jump_if_zero() {
-        let ast = tacky::AST::Program(tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 tacky::Instruction::Copy {
                     src: tacky::Val::Constant(5),
@@ -943,7 +962,7 @@ mod tests {
                 tacky::Instruction::Label("and_expr_end.1".into()),
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.3".into())),
             ],
-        });
+        }]);
 
         let expected = Asm::Program(Function {
             name: "main".into(),

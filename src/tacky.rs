@@ -24,12 +24,13 @@ pub enum TackyError {
 // names. TODO: Figure out how to remove this dep.
 #[derive(Debug, PartialEq)]
 pub enum AST {
-    Program(Function),
+    Program(Vec<Function>),
 }
 
 #[derive(Debug, PartialEq)]
 pub struct Function {
     pub name: String,
+    pub params: Vec<String>,
     pub instructions: Vec<Instruction>,
 }
 
@@ -61,6 +62,11 @@ pub enum Instruction {
         target: String,
     },
     Label(String), // identifier
+    FunCall {
+        name: String,
+        args: Vec<Val>,
+        dst: Val,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -122,20 +128,28 @@ impl<'a> Tacky {
 
     fn parse_program(&mut self, parser: ParserAST) -> Result<AST, TackyError> {
         let ParserAST::Program(funcs) = parser;
-        let func = funcs.get(0).unwrap();
-        let func = self.parse_function(func)?;
-        Ok(AST::Program(func))
+        let funcs = funcs
+            .iter()
+            .filter(|fun| fun.block.is_some())
+            .map(|fun| self.parse_function(fun))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(AST::Program(funcs))
     }
 
     fn parse_function(&mut self, function: &FunctionDeclaration) -> Result<Function, TackyError> {
-        let FunctionDeclaration { name, block, .. } = function;
-        let instructions = match block {
-            Some(b) => self.parse_instructions(b)?,
-            None => vec![],
+        let FunctionDeclaration {
+            name,
+            block,
+            params,
+        } = function;
+        let Some(block) = block else {
+            panic!("Somehow got a None block in parse_function")
         };
+        let instructions = self.parse_instructions(block)?;
         Ok(Function {
             name: name.into(),
             instructions,
+            params: params.clone(),
         })
     }
 
@@ -199,7 +213,21 @@ impl<'a> Tacky {
                 then,
                 else_,
             } => self.parse_conditional(condition, then, else_, instructions),
-            Expression::FunctionCall { .. } => todo!(),
+            Expression::FunctionCall { name, args } => {
+                let args = args
+                    .iter()
+                    .map(|arg| self.parse_expression(arg, instructions))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let dst_name = self.make_temporary();
+                let dst = Val::Var(dst_name);
+
+                instructions.push(Instruction::FunCall {
+                    name: name.clone(),
+                    args,
+                    dst: dst.clone(),
+                });
+                Ok(dst)
+            }
         }
     }
 
@@ -741,7 +769,7 @@ impl<'a> Tacky {
                 BlockItem::Decl(Declaration::VarDecl(declaration)) => {
                     self.emit_declaration(declaration, instructions)?;
                 }
-                BlockItem::Decl(Declaration::FunDecl(_)) => todo!(),
+                BlockItem::Decl(Declaration::FunDecl(_decl)) => (),
             }
         }
         Ok(())
@@ -817,13 +845,14 @@ mod tests {
             params: vec![],
         }]);
 
-        let expected = AST::Program(Function {
+        let expected = AST::Program(vec![Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 Instruction::Ret(Val::Constant(100)),
                 Instruction::Ret(Val::Constant(0)),
             ],
-        });
+        }]);
 
         let tacky = Tacky::new(ast);
         let assembly = tacky.into_ast();
@@ -842,8 +871,9 @@ mod tests {
             params: vec![],
         }]);
 
-        let expected = AST::Program(Function {
+        let expected = AST::Program(vec![Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 Instruction::Unary {
                     op: UnaryOp::Negate,
@@ -853,7 +883,7 @@ mod tests {
                 Instruction::Ret(Val::Var("tmp.0".into())),
                 Instruction::Ret(Val::Constant(0)),
             ],
-        });
+        }]);
 
         let tacky = Tacky::new(ast);
         let assembly = tacky.into_ast();
@@ -881,8 +911,9 @@ mod tests {
             params: vec![],
         }]);
 
-        let expected = AST::Program(Function {
+        let expected = AST::Program(vec![Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 Instruction::Unary {
                     op: UnaryOp::Negate,
@@ -902,7 +933,7 @@ mod tests {
                 Instruction::Ret(Val::Var("tmp.2".into())),
                 Instruction::Ret(Val::Constant(0)),
             ],
-        });
+        }]);
 
         let tacky = Tacky::new(ast);
         let assembly = tacky.into_ast();
@@ -936,8 +967,9 @@ mod tests {
             ))])),
             params: vec![],
         }]);
-        let expected = AST::Program(Function {
+        let expected = AST::Program(vec![Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 Instruction::Binary {
                     op: BinaryOp::Multiply,
@@ -966,7 +998,7 @@ mod tests {
                 Instruction::Ret(Val::Var("tmp.3".into())),
                 Instruction::Ret(Val::Constant(0)),
             ],
-        });
+        }]);
 
         let tacky = Tacky::new(ast);
         let assembly = tacky.into_ast();
@@ -1005,8 +1037,9 @@ mod tests {
             params: vec![],
         }]);
 
-        let expected = AST::Program(Function {
+        let expected = AST::Program(vec![Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 Instruction::Binary {
                     op: BinaryOp::Multiply,
@@ -1041,7 +1074,7 @@ mod tests {
                 Instruction::Ret(Val::Var("tmp.4".into())),
                 Instruction::Ret(Val::Constant(0)),
             ],
-        });
+        }]);
 
         let tacky = Tacky::new(ast);
         let assembly = tacky.into_ast();
@@ -1076,8 +1109,9 @@ mod tests {
             params: vec![],
         }]);
 
-        let expected = AST::Program(Function {
+        let expected = AST::Program(vec![Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 Instruction::Binary {
                     op: BinaryOp::Multiply,
@@ -1106,7 +1140,7 @@ mod tests {
                 Instruction::Ret(Val::Var("tmp.3".into())),
                 Instruction::Ret(Val::Constant(0)),
             ],
-        });
+        }]);
 
         let tacky = Tacky::new(ast);
         let assembly = tacky.into_ast();
@@ -1132,8 +1166,9 @@ mod tests {
             ))])),
             params: vec![],
         }]);
-        let expected = AST::Program(Function {
+        let expected = AST::Program(vec![Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 Instruction::Binary {
                     op: BinaryOp::Multiply,
@@ -1150,7 +1185,7 @@ mod tests {
                 Instruction::Ret(Val::Var("tmp.1".into())),
                 Instruction::Ret(Val::Constant(0)),
             ],
-        });
+        }]);
 
         let tacky = Tacky::new(ast);
         let assembly = tacky.into_ast();
@@ -1176,8 +1211,9 @@ mod tests {
             ))])),
             params: vec![],
         }]);
-        let expected = AST::Program(Function {
+        let expected = AST::Program(vec![Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 Instruction::Binary {
                     op: BinaryOp::Add,
@@ -1194,7 +1230,7 @@ mod tests {
                 Instruction::Ret(Val::Var("tmp.1".into())),
                 Instruction::Ret(Val::Constant(0)),
             ],
-        });
+        }]);
 
         let tacky = Tacky::new(ast);
         let assembly = tacky.into_ast();
@@ -1221,8 +1257,9 @@ mod tests {
             params: vec![],
         }]);
 
-        let expected = AST::Program(Function {
+        let expected = AST::Program(vec![Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 Instruction::Copy {
                     src: Val::Constant(5),
@@ -1260,7 +1297,7 @@ mod tests {
                 Instruction::Ret(Val::Var("tmp.3".into())),
                 Instruction::Ret(Val::Constant(0)),
             ],
-        });
+        }]);
 
         let tacky = Tacky::new(ast);
         let assembly = tacky.into_ast();
@@ -1287,8 +1324,9 @@ mod tests {
             params: vec![],
         }]);
 
-        let expected = AST::Program(Function {
+        let expected = AST::Program(vec![Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 Instruction::Copy {
                     src: Val::Constant(5),
@@ -1326,7 +1364,7 @@ mod tests {
                 Instruction::Ret(Val::Var("tmp.3".into())),
                 Instruction::Ret(Val::Constant(0)),
             ],
-        });
+        }]);
 
         let tacky = Tacky::new(ast);
         let assembly = tacky.into_ast();
@@ -1360,8 +1398,9 @@ mod tests {
             ])),
             params: vec![],
         }]);
-        let expected = AST::Program(Function {
+        let expected = AST::Program(vec![Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 Instruction::Copy {
                     src: Val::Constant(1),
@@ -1384,7 +1423,7 @@ mod tests {
                 Instruction::Ret(Val::Var("c.2.decl".into())),
                 Instruction::Ret(Val::Constant(0)),
             ],
-        });
+        }]);
 
         let tacky = Tacky::new(ast);
         let assembly = tacky.into_ast();
@@ -1432,8 +1471,9 @@ mod tests {
             params: vec![],
         }]);
 
-        let expected = AST::Program(Function {
+        let expected = AST::Program(vec![Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 Instruction::Copy {
                     src: Val::Constant(1),
@@ -1492,7 +1532,7 @@ mod tests {
                 Instruction::Ret(Val::Var("a".into())),
                 Instruction::Ret(Val::Constant(0)),
             ],
-        });
+        }]);
 
         let tacky = Tacky::new(ast);
         let assembly = tacky.into_ast();
@@ -1552,8 +1592,9 @@ mod tests {
         let Ok(actual) = assembly else {
             panic!();
         };
-        let expected = AST::Program(Function {
+        let expected = AST::Program(vec![Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 // first one: if/then
                 Instruction::Copy {
@@ -1590,7 +1631,7 @@ mod tests {
                 Instruction::Label("end_label.2".into()),
                 Instruction::Ret(Val::Constant(0)),
             ],
-        });
+        }]);
         assert_eq!(expected, actual);
     }
 
@@ -1612,8 +1653,9 @@ mod tests {
         let Ok(actual) = assembly else {
             panic!();
         };
-        let expected = AST::Program(Function {
+        let expected = AST::Program(vec![Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 Instruction::Copy {
                     src: Val::Constant(1),
@@ -1640,7 +1682,7 @@ mod tests {
                 Instruction::Label("end_label.1".into()),
                 Instruction::Ret(Val::Constant(0)),
             ],
-        });
+        }]);
         assert_eq!(expected, actual);
     }
 
@@ -1663,8 +1705,9 @@ mod tests {
         let Ok(actual) = assembly else {
             panic!();
         };
-        let expected = AST::Program(Function {
+        let expected = AST::Program(vec![Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 Instruction::Jump("foo.0.label".into()),
                 Instruction::Label("foo.0.label".into()),
@@ -1677,7 +1720,7 @@ mod tests {
                 Instruction::Ret(Val::Var("tmp.0".into())),
                 Instruction::Ret(Val::Constant(0)),
             ],
-        });
+        }]);
         assert_eq!(expected, actual);
     }
 
@@ -1706,8 +1749,9 @@ mod tests {
         let Ok(actual) = assembly else {
             panic!();
         };
-        let expected = AST::Program(Function {
+        let expected = AST::Program(vec![Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 Instruction::Copy {
                     src: Val::Constant(1),
@@ -1729,7 +1773,7 @@ mod tests {
                 Instruction::Ret(Val::Var("x.0.decl".into())),
                 Instruction::Ret(Val::Constant(0)),
             ],
-        });
+        }]);
         assert_eq!(expected, actual);
     }
 
@@ -1758,8 +1802,9 @@ mod tests {
         let Ok(actual) = assembly else {
             panic!();
         };
-        let expected = AST::Program(Function {
+        let expected = AST::Program(vec![Function {
             name: "main".into(),
+            params: vec![],
             instructions: vec![
                 /* handle initializer, write out for loop label,
                  * check condition, JumpIfZero, write out body, write out continue label,
@@ -1833,7 +1878,7 @@ mod tests {
                 // placeholder
                 Instruction::Ret(Val::Constant(0)),
             ],
-        });
+        }]);
         assert_eq!(expected, actual);
     }
 
@@ -1856,8 +1901,10 @@ mod tests {
         let Ok(actual) = assembly else {
             panic!();
         };
-        let expected = AST::Program(Function {
+        let expected = AST::Program(vec![Function {
             name: "main".into(),
+            params: vec![],
+
             instructions: vec![
                 /* handle initializer, write out for loop label,
                  * check condition, JumpIfZero, write out body, write out continue label,
@@ -1900,7 +1947,66 @@ mod tests {
                 // placeholder
                 Instruction::Ret(Val::Constant(0)),
             ],
-        });
+        }]);
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn functions() {
+        let src = r#"
+            int bar(int a);
+            int foo(int x, int y) { 
+                return x + y;
+            }
+            int main(void) {
+                return foo(1, 2) + 3;
+            }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = crate::parser::Parser::new(&tokens);
+        let mut ast = parse.into_ast().unwrap();
+        crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let asm = Tacky::new(ast);
+        let assembly = asm.into_ast();
+        let Ok(actual) = assembly else {
+            panic!();
+        };
+        let expected = AST::Program(vec![
+            Function {
+                name: "foo".into(),
+                params: vec!["x.1.decl".into(), "y.2.decl".into()],
+                instructions: vec![
+                    Instruction::Binary {
+                        op: BinaryOp::Add,
+                        src1: Val::Var("x.1.decl".into()),
+                        src2: Val::Var("y.2.decl".into()),
+                        dst: Val::Var("tmp.0".into()),
+                    },
+                    Instruction::Ret(Val::Var("tmp.0".into())),
+                    Instruction::Ret(Val::Constant(0)),
+                ],
+            },
+            Function {
+                name: "main".into(),
+                params: vec![],
+                instructions: vec![
+                    Instruction::FunCall {
+                        name: "foo".into(),
+                        args: vec![Val::Constant(1), Val::Constant(2)],
+                        dst: Val::Var("tmp.1".into()),
+                    },
+                    Instruction::Binary {
+                        op: BinaryOp::Add,
+                        src1: Val::Var("tmp.1".into()),
+                        src2: Val::Constant(3),
+                        dst: Val::Var("tmp.2".into()),
+                    },
+                    Instruction::Ret(Val::Var("tmp.2".into())),
+                    Instruction::Ret(Val::Constant(0)),
+                ],
+            },
+        ]);
         assert_eq!(expected, actual);
     }
 }
