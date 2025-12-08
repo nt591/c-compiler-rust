@@ -260,7 +260,7 @@ impl Asm {
         if stack_padding != 0 {
             instructions.push(Instruction::AllocateStack(stack_padding));
         }
-        // pass register arguments onto the stack in order
+        // pass register arguments in order
         for (idx, arg) in register_args.enumerate() {
             debug_assert!(idx < 6);
             let reg = registers[idx];
