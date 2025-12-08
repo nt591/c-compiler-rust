@@ -9,6 +9,7 @@ pub struct Emitter(Asm);
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 enum RegisterSize {
+    EightByte,
     FourByte,
     OneByte,
 }
@@ -24,12 +25,9 @@ impl Emitter {
     }
 
     fn emit_code<W: Write>(asm: &Asm, output: &mut W) -> std::io::Result<()> {
-        match asm {
-            Asm::Program(funcs) => {
-                // todo!
-                let func = funcs.get(0).unwrap();
-                Self::emit_function(func, output)?;
-            }
+        let Asm::Program(funcs) = asm;
+        for func in funcs {
+            Self::emit_function(func, output)?;
         }
         Ok(())
     }
@@ -135,9 +133,17 @@ impl Emitter {
                 Self::emit_op(operand, RegisterSize::OneByte, output)?;
                 write!(output, "\n")?;
             }
-            asm::Instruction::DeallocateStack(_)
-            | asm::Instruction::Push(_)
-            | asm::Instruction::Call(_) => todo!(),
+            asm::Instruction::DeallocateStack(n) => {
+                writeln!(output, "  addq   ${}, %rsp", n)?;
+            }
+            asm::Instruction::Push(op) => {
+                write!(output, "  pushq  ")?;
+                Self::emit_op(op, RegisterSize::EightByte, output)?;
+                write!(output, "\n")?;
+            }
+            asm::Instruction::Call(lbl) => {
+                writeln!(output, "  call   _{}", lbl)?;
+            }
         }
         Ok(())
     }
@@ -153,6 +159,9 @@ impl Emitter {
             }
             asm::Operand::Reg(reg) if regsize == RegisterSize::OneByte => {
                 Self::emit_register_one_byte(reg, output)?
+            }
+            asm::Operand::Reg(reg) if regsize == RegisterSize::EightByte => {
+                Self::emit_register_eight_bytes(reg, output)?
             }
             asm::Operand::Imm(imm) => write!(output, "${}", imm)?,
             asm::Operand::Stack(n) => write!(output, "{}(%rbp)", n)?,
@@ -190,9 +199,12 @@ impl Emitter {
             Register::AX => write!(output, "{}", "%eax"),
             Register::CX => write!(output, "{}", "%ecx"),
             Register::DX => write!(output, "{}", "%edx"),
+            Register::DI => write!(output, "{}", "%edi"),
+            Register::SI => write!(output, "{}", "%esi"),
+            Register::R8 => write!(output, "{}", "%r8d"),
+            Register::R9 => write!(output, "{}", "%r9d"),
             Register::R10 => write!(output, "{}", "%r10d"),
             Register::R11 => write!(output, "{}", "%r11d"),
-            Register::DI | Register::SI | Register::R8 | Register::R9 => todo!(),
         }
     }
 
@@ -205,9 +217,30 @@ impl Emitter {
             Register::AX => write!(output, "{}", "%al"),
             Register::CX => write!(output, "{}", "%cl"),
             Register::DX => write!(output, "{}", "%dl"),
+            Register::DI => write!(output, "{}", "%dil"),
+            Register::SI => write!(output, "{}", "%sil"),
+            Register::R8 => write!(output, "{}", "%r8b"),
+            Register::R9 => write!(output, "{}", "%r9b"),
             Register::R10 => write!(output, "{}", "%r10b"),
             Register::R11 => write!(output, "{}", "%r11b"),
-            Register::DI | Register::SI | Register::R8 | Register::R9 => todo!(),
+        }
+    }
+
+    fn emit_register_eight_bytes<W: Write>(
+        reg: &asm::Register,
+        output: &mut W,
+    ) -> std::io::Result<()> {
+        use asm::Register;
+        match reg {
+            Register::AX => write!(output, "{}", "%rax"),
+            Register::CX => write!(output, "{}", "%rcx"),
+            Register::DX => write!(output, "{}", "%rdx"),
+            Register::DI => write!(output, "{}", "%rdi"),
+            Register::SI => write!(output, "{}", "%rsi"),
+            Register::R8 => write!(output, "{}", "%r8"),
+            Register::R9 => write!(output, "{}", "%r9"),
+            Register::R10 => write!(output, "{}", "%r10"),
+            Register::R11 => write!(output, "{}", "%r11"),
         }
     }
 
@@ -284,7 +317,7 @@ _main:
         let ast = asm::Asm::Program(vec![asm::Function {
             name: "main".into(),
             instructions: vec![
-                asm::Instruction::AllocateStack(-12),
+                asm::Instruction::AllocateStack(12),
                 asm::Instruction::Mov(asm::Operand::Imm(100), asm::Operand::Stack(-4)),
                 asm::Instruction::Unary(asm::UnaryOp::Neg, asm::Operand::Stack(-4)),
                 asm::Instruction::Mov(
@@ -317,7 +350,7 @@ _main:
                        # FUNCTION PROLOGUE
   pushq  %rbp
   movq   %rsp, %rbp
-  subq   $-12, %rsp
+  subq   $12, %rsp
   movl   $100, -4(%rbp)
   negl   -4(%rbp)
   movl   -4(%rbp), %r10d
@@ -345,7 +378,7 @@ _main:
         let ast = asm::Asm::Program(vec![asm::Function {
             name: "main".into(),
             instructions: vec![
-                asm::Instruction::AllocateStack(-16),
+                asm::Instruction::AllocateStack(16),
                 // tmp0 = 1 * 2
                 asm::Instruction::Mov(asm::Operand::Imm(1), asm::Operand::Stack(-4)),
                 asm::Instruction::Mov(
@@ -401,7 +434,7 @@ _main:
                        # FUNCTION PROLOGUE
   pushq  %rbp
   movq   %rsp, %rbp
-  subq   $-16, %rsp
+  subq   $16, %rsp
   movl   $1, -4(%rbp)
   movl   -4(%rbp), %r11d
   imull  $2, %r11d
@@ -435,7 +468,7 @@ _main:
         let ast = asm::Asm::Program(vec![asm::Function {
             name: "main".into(),
             instructions: vec![
-                asm::Instruction::AllocateStack(-16),
+                asm::Instruction::AllocateStack(16),
                 // tmp0 = 5 * 4
                 asm::Instruction::Mov(asm::Operand::Imm(5), asm::Operand::Stack(-4)),
                 asm::Instruction::Mov(
@@ -504,7 +537,7 @@ _main:
                        # FUNCTION PROLOGUE
   pushq  %rbp
   movq   %rsp, %rbp
-  subq   $-16, %rsp
+  subq   $16, %rsp
   movl   $5, -4(%rbp)
   movl   -4(%rbp), %r11d
   imull  $4, %r11d
@@ -537,7 +570,7 @@ _main:
         let ast = asm::Asm::Program(vec![asm::Function {
             name: "main".into(),
             instructions: vec![
-                asm::Instruction::AllocateStack(-8),
+                asm::Instruction::AllocateStack(8),
                 // tmp0 = 5 * 4
                 asm::Instruction::Mov(asm::Operand::Imm(5), asm::Operand::Stack(-4)),
                 asm::Instruction::Mov(
@@ -581,7 +614,7 @@ _main:
                        # FUNCTION PROLOGUE
   pushq  %rbp
   movq   %rsp, %rbp
-  subq   $-8, %rsp
+  subq   $8, %rsp
   movl   $5, -4(%rbp)
   movl   -4(%rbp), %r11d
   imull  $4, %r11d
@@ -608,7 +641,7 @@ _main:
         let ast = Asm::Program(vec![Function {
             name: "main".into(),
             instructions: vec![
-                Instruction::AllocateStack(-16),
+                Instruction::AllocateStack(16),
                 Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),
                 Instruction::Cmp(Operand::Imm(0), Operand::Stack(-4)),
                 Instruction::JmpCC(CondCode::E, "and_expr_false.0".into()),
@@ -632,7 +665,7 @@ _main:
                        # FUNCTION PROLOGUE
   pushq  %rbp
   movq   %rsp, %rbp
-  subq   $-16, %rsp
+  subq   $16, %rsp
   movl   $5, -4(%rbp)
   cmpl   $0, -4(%rbp)
   je          Land_expr_false.0

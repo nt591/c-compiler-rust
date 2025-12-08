@@ -69,7 +69,14 @@ fn main() -> anyhow::Result<()> {
         .collect();
     let assembly_files = inputs
         .into_iter()
-        .map(|file| process_file(file, stage))
+        .map(|file| {
+            // object files shouldn't be processed, so we'll skip
+            if let Some("o") = file.extension().and_then(|f| f.to_str()) {
+                Ok(Some(file))
+            } else {
+                process_file(file, stage)
+            }
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
     let assembly_files = assembly_files.into_iter().flat_map(|x| x).collect();
@@ -169,7 +176,7 @@ fn compile_to_object(paths: Vec<PathBuf>) -> anyhow::Result<()> {
     let target_file = match paths.len() {
         1 => {
             let path = paths[..].first().unwrap().to_owned();
-            Some(path_to_str(path))
+            Some(path_to_str(path.with_extension("o")))
         }
         _otherwise => None,
     };

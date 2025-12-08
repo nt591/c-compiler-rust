@@ -23,3 +23,8 @@ Cargo.lock
 # Added by cargo
 
 /target
+
+# keep manual tests, minus compiled objects
+manual_tests/*
+!manual_tests/*.c
+!manual_tests/*.S

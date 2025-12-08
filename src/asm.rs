@@ -51,7 +51,7 @@ pub enum Instruction {
     Binary(BinaryOp, Operand, Operand),
     Idiv(Operand),
     Cdq,
-    AllocateStack(i32),
+    AllocateStack(usize),
     Ret,
     // relational operation instructions
     Cmp(Operand, Operand),
@@ -60,7 +60,7 @@ pub enum Instruction {
     SetCC(CondCode, Operand), //conditional set, eg setl
     Label(String),
     // function call instructions
-    DeallocateStack(i32),
+    DeallocateStack(usize),
     Push(Operand),
     Call(String),
 }
@@ -145,7 +145,7 @@ impl Asm {
             let idx: i32 = idx
                 .try_into()
                 .expect("Overflow when mapping function params to stack offsets");
-            let offset: i32 = -16 - (8 * idx);
+            let offset: i32 = 16 + (8 * idx);
             base_insns.push(Instruction::Mov(
                 Operand::Stack(offset),
                 Operand::Pseudo(p.into()),
@@ -294,7 +294,7 @@ impl Asm {
         }
         // pass register arguments in order
         for (idx, arg) in register_args.enumerate() {
-            debug_assert!(idx < 6);
+            debug_assert!(idx < registers.len());
             let reg = registers[idx];
             instructions.push(Instruction::Mov(arg.into(), Operand::Reg(reg)));
         }
@@ -315,12 +315,7 @@ impl Asm {
         instructions.push(Instruction::Call(name.into()));
         // adjust stack pointer back to where it was before setting up stack.
         // Remove padding + passed arguments
-        let stack_args_len: i32 = args
-            .iter()
-            .skip(6)
-            .len()
-            .try_into()
-            .expect("More than i32 number of stack args");
+        let stack_args_len = args.iter().skip(6).len();
         let bytes_to_remove = 8 * stack_args_len + stack_padding;
         if bytes_to_remove != 0 {
             instructions.push(Instruction::DeallocateStack(bytes_to_remove));
@@ -425,10 +420,10 @@ impl Asm {
 
     fn insert_alloc_stack_func(func: &mut Function, gen: &AsmGenerator) {
         let old_ins = std::mem::take(&mut func.instructions);
-        // round stack offset to next multiple of -16 for easier alignment
+        // round stack offset to next multiple of 16 for easier alignment
         let multiple = gen.stack_offset as f32 / -16.0;
-        let rounded = multiple.ceil() as i32;
-        let new_offset = rounded * -16;
+        let rounded = multiple.ceil() as usize;
+        let new_offset = rounded * 16;
         let mut v = vec![Instruction::AllocateStack(new_offset)];
         for i in old_ins.into_iter() {
             v.push(i);
@@ -561,7 +556,7 @@ mod tests {
         let expected = Asm::Program(vec![Function {
             name: "main".into(),
             instructions: vec![
-                Instruction::AllocateStack(-16),
+                Instruction::AllocateStack(16),
                 Instruction::Mov(Operand::Imm(100), Operand::Stack(-4)),
                 Instruction::Unary(UnaryOp::Neg, Operand::Stack(-4)),
                 Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::AX)),
@@ -601,7 +596,7 @@ mod tests {
         let expected = Asm::Program(vec![Function {
             name: "main".into(),
             instructions: vec![
-                Instruction::AllocateStack(-16),
+                Instruction::AllocateStack(16),
                 Instruction::Mov(Operand::Imm(100), Operand::Stack(-4)),
                 Instruction::Unary(UnaryOp::Neg, Operand::Stack(-4)),
                 Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R10)),
@@ -655,7 +650,7 @@ mod tests {
         let expected = Asm::Program(vec![Function {
             name: "main".into(),
             instructions: vec![
-                Instruction::AllocateStack(-16),
+                Instruction::AllocateStack(16),
                 // tmp0 = 1 * 2
                 Instruction::Mov(Operand::Imm(1), Operand::Stack(-4)),
                 Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R11)),
@@ -727,7 +722,7 @@ mod tests {
         let expected = Asm::Program(vec![Function {
             name: "main".into(),
             instructions: vec![
-                Instruction::AllocateStack(-32),
+                Instruction::AllocateStack(32),
                 // tmp0 = 5 * 4 = 20
                 Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),
                 Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R11)),
@@ -802,7 +797,7 @@ mod tests {
         let expected = Asm::Program(vec![Function {
             name: "main".into(),
             instructions: vec![
-                Instruction::AllocateStack(-16),
+                Instruction::AllocateStack(16),
                 // tmp0 = 5 * 4
                 Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),
                 Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R11)),
@@ -858,7 +853,7 @@ mod tests {
         let expected = Asm::Program(vec![Function {
             name: "main".into(),
             instructions: vec![
-                Instruction::AllocateStack(-16),
+                Instruction::AllocateStack(16),
                 // tmp0 = 5 * 4
                 Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),
                 Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R11)),
@@ -901,7 +896,7 @@ mod tests {
         let expected = Asm::Program(vec![Function {
             name: "main".into(),
             instructions: vec![
-                Instruction::AllocateStack(-16),
+                Instruction::AllocateStack(16),
                 // tmp0 = -5
                 Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),
                 Instruction::Unary(UnaryOp::Neg, Operand::Stack(-4)),
@@ -946,7 +941,7 @@ mod tests {
         let expected = Asm::Program(vec![Function {
             name: "main".into(),
             instructions: vec![
-                Instruction::AllocateStack(-16),
+                Instruction::AllocateStack(16),
                 // tmp0 = 1 + 2
                 Instruction::Mov(Operand::Imm(1), Operand::Stack(-4)),
                 Instruction::Binary(BinaryOp::Add, Operand::Imm(2), Operand::Stack(-4)),
@@ -989,7 +984,7 @@ mod tests {
             // and write to stack addr -4
             // move stack addr -4 to EAX and return
             instructions: vec![
-                Instruction::AllocateStack(-16),
+                Instruction::AllocateStack(16),
                 Instruction::Mov(Operand::Imm(1), Operand::Reg(Register::R11)),
                 Instruction::Cmp(Operand::Imm(0), Operand::Reg(Register::R11)),
                 Instruction::Mov(Operand::Imm(0), Operand::Stack(-4)),
@@ -1020,7 +1015,7 @@ mod tests {
         let expected = Asm::Program(vec![Function {
             name: "main".into(),
             instructions: vec![
-                Instruction::AllocateStack(-16),
+                Instruction::AllocateStack(16),
                 Instruction::Cmp(Operand::Imm(2), Operand::Stack(-4)),
                 Instruction::Mov(Operand::Imm(0), Operand::Stack(-8)),
                 Instruction::SetCC(CondCode::GE, Operand::Stack(-8)),
@@ -1078,7 +1073,7 @@ mod tests {
         let expected = Asm::Program(vec![Function {
             name: "main".into(),
             instructions: vec![
-                Instruction::AllocateStack(-16),
+                Instruction::AllocateStack(16),
                 Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),
                 Instruction::Cmp(Operand::Imm(0), Operand::Stack(-4)),
                 Instruction::JmpCC(CondCode::E, "and_expr_false.0".into()),
@@ -1111,6 +1106,9 @@ mod tests {
             int main(void) {
                 return foo(1, 2) + 3;
             }
+            int many_args(int a, int b, int c, int d, int e, int f, int g, int h) {
+                return a;     
+            }
         "#;
         let lexer = crate::lexer::Lexer::lex(src).unwrap();
         let tokens = lexer.as_syntactic_tokens();
@@ -1127,7 +1125,7 @@ mod tests {
             Function {
                 name: "foo".into(),
                 instructions: vec![
-                    Instruction::AllocateStack(-16),
+                    Instruction::AllocateStack(16),
                     Instruction::Mov(Operand::Reg(Register::DI), Operand::Stack(-4)),
                     Instruction::Mov(Operand::Reg(Register::SI), Operand::Stack(-8)),
                     Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R10)),
@@ -1147,7 +1145,7 @@ mod tests {
             Function {
                 name: "main".into(),
                 instructions: vec![
-                    Instruction::AllocateStack(-16),
+                    Instruction::AllocateStack(16),
                     Instruction::Mov(Operand::Imm(1), Operand::Reg(Register::DI)),
                     Instruction::Mov(Operand::Imm(2), Operand::Reg(Register::SI)),
                     Instruction::Call("foo".into()),
@@ -1156,6 +1154,26 @@ mod tests {
                     Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-8)),
                     Instruction::Binary(BinaryOp::Add, Operand::Imm(3), Operand::Stack(-8)),
                     Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::AX)),
+                    Instruction::Ret,
+                    Instruction::Mov(Operand::Imm(0), Operand::Reg(Register::AX)),
+                    Instruction::Ret,
+                ],
+            },
+            Function {
+                name: "many_args".into(),
+                instructions: vec![
+                    Instruction::AllocateStack(32),
+                    Instruction::Mov(Operand::Reg(Register::DI), Operand::Stack(-4)),
+                    Instruction::Mov(Operand::Reg(Register::SI), Operand::Stack(-8)),
+                    Instruction::Mov(Operand::Reg(Register::DX), Operand::Stack(-12)),
+                    Instruction::Mov(Operand::Reg(Register::CX), Operand::Stack(-16)),
+                    Instruction::Mov(Operand::Reg(Register::R8), Operand::Stack(-20)),
+                    Instruction::Mov(Operand::Reg(Register::R9), Operand::Stack(-24)),
+                    Instruction::Mov(Operand::Stack(16), Operand::Reg(Register::R10)),
+                    Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-28)),
+                    Instruction::Mov(Operand::Stack(24), Operand::Reg(Register::R10)),
+                    Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-32)),
+                    Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::AX)),
                     Instruction::Ret,
                     Instruction::Mov(Operand::Imm(0), Operand::Reg(Register::AX)),
                     Instruction::Ret,
