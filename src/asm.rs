@@ -7,7 +7,7 @@ use std::collections::HashMap;
 // names. TODO: Figure out how to remove this dep.
 #[derive(Debug, PartialEq)]
 pub enum Asm {
-    Program(Function),
+    Program(Vec<Function>),
 }
 
 #[derive(Debug, PartialEq)]
@@ -59,6 +59,10 @@ pub enum Instruction {
     JmpCC(CondCode, String),  //conditional jump, eg jmpne to identifier
     SetCC(CondCode, Operand), //conditional set, eg setl
     Label(String),
+    // function call instructions
+    DeallocateStack(i32),
+    Push(Operand),
+    Call(String),
 }
 
 // implement clone so our mapping of Tacky Var
@@ -71,11 +75,15 @@ pub enum Operand {
     Stack(i32),
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum Register {
     AX,
     CX,
     DX,
+    DI,
+    SI,
+    R8,
+    R9,
     R10,
     R11,
 }
@@ -97,9 +105,11 @@ impl Asm {
     fn parse_program(tacky: &tacky::AST) -> Asm {
         match tacky {
             tacky::AST::Program(funcs) => {
-                let func = funcs.get(0).unwrap();
-                let func = Self::parse_function(func);
-                Asm::Program(func)
+                let funcs = funcs
+                    .into_iter()
+                    .map(|func| Self::parse_function(func))
+                    .collect::<Vec<_>>();
+                Asm::Program(funcs)
             }
         }
     }
@@ -224,9 +234,68 @@ impl Asm {
                 TIns::Label(ident) => vec![Label(ident.clone())],
                 TIns::Copy { src, dst } => vec![Mov(src.into(), dst.into())],
                 TIns::Jump(ident) => vec![Jmp(ident.clone())],
-                TIns::FunCall { .. } => todo!(),
+                TIns::FunCall { name, args, dst } => Self::parse_function_call(name, args, dst),
             })
             .collect::<Vec<_>>()
+    }
+
+    fn parse_function_call(name: &str, args: &[tacky::Val], dst: &tacky::Val) -> Vec<Instruction> {
+        let registers = [
+            Register::DI,
+            Register::SI,
+            Register::DX,
+            Register::CX,
+            Register::R8,
+            Register::R9,
+        ];
+        let register_args = args.iter().take(6);
+        let stack_args = args.iter().skip(6);
+
+        // add padding for alignment: we need to be 16-byte aligned,
+        // and 8-bytes per arg means that an odd-number of args needs
+        // to be padded another 8 bytes
+        let stack_padding = if stack_args.len() % 2 == 1 { 8 } else { 0 };
+
+        let mut instructions = vec![];
+        if stack_padding != 0 {
+            instructions.push(Instruction::AllocateStack(stack_padding));
+        }
+        // pass register arguments onto the stack in order
+        for (idx, arg) in register_args.enumerate() {
+            debug_assert!(idx < 6);
+            let reg = registers[idx];
+            instructions.push(Instruction::Mov(arg.into(), Operand::Reg(reg)));
+        }
+
+        // pass stack arguments in reverse order
+        for arg in stack_args.rev() {
+            let op: Operand = arg.into();
+            match op {
+                x @ (Operand::Reg(_) | Operand::Imm(_)) => instructions.push(Instruction::Push(x)),
+                other_op => {
+                    instructions.push(Instruction::Mov(other_op, Operand::Reg(Register::AX)));
+                    instructions.push(Instruction::Push(Operand::Reg(Register::AX)));
+                }
+            }
+        }
+
+        // actual function call
+        instructions.push(Instruction::Call(name.into()));
+        // adjust stack pointer back to where it was before setting up stack.
+        // Remove padding + passed arguments
+        let stack_args_len: i32 = args
+            .iter()
+            .skip(6)
+            .len()
+            .try_into()
+            .expect("More than i32 number of stack args");
+        let bytes_to_remove = 8 * stack_args_len + stack_padding;
+        if bytes_to_remove != 0 {
+            instructions.push(Instruction::DeallocateStack(bytes_to_remove));
+        }
+        // just move the function return value to the destination register
+        instructions.push(Instruction::Mov(Operand::Reg(Register::AX), dst.into()));
+        instructions
     }
 
     fn parse_binary_relational_ops(
@@ -261,7 +330,11 @@ impl Asm {
 
     fn fixup(asm: &mut Asm, gen: &mut AsmGenerator) {
         match asm {
-            Asm::Program(ref mut func) => Self::fixup_function(func, gen),
+            Asm::Program(ref mut funcs) => {
+                for func in funcs {
+                    Self::fixup_function(func, gen);
+                }
+            }
         };
     }
     fn fixup_function(func: &mut Function, gen: &mut AsmGenerator) {
@@ -269,6 +342,7 @@ impl Asm {
             name: _name,
             ref mut instructions,
         } = func;
+        gen.stack_offset = 0; // reset for each function call
         Self::fixup_pseudos_in_instructions(instructions, gen);
         Self::insert_alloc_stack_func(func, gen);
         Self::fixup_invalid_memory_accesses(func);
@@ -297,6 +371,7 @@ impl Asm {
             Instruction::SetCC(_cc, dst) => {
                 *dst = Self::replace_pseudo_in_op(dst, gen);
             }
+            Instruction::Push(op) => *op = Self::replace_pseudo_in_op(op, gen),
             _ => {}
         })
     }
@@ -318,7 +393,11 @@ impl Asm {
 
     fn insert_alloc_stack_func(func: &mut Function, gen: &AsmGenerator) {
         let old_ins = std::mem::take(&mut func.instructions);
-        let mut v = vec![Instruction::AllocateStack(gen.stack_offset)];
+        // round stack offset to next multiple of -16 for easier alignment
+        let multiple = gen.stack_offset as f32 / -16.0;
+        let rounded = multiple.ceil() as i32;
+        let new_offset = rounded * -16;
+        let mut v = vec![Instruction::AllocateStack(new_offset)];
         for i in old_ins.into_iter() {
             v.push(i);
         }
@@ -419,14 +498,14 @@ mod tests {
             instructions: vec![tacky::Instruction::Ret(tacky::Val::Constant(100))],
         }]);
 
-        let expected = Asm::Program(Function {
+        let expected = Asm::Program(vec![Function {
             name: "main".into(),
             instructions: vec![
                 Instruction::AllocateStack(0),
                 Instruction::Mov(Operand::Imm(100), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        });
+        }]);
 
         let assembly = Asm::from_tacky(ast);
         assert_eq!(assembly, expected);
@@ -447,16 +526,16 @@ mod tests {
             ],
         }]);
 
-        let expected = Asm::Program(Function {
+        let expected = Asm::Program(vec![Function {
             name: "main".into(),
             instructions: vec![
-                Instruction::AllocateStack(-4),
+                Instruction::AllocateStack(-16),
                 Instruction::Mov(Operand::Imm(100), Operand::Stack(-4)),
                 Instruction::Unary(UnaryOp::Neg, Operand::Stack(-4)),
                 Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        });
+        }]);
 
         let assembly = Asm::from_tacky(ast);
         assert_eq!(assembly, expected);
@@ -487,10 +566,10 @@ mod tests {
             ],
         }]);
 
-        let expected = Asm::Program(Function {
+        let expected = Asm::Program(vec![Function {
             name: "main".into(),
             instructions: vec![
-                Instruction::AllocateStack(-12),
+                Instruction::AllocateStack(-16),
                 Instruction::Mov(Operand::Imm(100), Operand::Stack(-4)),
                 Instruction::Unary(UnaryOp::Neg, Operand::Stack(-4)),
                 Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R10)),
@@ -502,7 +581,7 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-12), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        });
+        }]);
 
         let assembly = Asm::from_tacky(ast);
         assert_eq!(assembly, expected);
@@ -541,7 +620,7 @@ mod tests {
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.3".into())),
             ],
         }]);
-        let expected = Asm::Program(Function {
+        let expected = Asm::Program(vec![Function {
             name: "main".into(),
             instructions: vec![
                 Instruction::AllocateStack(-16),
@@ -567,7 +646,7 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        });
+        }]);
 
         let assembly = Asm::from_tacky(ast);
         assert_eq!(assembly, expected);
@@ -613,10 +692,10 @@ mod tests {
             ],
         }]);
 
-        let expected = Asm::Program(Function {
+        let expected = Asm::Program(vec![Function {
             name: "main".into(),
             instructions: vec![
-                Instruction::AllocateStack(-20),
+                Instruction::AllocateStack(-32),
                 // tmp0 = 5 * 4 = 20
                 Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),
                 Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R11)),
@@ -649,7 +728,7 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-20), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        });
+        }]);
 
         let assembly = Asm::from_tacky(ast);
         assert_eq!(assembly, expected);
@@ -688,7 +767,7 @@ mod tests {
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.3".into())),
             ],
         }]);
-        let expected = Asm::Program(Function {
+        let expected = Asm::Program(vec![Function {
             name: "main".into(),
             instructions: vec![
                 Instruction::AllocateStack(-16),
@@ -717,7 +796,7 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        });
+        }]);
         let assembly = Asm::from_tacky(ast);
         assert_eq!(assembly, expected);
     }
@@ -744,10 +823,10 @@ mod tests {
             ],
         }]);
 
-        let expected = Asm::Program(Function {
+        let expected = Asm::Program(vec![Function {
             name: "main".into(),
             instructions: vec![
-                Instruction::AllocateStack(-8),
+                Instruction::AllocateStack(-16),
                 // tmp0 = 5 * 4
                 Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),
                 Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R11)),
@@ -762,7 +841,7 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        });
+        }]);
         let assembly = Asm::from_tacky(ast);
         assert_eq!(assembly, expected);
     }
@@ -787,10 +866,10 @@ mod tests {
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.1".into())),
             ],
         }]);
-        let expected = Asm::Program(Function {
+        let expected = Asm::Program(vec![Function {
             name: "main".into(),
             instructions: vec![
-                Instruction::AllocateStack(-8),
+                Instruction::AllocateStack(-16),
                 // tmp0 = -5
                 Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),
                 Instruction::Unary(UnaryOp::Neg, Operand::Stack(-4)),
@@ -806,7 +885,7 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        });
+        }]);
         let assembly = Asm::from_tacky(ast);
         assert_eq!(assembly, expected);
     }
@@ -832,10 +911,10 @@ mod tests {
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.1".into())),
             ],
         }]);
-        let expected = Asm::Program(Function {
+        let expected = Asm::Program(vec![Function {
             name: "main".into(),
             instructions: vec![
-                Instruction::AllocateStack(-8),
+                Instruction::AllocateStack(-16),
                 // tmp0 = 1 + 2
                 Instruction::Mov(Operand::Imm(1), Operand::Stack(-4)),
                 Instruction::Binary(BinaryOp::Add, Operand::Imm(2), Operand::Stack(-4)),
@@ -851,7 +930,7 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        });
+        }]);
         let assembly = Asm::from_tacky(ast);
         assert_eq!(assembly, expected);
     }
@@ -870,7 +949,7 @@ mod tests {
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.0".into())),
             ],
         }]);
-        let expected = Asm::Program(Function {
+        let expected = Asm::Program(vec![Function {
             name: "main".into(),
             // move 1 into register 11,
             // then check if 1 == 0
@@ -878,7 +957,7 @@ mod tests {
             // and write to stack addr -4
             // move stack addr -4 to EAX and return
             instructions: vec![
-                Instruction::AllocateStack(-4),
+                Instruction::AllocateStack(-16),
                 Instruction::Mov(Operand::Imm(1), Operand::Reg(Register::R11)),
                 Instruction::Cmp(Operand::Imm(0), Operand::Reg(Register::R11)),
                 Instruction::Mov(Operand::Imm(0), Operand::Stack(-4)),
@@ -886,7 +965,7 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        });
+        }]);
         let assembly = Asm::from_tacky(ast);
         assert_eq!(assembly, expected);
     }
@@ -906,17 +985,17 @@ mod tests {
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.1".into())),
             ],
         }]);
-        let expected = Asm::Program(Function {
+        let expected = Asm::Program(vec![Function {
             name: "main".into(),
             instructions: vec![
-                Instruction::AllocateStack(-8),
+                Instruction::AllocateStack(-16),
                 Instruction::Cmp(Operand::Imm(2), Operand::Stack(-4)),
                 Instruction::Mov(Operand::Imm(0), Operand::Stack(-8)),
                 Instruction::SetCC(CondCode::GE, Operand::Stack(-8)),
                 Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        });
+        }]);
         let assembly = Asm::from_tacky(ast);
         assert_eq!(assembly, expected);
     }
@@ -964,7 +1043,7 @@ mod tests {
             ],
         }]);
 
-        let expected = Asm::Program(Function {
+        let expected = Asm::Program(vec![Function {
             name: "main".into(),
             instructions: vec![
                 Instruction::AllocateStack(-16),
@@ -985,9 +1064,67 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        });
+        }]);
         let assembly = Asm::from_tacky(ast);
         assert_eq!(assembly, expected);
+    }
+
+    #[test]
+    fn functions() {
+        let src = r#"
+            int bar(int a);
+            int foo(int x, int y) { 
+                return x + y;
+            }
+            int main(void) {
+                return foo(1, 2) + 3;
+            }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = crate::parser::Parser::new(&tokens);
+        let mut ast = parse.into_ast().unwrap();
+        crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let tacky = crate::tacky::Tacky::new(ast);
+        let tacky = tacky.into_ast();
+        let Ok(ast) = tacky else {
+            panic!();
+        };
+        let actual = Asm::from_tacky(ast);
+        let expected = Asm::Program(vec![
+            Function {
+                name: "foo".into(),
+                instructions: vec![
+                    Instruction::AllocateStack(-16),
+                    Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R10)),
+                    Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-8)),
+                    Instruction::Mov(Operand::Stack(-12), Operand::Reg(Register::R10)),
+                    Instruction::Binary(BinaryOp::Add, Operand::Reg(Register::R10), Operand::Stack(-8)),
+                    Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::AX)),
+                    Instruction::Ret,
+                    Instruction::Mov(Operand::Imm(0), Operand::Reg(Register::AX)),
+                    Instruction::Ret,
+                ],
+            },
+            Function {
+                name: "main".into(),
+                instructions: vec![
+                    Instruction::AllocateStack(-16),
+                    Instruction::Mov(Operand::Imm(1), Operand::Reg(Register::DI)),
+                    Instruction::Mov(Operand::Imm(2), Operand::Reg(Register::SI)),
+                    Instruction::Call("foo".into()),
+                    Instruction::Mov(Operand::Reg(Register::AX), Operand::Stack(-4)),
+                    Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R10)),
+                    Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-8)),
+                    Instruction::Binary(BinaryOp::Add, Operand::Imm(3), Operand::Stack(-8)),
+                    Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::AX)),
+                    Instruction::Ret,
+                    Instruction::Mov(Operand::Imm(0), Operand::Reg(Register::AX)),
+                    Instruction::Ret,
+                ],
+            },
+        ]);
+        assert_eq!(expected, actual);
     }
 }
 

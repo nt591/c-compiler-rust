@@ -25,7 +25,11 @@ impl Emitter {
 
     fn emit_code<W: Write>(asm: &Asm, output: &mut W) -> std::io::Result<()> {
         match asm {
-            Asm::Program(func) => Self::emit_function(func, output)?,
+            Asm::Program(funcs) => {
+                // todo!
+                let func = funcs.get(0).unwrap();
+                Self::emit_function(func, output)?;
+            }
         }
         Ok(())
     }
@@ -131,6 +135,9 @@ impl Emitter {
                 Self::emit_op(operand, RegisterSize::OneByte, output)?;
                 write!(output, "\n")?;
             }
+            asm::Instruction::DeallocateStack(_)
+            | asm::Instruction::Push(_)
+            | asm::Instruction::Call(_) => todo!(),
         }
         Ok(())
     }
@@ -178,12 +185,14 @@ impl Emitter {
     }
 
     fn emit_register<W: Write>(reg: &asm::Register, output: &mut W) -> std::io::Result<()> {
+        use asm::Register;
         match reg {
-            asm::Register::AX => write!(output, "{}", "%eax"),
-            asm::Register::CX => write!(output, "{}", "%ecx"),
-            asm::Register::DX => write!(output, "{}", "%edx"),
-            asm::Register::R10 => write!(output, "{}", "%r10d"),
-            asm::Register::R11 => write!(output, "{}", "%r11d"),
+            Register::AX => write!(output, "{}", "%eax"),
+            Register::CX => write!(output, "{}", "%ecx"),
+            Register::DX => write!(output, "{}", "%edx"),
+            Register::R10 => write!(output, "{}", "%r10d"),
+            Register::R11 => write!(output, "{}", "%r11d"),
+            Register::DI | Register::SI | Register::R8 | Register::R9 => todo!(),
         }
     }
 
@@ -191,12 +200,14 @@ impl Emitter {
         reg: &asm::Register,
         output: &mut W,
     ) -> std::io::Result<()> {
+        use asm::Register;
         match reg {
-            asm::Register::AX => write!(output, "{}", "%al"),
-            asm::Register::CX => write!(output, "{}", "%cl"),
-            asm::Register::DX => write!(output, "{}", "%dl"),
-            asm::Register::R10 => write!(output, "{}", "%r10b"),
-            asm::Register::R11 => write!(output, "{}", "%r11b"),
+            Register::AX => write!(output, "{}", "%al"),
+            Register::CX => write!(output, "{}", "%cl"),
+            Register::DX => write!(output, "{}", "%dl"),
+            Register::R10 => write!(output, "{}", "%r10b"),
+            Register::R11 => write!(output, "{}", "%r11b"),
+            Register::DI | Register::SI | Register::R8 | Register::R9 => todo!(),
         }
     }
 
@@ -239,13 +250,13 @@ mod tests {
 
     #[test]
     fn basic_emit() {
-        let ast = Asm::Program(asm::Function {
+        let ast = Asm::Program(vec![asm::Function {
             name: "main".into(),
             instructions: vec![
                 asm::Instruction::Mov(asm::Operand::Imm(100), asm::Operand::Reg(asm::Register::AX)),
                 asm::Instruction::Ret,
             ],
-        });
+        }]);
 
         let expected = r#"  .globl _main
 _main:
@@ -270,7 +281,7 @@ _main:
 
     #[test]
     fn complex_emit() {
-        let ast = asm::Asm::Program(asm::Function {
+        let ast = asm::Asm::Program(vec![asm::Function {
             name: "main".into(),
             instructions: vec![
                 asm::Instruction::AllocateStack(-12),
@@ -300,7 +311,7 @@ _main:
                 ),
                 asm::Instruction::Ret,
             ],
-        });
+        }]);
         let expected = r#"  .globl _main
 _main:
                        # FUNCTION PROLOGUE
@@ -331,7 +342,7 @@ _main:
 
     #[test]
     fn binary_operators() {
-        let ast = asm::Asm::Program(asm::Function {
+        let ast = asm::Asm::Program(vec![asm::Function {
             name: "main".into(),
             instructions: vec![
                 asm::Instruction::AllocateStack(-16),
@@ -383,7 +394,7 @@ _main:
                 ),
                 asm::Instruction::Ret,
             ],
-        });
+        }]);
 
         let expected = r#"  .globl _main
 _main:
@@ -421,7 +432,7 @@ _main:
 
     #[test]
     fn simple_bitwise() {
-        let ast = asm::Asm::Program(asm::Function {
+        let ast = asm::Asm::Program(vec![asm::Function {
             name: "main".into(),
             instructions: vec![
                 asm::Instruction::AllocateStack(-16),
@@ -486,7 +497,7 @@ _main:
                 ),
                 asm::Instruction::Ret,
             ],
-        });
+        }]);
 
         let expected = r#"  .globl _main
 _main:
@@ -523,7 +534,7 @@ _main:
 
     #[test]
     fn shiftleft() {
-        let ast = asm::Asm::Program(asm::Function {
+        let ast = asm::Asm::Program(vec![asm::Function {
             name: "main".into(),
             instructions: vec![
                 asm::Instruction::AllocateStack(-8),
@@ -564,7 +575,7 @@ _main:
                 ),
                 asm::Instruction::Ret,
             ],
-        });
+        }]);
         let expected = r#"  .globl _main
 _main:
                        # FUNCTION PROLOGUE
@@ -594,7 +605,7 @@ _main:
 
     #[test]
     fn jump_cond() {
-        let ast = Asm::Program(Function {
+        let ast = Asm::Program(vec![Function {
             name: "main".into(),
             instructions: vec![
                 Instruction::AllocateStack(-16),
@@ -615,7 +626,7 @@ _main:
                 Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        });
+        }]);
         let expected = r#"  .globl _main
 _main:
                        # FUNCTION PROLOGUE
