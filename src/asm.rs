@@ -120,11 +120,43 @@ impl Asm {
             instructions,
             params,
         } = func;
-        let _ = params;
+        let mut base_insns = vec![];
+        // we move the first 6 params to their respective registers, and
+        // the rest to stack offsets starting at -16 and decrementing by 8
+        let registers = [
+            Register::DI,
+            Register::SI,
+            Register::DX,
+            Register::CX,
+            Register::R8,
+            Register::R9,
+        ];
+        let register_args = params.iter().take(6);
+        let stack_args = params.iter().skip(6);
+        for (idx, p) in register_args.enumerate() {
+            debug_assert!(idx < 6);
+            let reg = registers[idx];
+            base_insns.push(Instruction::Mov(
+                Operand::Reg(reg),
+                Operand::Pseudo(p.into()),
+            ));
+        }
+        for (idx, p) in stack_args.enumerate() {
+            let idx: i32 = idx
+                .try_into()
+                .expect("Overflow when mapping function params to stack offsets");
+            let offset: i32 = -16 - (8 * idx);
+            base_insns.push(Instruction::Mov(
+                Operand::Stack(offset),
+                Operand::Pseudo(p.into()),
+            ));
+        }
+
         let instructions = Self::parse_instructions(&instructions);
+        base_insns.extend(instructions);
         Function {
             name: name.into(),
-            instructions,
+            instructions: base_insns,
         }
     }
 
@@ -1096,11 +1128,17 @@ mod tests {
                 name: "foo".into(),
                 instructions: vec![
                     Instruction::AllocateStack(-16),
+                    Instruction::Mov(Operand::Reg(Register::DI), Operand::Stack(-4)),
+                    Instruction::Mov(Operand::Reg(Register::SI), Operand::Stack(-8)),
                     Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R10)),
-                    Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-8)),
-                    Instruction::Mov(Operand::Stack(-12), Operand::Reg(Register::R10)),
-                    Instruction::Binary(BinaryOp::Add, Operand::Reg(Register::R10), Operand::Stack(-8)),
-                    Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::AX)),
+                    Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-12)),
+                    Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::R10)),
+                    Instruction::Binary(
+                        BinaryOp::Add,
+                        Operand::Reg(Register::R10),
+                        Operand::Stack(-12),
+                    ),
+                    Instruction::Mov(Operand::Stack(-12), Operand::Reg(Register::AX)),
                     Instruction::Ret,
                     Instruction::Mov(Operand::Imm(0), Operand::Reg(Register::AX)),
                     Instruction::Ret,
