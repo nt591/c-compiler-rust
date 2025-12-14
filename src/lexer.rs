@@ -84,6 +84,9 @@ pub enum Token<'a> {
     GreaterThanGreaterThanEqual,
     // increment/decrement
     PlusPlus,
+    // storage / linkage
+    Static,
+    Extern,
 }
 
 impl<'a> Token<'a> {
@@ -149,6 +152,8 @@ impl<'a> Token<'a> {
             LessThanLessThanEqual => format!("LessThanLessThanEqual"),
             GreaterThanGreaterThanEqual => format!("GreaterThanGreaterThanEqual"),
             PlusPlus => format!("PlusPlus"),
+            Static => format!("Static"),
+            Extern => format!("Extern"),
         }
     }
 }
@@ -452,6 +457,8 @@ impl<'a> Lexer<'a> {
             "for" => Some(Token::For),
             "break" => Some(Token::Break),
             "continue" => Some(Token::Continue),
+            "static" => Some(Token::Static),
+            "extern" => Some(Token::Extern),
             _ => None,
         }
     }
@@ -469,8 +476,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn basic_keywords() {
-        let source = "int main 123;";
+    fn keywords() {
+        let source = "int main 123 static extern;";
         let lexer = Lexer::lex(source);
         assert!(lexer.is_ok());
         let lexer = lexer.unwrap();
@@ -478,6 +485,8 @@ mod tests {
         assert_eq!(Some(&Token::Int), tokens.next());
         assert_eq!(Some(&Token::Main), tokens.next());
         assert_eq!(Some(&Token::Constant(123)), tokens.next());
+        assert_eq!(Some(&Token::Static), tokens.next());
+        assert_eq!(Some(&Token::Extern), tokens.next());
         assert_eq!(Some(&Token::Semicolon), tokens.next());
         assert_eq!(None, tokens.next());
     }
