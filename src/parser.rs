@@ -23,12 +23,22 @@ pub enum ParserError {
     WrongDeclarationInForInit,
     #[error("Expected an identifier name after a type in a function parameter list")]
     ExpectedIdentifierAfterType,
+    #[error("Invalid type specifier")]
+    InvalidTypeSpecifier,
+    #[error("Invalid storage class")]
+    InvalidStorageClass,
 }
 
 use crate::lexer::Token;
 #[derive(Debug, PartialEq)]
 pub enum AST {
-    Program(Vec<FunctionDeclaration>),
+    Program(Vec<Declaration>),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Declaration {
+    VarDecl(VariableDeclaration),
+    FunDecl(FunctionDeclaration),
 }
 
 #[derive(Debug, PartialEq)]
@@ -36,6 +46,26 @@ pub struct FunctionDeclaration {
     pub name: String,
     pub params: Vec<String>, // should this be owned?
     pub block: Option<Block>,
+    pub storage_class: Option<StorageClass>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct VariableDeclaration {
+    pub name: String,
+    pub init: Option<Expression>,
+    pub storage_class: Option<StorageClass>,
+}
+
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub enum StorageClass {
+    Static,
+    Extern,
+}
+
+// valid C types (int, unsigned, long, ...)
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub enum CType {
+    Int,
 }
 
 #[derive(Debug, PartialEq)]
@@ -79,18 +109,6 @@ pub enum Statement {
         label: String,
     },
     Null,
-}
-
-#[derive(Debug, PartialEq)]
-pub enum Declaration {
-    VarDecl(VariableDeclaration),
-    FunDecl(FunctionDeclaration),
-}
-
-#[derive(Debug, PartialEq)]
-pub struct VariableDeclaration {
-    pub name: String,
-    pub init: Option<Expression>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -182,28 +200,52 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_program(&mut self) -> Result<AST, ParserError> {
-        let mut funcs = vec![];
+        let mut decls = vec![];
         loop {
             if self.tokens.peek().is_none() {
                 break;
             }
-            funcs.push(self.parse_function()?);
+            decls.push(self.parse_declaration()?);
         }
-        Ok(AST::Program(funcs))
+        Ok(AST::Program(decls))
+    }
+
+    fn parse_type_and_storage_class(
+        &mut self,
+    ) -> Result<(CType, Option<StorageClass>), ParserError> {
+        let mut types = vec![];
+        let mut classes = vec![];
+
+        loop {
+            match self.tokens.peek() {
+                Some(Token::Int) => types.push(CType::Int),
+                Some(Token::Static) => classes.push(StorageClass::Static),
+                Some(Token::Extern) => classes.push(StorageClass::Extern),
+                _ => break,
+            }
+            self.tokens.next();
+        }
+        if types.len() != 1 {
+            return Err(ParserError::InvalidTypeSpecifier);
+        }
+        if classes.len() > 1 {
+            return Err(ParserError::InvalidStorageClass);
+        }
+        let type_ = types[0];
+        assert_eq!(type_, CType::Int);
+        let storage_class = classes.get(0).copied();
+        Ok((type_, storage_class))
     }
 
     /*
      * "int" <identifier> "(" <param-list> ")" ( <block> | ";" )
      * param-list ::= "void" | "int" <identifier> { "," "int" <identifier> }
      */
-    fn parse_function(&mut self) -> Result<FunctionDeclaration, ParserError> {
-        // todo: set return type?
-        self.expect(Token::Int)?;
-        let name = match self.tokens.next() {
-            Some(Token::Main) => "main",
-            Some(Token::Identifier(ident)) => ident,
-            _ => return Err(ParserError::UnexpectedName),
-        };
+    fn parse_function(
+        &mut self,
+        name: String,
+        storage_class: Option<StorageClass>,
+    ) -> Result<FunctionDeclaration, ParserError> {
         self.expect(Token::LeftParen)?;
         // check if we're void, or taking a param list
         // Should we store Void in the identifier list?
@@ -238,11 +280,12 @@ impl<'a> Parser<'a> {
             }
         };
 
-        return Ok(FunctionDeclaration {
-            name: name.into(),
+        Ok(FunctionDeclaration {
+            name,
             block,
             params,
-        });
+            storage_class,
+        })
     }
 
     fn parse_block(&mut self) -> Result<Block, ParserError> {
@@ -262,7 +305,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_block_item(&mut self) -> Result<BlockItem, ParserError> {
-        let block_item = if let Some(Token::Int) = self.tokens.peek() {
+        let block_item = if token_is_valid_specifier(self.tokens.peek().copied()) {
             let decl = self.parse_declaration()?;
             BlockItem::Decl(decl)
         } else {
@@ -305,31 +348,32 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_identifier(&mut self) -> Result<String, ParserError> {
+        match self.tokens.next() {
+            Some(Token::Main) => Ok("main".into()),
+            Some(Token::Identifier(ident)) => Ok((*ident).into()),
+            _ => Err(ParserError::UnexpectedName),
+        }
+    }
+
     /*
-     * var-decl ::= "int" <identifier> [ '=' <expr>] ';'
-     * fun-decl::= "int" <identifier> '(' <param-list> ')' ( <block> | ';' )
+     * var-decl ::= { <specifier> }+ <identifier> [ '=' <expr>] ';'
+     * fun-decl::= { <specifier> }+ <identifier> '(' <param-list> ')' ( <block> | ';' )
      * param-list ::= "void" | "int" <identifier> { ',' "int" identifier }
+     * <specifier> ::= "int" | "static" | "extern"
      *
-     * To validate, let's look forward three tokens. If it's a left paren,
-     * then we'll just go parse_function and get a fun-decl. Else, let's just try to
-     * parse a var-decl.
+     * since vardecl and fundecl start the same, but differ
+     * when we see a paren or not, let's grab all specifiers,
+     * then the identifier, then based on what we see we'll parse accordingly but
+     * pass in the relevant added values.
      */
     fn parse_declaration(&mut self) -> Result<Declaration, ParserError> {
-        let lookahead = self.tokens.clone().take(3);
-        if let Some(Token::LeftParen) = lookahead.last() {
-            let func = self.parse_function()?;
+        let (_ctype, storage_class) = self.parse_type_and_storage_class()?;
+        let identifier = self.parse_identifier()?;
+        if let Some(Token::LeftParen) = self.tokens.peek() {
+            let func = self.parse_function(identifier, storage_class)?;
             Ok(Declaration::FunDecl(func))
         } else {
-            assert_eq!(
-                Some(Token::Int),
-                self.tokens.next().copied(),
-                "Expected to see 'int' token when parsing a declaration"
-            );
-            let name = match self.tokens.next() {
-                Some(Token::Main) => "main",
-                Some(Token::Identifier(ident)) => ident,
-                _ => return Err(ParserError::UnexpectedName),
-            };
             let init = if let Some(Token::Equal) = self.tokens.peek() {
                 self.tokens.next();
                 let init = self.parse_expression(0)?;
@@ -341,8 +385,9 @@ impl<'a> Parser<'a> {
             };
 
             Ok(Declaration::VarDecl(VariableDeclaration {
-                name: name.into(),
+                name: identifier.into(),
                 init,
+                storage_class,
             }))
         }
     }
@@ -733,6 +778,11 @@ impl<'a> Parser<'a> {
     }
 }
 
+fn token_is_valid_specifier(tok: Option<&Token>) -> bool {
+    tok.map(|t| matches!(t, Token::Int | Token::Static | Token::Extern))
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -760,15 +810,14 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let ast = ast.unwrap();
-        let expected = AST::Program(vec![
-            (FunctionDeclaration {
-                name: "main".into(),
-                block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                    Expression::Constant(100),
-                ))])),
-                params: vec![],
-            }),
-        ]);
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
+            name: "main".into(),
+            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Constant(100),
+            ))])),
+            params: vec![],
+            storage_class: None,
+        })]);
         assert_eq!(expected, ast);
     }
 
@@ -819,13 +868,14 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let ast = ast.unwrap();
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Unary(UnaryOp::Complement, Box::new(Expression::Constant(100))),
             ))])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
         assert_eq!(expected, ast);
     }
 
@@ -848,13 +898,14 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let ast = ast.unwrap();
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Unary(UnaryOp::Negate, Box::new(Expression::Constant(100))),
             ))])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
         assert_eq!(expected, ast);
     }
 
@@ -879,13 +930,14 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let ast = ast.unwrap();
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Unary(UnaryOp::Negate, Box::new(Expression::Constant(100))),
             ))])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
         assert_eq!(expected, ast);
     }
 
@@ -972,7 +1024,7 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let actual = ast.unwrap();
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Binary(
@@ -994,7 +1046,8 @@ mod tests {
                 ),
             ))])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         assert_eq!(expected, actual);
     }
@@ -1034,7 +1087,7 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let actual = ast.unwrap();
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Binary(
@@ -1060,7 +1113,8 @@ mod tests {
                 ),
             ))])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         assert_eq!(expected, actual);
     }
@@ -1096,7 +1150,7 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let actual = ast.unwrap();
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Binary(
@@ -1118,7 +1172,8 @@ mod tests {
                 ),
             ))])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         assert_eq!(expected, actual);
     }
@@ -1153,7 +1208,7 @@ mod tests {
         // multiple is a higher precedence than shift, so we
         // eval 5 * 4 first by pushing it to a lower node, then
         // leftshift the result by 2
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Binary(
@@ -1167,7 +1222,8 @@ mod tests {
                 ),
             ))])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         assert_eq!(expected, actual);
     }
@@ -1201,7 +1257,7 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let actual = ast.unwrap();
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Binary(
@@ -1215,7 +1271,8 @@ mod tests {
                 ),
             ))])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         assert_eq!(expected, actual);
     }
@@ -1253,7 +1310,7 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let actual = ast.unwrap();
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Binary(
@@ -1275,7 +1332,8 @@ mod tests {
                 ),
             ))])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         assert_eq!(expected, actual);
     }
@@ -1309,17 +1367,19 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let actual = ast.unwrap();
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(1)),
+                    storage_class: None,
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
             ])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         assert_eq!(expected, actual)
     }
@@ -1355,12 +1415,13 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let actual = ast.unwrap();
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
                     init: None,
+                    storage_class: None,
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Assignment(
                     Box::new(Expression::Var("a".into())),
@@ -1371,7 +1432,8 @@ mod tests {
                 ))),
             ])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         assert_eq!(expected, actual)
     }
@@ -1404,7 +1466,7 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let actual = ast.unwrap();
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![
                 BlockItem::Stmt(Statement::Expr(Expression::Binary(
@@ -1415,7 +1477,8 @@ mod tests {
                 BlockItem::Stmt(Statement::Return(Expression::Constant(0))),
             ])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         assert_eq!(expected, actual)
     }
@@ -1474,12 +1537,13 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let actual = ast.unwrap();
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(1)),
+                    storage_class: None,
                 })),
                 BlockItem::Stmt(Statement::Expr(Expression::Binary(
                     BinaryOp::AddAssign,
@@ -1509,7 +1573,8 @@ mod tests {
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
             ])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         assert_eq!(expected, actual)
     }
@@ -1564,20 +1629,23 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let actual = ast.unwrap();
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(1)),
+                    storage_class: None,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b".into(),
                     init: Some(Expression::Constant(0)),
+                    storage_class: None,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "c".into(),
                     init: Some(Expression::Constant(2)),
+                    storage_class: None,
                 })),
                 BlockItem::Stmt(Statement::Expr(Expression::Binary(
                     BinaryOp::AddAssign,
@@ -1594,7 +1662,8 @@ mod tests {
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
             ])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         assert_eq!(expected, actual)
     }
@@ -1633,12 +1702,13 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let actual = ast.unwrap();
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(10)),
+                    storage_class: None,
                 })),
                 BlockItem::Stmt(Statement::Expr(Expression::Binary(
                     BinaryOp::MinusAssign,
@@ -1651,7 +1721,8 @@ mod tests {
                 ))),
             ])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         assert_eq!(expected, actual)
     }
@@ -1673,7 +1744,7 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
 
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![BlockItem::Stmt(Statement::If {
                 condition: Expression::Var("a".into()),
@@ -1693,7 +1764,8 @@ mod tests {
                 else_: None,
             })])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         assert_eq!(ast.unwrap(), expected);
     }
@@ -1714,7 +1786,7 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
 
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![
                 // first example:  we nest inner expression
@@ -1758,7 +1830,8 @@ mod tests {
                 })),
             ])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         assert_eq!(ast.unwrap(), expected);
     }
@@ -1778,7 +1851,7 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
 
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![
                 BlockItem::Stmt(Statement::Goto("foo".into())),
@@ -1792,7 +1865,8 @@ mod tests {
                 }),
             ])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         assert_eq!(ast.unwrap(), expected);
     }
@@ -1817,7 +1891,7 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
 
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![
                 BlockItem::Stmt(Statement::If {
@@ -1826,6 +1900,7 @@ mod tests {
                         BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                             name: "x".into(),
                             init: Some(Expression::Constant(1)),
+                            storage_class: None,
                         })),
                         BlockItem::Stmt(Statement::Return(Expression::Var("x".into()))),
                     ]))),
@@ -1835,6 +1910,7 @@ mod tests {
                     BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                         name: "b".into(),
                         init: Some(Expression::Constant(2)),
+                        storage_class: None,
                     })),
                     BlockItem::Stmt(Statement::Expr(Expression::Binary(
                         BinaryOp::Add,
@@ -1844,7 +1920,8 @@ mod tests {
                 ]))),
             ])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         assert_eq!(ast.unwrap(), expected);
     }
@@ -1871,17 +1948,19 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
 
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(1)),
+                    storage_class: None,
                 })),
                 BlockItem::Stmt(Statement::For {
                     init: ForInit::InitDecl(VariableDeclaration {
                         name: "b".into(),
                         init: Some(Expression::Constant(1)),
+                        storage_class: None,
                     }),
                     condition: Some(Expression::Binary(
                         BinaryOp::LessThan,
@@ -1923,21 +2002,24 @@ mod tests {
                 }),
             ])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         assert_eq!(ast.unwrap(), expected);
     }
 
     #[test]
-    fn test_functions() {
+    fn test_functions_and_variables() {
         let src = r#"
-            int bar(int a);
-            int foo(int x, int y) { 
+            int static bar(int a);
+            extern int foo(int x, int y) { 
+                extern int y;
                 return x + y;
             }
             int main(void) {
                 return foo(1, 2) + 3;
             }
+            static int a = 3;
         "#;
         let lexer = crate::lexer::Lexer::lex(src).unwrap();
         let tokens = lexer.as_syntactic_tokens();
@@ -1946,23 +2028,32 @@ mod tests {
         assert!(ast.is_ok());
 
         let expected = AST::Program(vec![
-            FunctionDeclaration {
+            Declaration::FunDecl(FunctionDeclaration {
                 name: "bar".into(),
                 block: None,
                 params: vec!["a".into()],
-            },
-            FunctionDeclaration {
+                storage_class: Some(StorageClass::Static),
+            }),
+            Declaration::FunDecl(FunctionDeclaration {
                 name: "foo".into(),
-                block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                    Expression::Binary(
-                        BinaryOp::Add,
-                        Box::new(Expression::Var("x".into())),
-                        Box::new(Expression::Var("y".into())),
-                    ),
-                ))])),
+                block: Some(Block(vec![
+                    BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
+                        name: "y".into(),
+                        init: None,
+                        storage_class: Some(StorageClass::Extern),
+                    })),
+                    BlockItem::Stmt(Statement::Return(
+                        Expression::Binary(
+                            BinaryOp::Add,
+                            Box::new(Expression::Var("x".into())),
+                            Box::new(Expression::Var("y".into())),
+                        ),
+                    ))
+                ])),
                 params: vec!["x".into(), "y".into()],
-            },
-            FunctionDeclaration {
+                storage_class: Some(StorageClass::Extern),
+            }),
+            Declaration::FunDecl(FunctionDeclaration {
                 name: "main".into(),
                 block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                     Expression::Binary(
@@ -1975,7 +2066,13 @@ mod tests {
                     ),
                 ))])),
                 params: vec![],
-            },
+                storage_class: None,
+            }),
+            Declaration::VarDecl(VariableDeclaration {
+                name: "a".into(),
+                init: Some(Expression::Constant(3)),
+                storage_class: Some(StorageClass::Static),
+            }),
         ]);
 
         assert_eq!(ast.unwrap(), expected);
@@ -1995,13 +2092,14 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
 
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::FunDecl(FunctionDeclaration {
                     name: "foo".into(),
                     params: vec!["x".into(), "y".into()],
                     block: None,
+                    storage_class: None,
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Binary(
                     BinaryOp::Add,
@@ -2013,8 +2111,29 @@ mod tests {
                 ))),
             ])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         assert_eq!(ast.unwrap(), expected);
+    }
+
+    #[test]
+    fn invalid_storage_and_type_specifiers() {
+        let src = "main(void) { return 0 ; }";
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert_eq!(ast, Err(ParserError::InvalidTypeSpecifier));
+
+        let src = r#"
+            int main(void) { return 0 ; }
+            static extern int a = 2;
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = Parser::new(&tokens);
+        let ast = parse.into_ast();
+        assert_eq!(ast, Err(ParserError::InvalidStorageClass));
     }
 }

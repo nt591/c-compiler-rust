@@ -127,11 +127,21 @@ impl<'a> Tacky {
     }
 
     fn parse_program(&mut self, parser: ParserAST) -> Result<AST, TackyError> {
-        let ParserAST::Program(funcs) = parser;
-        let funcs = funcs
+        let ParserAST::Program(decls) = parser;
+        let funcs = decls
             .iter()
-            .filter(|fun| fun.block.is_some())
-            .map(|fun| self.parse_function(fun))
+            .filter(|decl| {
+                let Declaration::FunDecl(fun) = decl else {
+                    panic!();
+                };
+                fun.block.is_some()
+            })
+            .map(|decl| {
+                let Declaration::FunDecl(ref fun) = decl else {
+                    panic!();
+                };
+                self.parse_function(fun)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(AST::Program(funcs))
     }
@@ -141,6 +151,7 @@ impl<'a> Tacky {
             name,
             block,
             params,
+            ..
         } = function;
         let Some(block) = block else {
             panic!("Somehow got a None block in parse_function")
@@ -783,6 +794,7 @@ impl<'a> Tacky {
         if let VariableDeclaration {
             name,
             init: Some(init),
+            ..
         } = decl
         {
             // emit instructions for rhs, then copy into lhs
@@ -837,13 +849,14 @@ mod tests {
 
     #[test]
     fn basic_parse() {
-        let ast = ParserAST::Program(vec![FunctionDeclaration {
+        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Constant(100),
             ))])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         let expected = AST::Program(vec![Function {
             name: "main".into(),
@@ -863,13 +876,14 @@ mod tests {
 
     #[test]
     fn unary_op_parse() {
-        let ast = ParserAST::Program(vec![FunctionDeclaration {
+        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Unary(ParserUnaryOp::Negate, Box::new(Expression::Constant(100))),
             ))])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         let expected = AST::Program(vec![Function {
             name: "main".into(),
@@ -894,7 +908,7 @@ mod tests {
 
     #[test]
     fn complex_unary_parse() {
-        let ast = ParserAST::Program(vec![FunctionDeclaration {
+        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Unary(
@@ -909,7 +923,8 @@ mod tests {
                 ),
             ))])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         let expected = AST::Program(vec![Function {
             name: "main".into(),
@@ -944,7 +959,7 @@ mod tests {
 
     #[test]
     fn complex_binary_parse() {
-        let ast = ParserAST::Program(vec![FunctionDeclaration {
+        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Binary(
@@ -966,7 +981,8 @@ mod tests {
                 ),
             ))])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
         let expected = AST::Program(vec![Function {
             name: "main".into(),
             params: vec![],
@@ -1009,7 +1025,7 @@ mod tests {
 
     #[test]
     fn complex_binary_parse2() {
-        let ast = ParserAST::Program(vec![FunctionDeclaration {
+        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Binary(
@@ -1035,7 +1051,8 @@ mod tests {
                 ),
             ))])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         let expected = AST::Program(vec![Function {
             name: "main".into(),
@@ -1085,7 +1102,7 @@ mod tests {
 
     #[test]
     fn simple_bitwise() {
-        let ast = ParserAST::Program(vec![FunctionDeclaration {
+        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Binary(
@@ -1107,7 +1124,8 @@ mod tests {
                 ),
             ))])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         let expected = AST::Program(vec![Function {
             name: "main".into(),
@@ -1151,7 +1169,7 @@ mod tests {
 
     #[test]
     fn shiftleft() {
-        let ast = ParserAST::Program(vec![FunctionDeclaration {
+        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Binary(
@@ -1165,7 +1183,8 @@ mod tests {
                 ),
             ))])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
         let expected = AST::Program(vec![Function {
             name: "main".into(),
             params: vec![],
@@ -1196,7 +1215,7 @@ mod tests {
 
     #[test]
     fn shiftleft_rhs_is_expr() {
-        let ast = ParserAST::Program(vec![FunctionDeclaration {
+        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Binary(
@@ -1210,7 +1229,8 @@ mod tests {
                 ),
             ))])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
         let expected = AST::Program(vec![Function {
             name: "main".into(),
             params: vec![],
@@ -1241,7 +1261,7 @@ mod tests {
 
     #[test]
     fn test_short_circuit_and() {
-        let ast = ParserAST::Program(vec![FunctionDeclaration {
+        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Binary(
@@ -1255,7 +1275,8 @@ mod tests {
                 ),
             ))])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         let expected = AST::Program(vec![Function {
             name: "main".into(),
@@ -1308,7 +1329,7 @@ mod tests {
 
     #[test]
     fn test_short_circuit_or() {
-        let ast = ParserAST::Program(vec![FunctionDeclaration {
+        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Binary(
@@ -1322,7 +1343,8 @@ mod tests {
                 ),
             ))])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         let expected = AST::Program(vec![Function {
             name: "main".into(),
@@ -1375,16 +1397,18 @@ mod tests {
 
     #[test]
     fn basic_declarations() {
-        let ast = ParserAST::Program(vec![FunctionDeclaration {
+        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a.0.decl".into(),
                     init: Some(Expression::Constant(1)),
+                    storage_class: None,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b.1.decl".into(),
                     init: Some(Expression::Var("a.0.decl".into())),
+                    storage_class: None,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "c.2.decl".into(),
@@ -1393,11 +1417,13 @@ mod tests {
                         Box::new(Expression::Var("a.0.decl".into())),
                         Box::new(Expression::Var("b.1.decl".into())),
                     )),
+                    storage_class: None,
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("c.2.decl".into()))),
             ])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
         let expected = AST::Program(vec![Function {
             name: "main".into(),
             params: vec![],
@@ -1434,12 +1460,13 @@ mod tests {
 
     #[test]
     fn test_compound_assignment() {
-        let ast = ParserAST::Program(vec![FunctionDeclaration {
+        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(1)),
+                    storage_class: None,
                 })),
                 BlockItem::Stmt(Statement::Expr(Expression::Binary(
                     ParserBinaryOp::AddAssign,
@@ -1469,7 +1496,8 @@ mod tests {
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
             ])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         let expected = AST::Program(vec![Function {
             name: "main".into(),
@@ -1543,12 +1571,13 @@ mod tests {
 
     #[test]
     fn test_invalid_lhs_compound_assignment() {
-        let ast = ParserAST::Program(vec![FunctionDeclaration {
+        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(10)),
+                    storage_class: None,
                 })),
                 BlockItem::Stmt(Statement::Expr(Expression::Binary(
                     ParserBinaryOp::MinusAssign,
@@ -1561,7 +1590,8 @@ mod tests {
                 ))),
             ])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
         let tacky = Tacky::new(ast);
         let assembly = tacky.into_ast();
         assert!(assembly.is_err());

@@ -182,9 +182,13 @@ pub fn resolve(ast: &mut AST) -> Result<(), SemanticAnalysisError> {
 }
 
 fn typecheck_ast(ast: &AST, symbol_table: &mut SymbolTable) -> Result<(), SemanticAnalysisError> {
-    let AST::Program(functions) = ast;
+    let AST::Program(decls) = ast;
 
-    for function in functions {
+    for decl in decls {
+        // todo
+        let Declaration::FunDecl(function) = decl else {
+            panic!();
+        };
         typecheck_function_declaration(function, symbol_table)?;
     }
     Ok(())
@@ -248,7 +252,7 @@ fn typecheck_decl(
     decl: &VariableDeclaration,
     symbol_table: &mut SymbolTable,
 ) -> Result<(), SemanticAnalysisError> {
-    let VariableDeclaration { init, name } = decl;
+    let VariableDeclaration { init, name, .. } = decl;
     symbol_table.insert(name.clone(), (CType::Int, None));
     if let Some(init) = init {
         typecheck_expr(init, symbol_table)?;
@@ -396,9 +400,13 @@ fn validate_labels(resolver: &Resolver) -> Result<(), SemanticAnalysisError> {
 }
 
 fn resolve_ast(ast: &mut AST, resolver: &mut Resolver) -> Result<(), SemanticAnalysisError> {
-    let AST::Program(functions) = ast;
+    let AST::Program(decls) = ast;
 
-    for function in functions {
+    for decl in decls {
+        // todo
+        let Declaration::FunDecl(function) = decl else {
+            panic!();
+        };
         resolve_function_declaration(function, resolver)?;
     }
     Ok(())
@@ -462,7 +470,7 @@ fn resolve_decl(
     decl: &mut VariableDeclaration,
     resolver: &mut Resolver,
 ) -> Result<(), SemanticAnalysisError> {
-    let VariableDeclaration { name, init } = decl;
+    let VariableDeclaration { name, init, .. } = decl;
     resolve_param(name, resolver)?;
     if let Some(init) = init {
         resolve_expr(init, resolver)?;
@@ -606,9 +614,12 @@ fn label_and_validate_loop_constructs(
     ast: &mut AST,
     resolver: &mut Resolver,
 ) -> Result<(), SemanticAnalysisError> {
-    let AST::Program(functions) = ast;
+    let AST::Program(decls) = ast;
 
-    for function in functions {
+    for decl in decls {
+        let Declaration::FunDecl(function) = decl else {
+            panic!(); //todo
+        };
         let FunctionDeclaration { block, name: _, .. } = function;
         if let Some(block) = block.as_mut() {
             label_block(block, None, resolver)?;
@@ -698,21 +709,24 @@ mod tests {
 
     #[test]
     fn basic_resolve_repeated_variable() {
-        let mut before = AST::Program(vec![FunctionDeclaration {
+        let mut before = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(1)),
+                    storage_class: None,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(1)),
+                    storage_class: None,
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
             ])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         let actual = resolve(&mut before);
         assert!(actual.is_err());
@@ -720,17 +734,19 @@ mod tests {
 
     #[test]
     fn basic_resolve_undeclared_variable() {
-        let mut before = AST::Program(vec![FunctionDeclaration {
+        let mut before = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
                     init: Some(Expression::Var("c".into())),
+                    storage_class: None,
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
             ])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         let actual = resolve(&mut before);
         assert!(actual.is_err());
@@ -738,39 +754,45 @@ mod tests {
 
     #[test]
     fn basic_resolve_successful() {
-        let mut before = AST::Program(vec![FunctionDeclaration {
+        let mut before = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(1)),
+                    storage_class: None,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b".into(),
                     init: Some(Expression::Var("a".into())),
+                    storage_class: None,
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
             ])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         let actual = resolve(&mut before);
         assert!(actual.is_ok());
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a.0.decl".into(),
                     init: Some(Expression::Constant(1)),
+                    storage_class: None,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b.1.decl".into(),
                     init: Some(Expression::Var("a.0.decl".into())),
+                    storage_class: None,
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a.0.decl".into()))),
             ])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         // mutates taken value
         assert_eq!(before, expected);
@@ -778,16 +800,18 @@ mod tests {
 
     #[test]
     fn complex_resolve_successful() {
-        let mut before = AST::Program(vec![FunctionDeclaration {
+        let mut before = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
                     init: Some(Expression::Constant(1)),
+                    storage_class: None,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b".into(),
                     init: Some(Expression::Var("a".into())),
+                    storage_class: None,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "c".into(),
@@ -796,24 +820,28 @@ mod tests {
                         Box::new(Expression::Var("a".into())),
                         Box::new(Expression::Var("b".into())),
                     )),
+                    storage_class: None,
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("c".into()))),
             ])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         let actual = resolve(&mut before);
         assert!(actual.is_ok());
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a.0.decl".into(),
                     init: Some(Expression::Constant(1)),
+                    storage_class: None,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b.1.decl".into(),
                     init: Some(Expression::Var("a.0.decl".into())),
+                    storage_class: None,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "c.2.decl".into(),
@@ -822,11 +850,13 @@ mod tests {
                         Box::new(Expression::Var("a.0.decl".into())),
                         Box::new(Expression::Var("b.1.decl".into())),
                     )),
+                    storage_class: None,
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("c.2.decl".into()))),
             ])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         // mutates taken value
         assert_eq!(before, expected);
@@ -918,12 +948,13 @@ mod tests {
         let analysis = resolve(&mut ast);
         assert!(analysis.is_ok());
 
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "x.0.decl".into(),
                     init: Some(Expression::Constant(1)),
+                    storage_class: None,
                 })),
                 BlockItem::Stmt(Statement::Compound(Block(vec![BlockItem::Decl(
                     // Declaration is the same name, but has a new renamed variable
@@ -931,12 +962,14 @@ mod tests {
                     Declaration::VarDecl(VariableDeclaration {
                         name: "x.1.decl".into(),
                         init: Some(Expression::Constant(2)),
+                        storage_class: None,
                     }),
                 )]))),
                 BlockItem::Stmt(Statement::Return(Expression::Var("x.0.decl".into()))),
             ])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
 
         assert_eq!(ast, expected);
     }
@@ -963,12 +996,13 @@ mod tests {
         let analysis = resolve(&mut ast);
         assert!(analysis.is_ok());
 
-        let expected = AST::Program(vec![FunctionDeclaration {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a.0.decl".into(),
                     init: None,
+                    storage_class: None,
                 })),
                 BlockItem::Stmt(Statement::For {
                     init: ForInit::InitExp(Some(Expression::Assignment(
@@ -1015,7 +1049,8 @@ mod tests {
                 }),
             ])),
             params: vec![],
-        }]);
+            storage_class: None,
+        })]);
         assert_eq!(ast, expected);
     }
 
