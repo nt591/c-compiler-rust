@@ -2042,13 +2042,11 @@ mod tests {
                         init: None,
                         storage_class: Some(StorageClass::Extern),
                     })),
-                    BlockItem::Stmt(Statement::Return(
-                        Expression::Binary(
-                            BinaryOp::Add,
-                            Box::new(Expression::Var("x".into())),
-                            Box::new(Expression::Var("y".into())),
-                        ),
-                    ))
+                    BlockItem::Stmt(Statement::Return(Expression::Binary(
+                        BinaryOp::Add,
+                        Box::new(Expression::Var("x".into())),
+                        Box::new(Expression::Var("y".into())),
+                    ))),
                 ])),
                 params: vec!["x".into(), "y".into()],
                 storage_class: Some(StorageClass::Extern),

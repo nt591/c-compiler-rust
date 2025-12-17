@@ -5,6 +5,7 @@ use crate::parser::Expression;
 use crate::parser::ForInit;
 use crate::parser::FunctionDeclaration;
 use crate::parser::Statement;
+use crate::parser::StorageClass;
 use crate::parser::VariableDeclaration;
 use crate::parser::AST;
 use std::collections::hash_map::Entry;
@@ -41,6 +42,24 @@ pub enum SemanticAnalysisError {
     FunctionCalledWithWrongNumOfArgs,
     #[error("Incompatible function declaration")]
     IncompatibleFunctionDeclaration,
+    #[error("Conflicting local declarations")]
+    ConflictingLocalDeclarations,
+    #[error("Cannot use `static` specifier on block-scoped functions")]
+    NoStaticOnBlockScopeFuncs,
+    #[error("Static function declaration follows non-static declaration")]
+    StaticFuncDeclFollowsNonStatic,
+    #[error("Non-constant initializer")]
+    NonConstantInitializer,
+    #[error("Function redeclared as variable")]
+    FunctionRedeclaredAsVariable,
+    #[error("Conflicting variable linkage")]
+    ConflictingVariableLinkage,
+    #[error("Conflicting file-scoped variable declaration")]
+    ConflictingFileScopeVarDecl,
+    #[error("Initializer on local extern variable declaration")]
+    InitializerOnLocalExternVarDecl,
+    #[error("Non-constant initializer on local static variable declaration")]
+    NonConstInitOnLocalStaticVar,
 }
 
 #[derive(Debug, Clone)]
@@ -159,17 +178,30 @@ impl Resolver {
     }
 }
 
-// BEGIN: typechecking constructs
-#[derive(PartialEq)]
+/* BEGIN Symbol Table types for typechecking */
+#[derive(PartialEq, Debug)]
 enum CType {
     Int,
     FunType(usize), // param_count
 }
 
-// TODO: lazy_static this bad boy
-// If type is FunType, store if we've seen a definition (func body)
-type SymbolTable = HashMap<String, (CType, Option<bool>)>;
-// END: typechecking constructs
+#[derive(PartialEq, Debug)]
+enum InitialValue {
+    Tentative,
+    Initial(usize), // for our Int CType
+    NoInitializer,  // extern variable declarations are not tentative
+}
+
+#[derive(Debug, PartialEq)]
+enum IdentifierAttrs {
+    FunAttr { defined: bool, global: bool },
+    StaticAttr { init: InitialValue, global: bool },
+    LocalAttr,
+}
+
+// TODO: harden types so CType::FunType ONLY goes with IdentifierAttrs::FunAttr
+type SymbolTable = HashMap<String, (CType, IdentifierAttrs)>;
+/* END: Symbol Table types for typechecking */
 
 pub fn resolve(ast: &mut AST) -> Result<(), SemanticAnalysisError> {
     let mut resolver = Resolver::new();
@@ -185,11 +217,14 @@ fn typecheck_ast(ast: &AST, symbol_table: &mut SymbolTable) -> Result<(), Semant
     let AST::Program(decls) = ast;
 
     for decl in decls {
-        // todo
-        let Declaration::FunDecl(function) = decl else {
-            panic!();
-        };
-        typecheck_function_declaration(function, symbol_table)?;
+        match decl {
+            Declaration::FunDecl(function) => {
+                typecheck_function_declaration(function, symbol_table)?
+            }
+            Declaration::VarDecl(var) => {
+                typecheck_file_scope_variable_declaration(var, symbol_table)?
+            }
+        }
     }
     Ok(())
 }
@@ -198,33 +233,118 @@ fn typecheck_function_declaration(
     decl: &FunctionDeclaration,
     symbol_table: &mut SymbolTable,
 ) -> Result<(), SemanticAnalysisError> {
-    let already_defined = match symbol_table.get(&decl.name) {
-        None => Ok(false),
-        Some((CType::Int, _)) => Err(SemanticAnalysisError::IncompatibleFunctionDeclaration),
-        Some((CType::FunType(count), _)) if *count != decl.params.len() => {
-            Err(SemanticAnalysisError::IncompatibleFunctionDeclaration)
-        }
-        Some((_old_decl, Some(true))) if decl.block.is_some() => {
-            Err(SemanticAnalysisError::DuplicateFunction(decl.name.clone()))
-        }
-        Some((_old_decl, Some(def))) => Ok(*def),
-        Some((_, None)) => unreachable!(
-            "Somehow found a function stored in the symbol table without an already_defined value"
-        ),
-    }?;
+    let has_body = decl.block.is_some();
+    let mut already_defined = false;
+    let mut global = decl.storage_class != Some(StorageClass::Static);
+    if let Some((old_ctype, attrs)) = symbol_table.get(&decl.name) {
+        let IdentifierAttrs::FunAttr { defined, global: old_global } = attrs else {
+            panic!("Somehow fetched attrs that are not FunType when querying symbol for typechecking function declaration");
+        };
+        let defined = match old_ctype {
+            CType::Int => Err(SemanticAnalysisError::IncompatibleFunctionDeclaration),
+            CType::FunType(count) if *count != decl.params.len() => {
+                Err(SemanticAnalysisError::IncompatibleFunctionDeclaration)
+            }
+            _old_decl if *defined && has_body => {
+                Err(SemanticAnalysisError::DuplicateFunction(decl.name.clone()))
+            }
+            _old_decl if *old_global && decl.storage_class == Some(StorageClass::Static) => {
+                Err(SemanticAnalysisError::StaticFuncDeclFollowsNonStatic)
+            }
+            _old_decl => Ok(*defined),
+        }?;
+        already_defined = defined;
+        global = *old_global;
+    };
     symbol_table.insert(
         decl.name.clone(),
         (
             CType::FunType(decl.params.len()),
-            Some(already_defined || decl.block.is_some()),
+            IdentifierAttrs::FunAttr {
+                defined: (already_defined || decl.block.is_some()),
+                global,
+            },
         ),
     );
     if let Some(block) = &decl.block {
         for param in decl.params.iter() {
-            symbol_table.insert(param.clone(), (CType::Int, None));
+            symbol_table.insert(param.clone(), (CType::Int, IdentifierAttrs::LocalAttr));
         }
         typecheck_block(&block, symbol_table)?;
     }
+    Ok(())
+}
+
+fn typecheck_file_scope_variable_declaration(
+    var: &VariableDeclaration,
+    symbol_table: &mut SymbolTable,
+) -> Result<(), SemanticAnalysisError> {
+    // first, figure out variable initial value if available
+    // Can either be a known constant value,
+    // Tentative if the storage class is Static or unknown,
+    // or explicitly no initializer for an extern variable
+    let mut initial_value = match var.init {
+        Some(Expression::Constant(i)) => InitialValue::Initial(i),
+        None if var.storage_class == Some(StorageClass::Extern) => InitialValue::NoInitializer,
+        None => InitialValue::Tentative,
+        _ => return Err(SemanticAnalysisError::NonConstantInitializer),
+    };
+
+    // is this variable global?
+    // Yes IF it isn't explicitly static
+    let mut global = var.storage_class != Some(StorageClass::Static);
+    // now check previous declarations to make sure it's valid,
+    // and to resolve storage classes and linkage.
+    if let Some((old_ctype, old_attrs)) = symbol_table.get(&var.name) {
+        // have we previously defined this as a function?
+        if *old_ctype != CType::Int {
+            return Err(SemanticAnalysisError::FunctionRedeclaredAsVariable);
+        }
+        // if we've declared this variable as extern,
+        // use the old entry's linkage, else make
+        // sure they don't disagree.
+        let IdentifierAttrs::StaticAttr {
+            init: old_init,
+            global: old_global,
+        } = old_attrs
+        else {
+            panic!(); // no way to here unless a compiler error
+        };
+        if let Some(StorageClass::Extern) = var.storage_class {
+            global = *old_global;
+        } else if global != *old_global {
+            return Err(SemanticAnalysisError::ConflictingVariableLinkage);
+        }
+
+        // if we've defined the variable with an initial value already,
+        // AND we are declaring it again with an initial value, error.
+        // Else if we're checking a declaration with no initial value,
+        // and we've already called it Tentative, keep it tentative.
+        match old_init {
+            InitialValue::Initial(c) => {
+                if let InitialValue::Initial(_) = initial_value {
+                    return Err(SemanticAnalysisError::ConflictingFileScopeVarDecl);
+                }
+                initial_value = InitialValue::Initial(*c);
+            }
+            InitialValue::Tentative => {
+                if !matches!(initial_value, InitialValue::Initial(_)) {
+                    initial_value = InitialValue::Tentative;
+                }
+            }
+            _ => {}
+        }
+    }
+    symbol_table.insert(
+        var.name.clone(),
+        (
+            CType::Int,
+            IdentifierAttrs::StaticAttr {
+                global,
+                init: initial_value,
+            },
+        ),
+    );
     Ok(())
 }
 
@@ -236,7 +356,7 @@ fn typecheck_block(
     for body_item in body.iter() {
         match body_item {
             BlockItem::Decl(Declaration::VarDecl(declaration)) => {
-                typecheck_decl(declaration, symbol_table)?
+                typecheck_local_var_decl(declaration, symbol_table)?
             }
             BlockItem::Decl(Declaration::FunDecl(decl)) => {
                 typecheck_function_declaration(decl, symbol_table)?;
@@ -248,15 +368,70 @@ fn typecheck_block(
     Ok(())
 }
 
-fn typecheck_decl(
+fn typecheck_local_var_decl(
     decl: &VariableDeclaration,
     symbol_table: &mut SymbolTable,
 ) -> Result<(), SemanticAnalysisError> {
-    let VariableDeclaration { init, name, .. } = decl;
-    symbol_table.insert(name.clone(), (CType::Int, None));
-    if let Some(init) = init {
-        typecheck_expr(init, symbol_table)?;
-    };
+    let VariableDeclaration {
+        init,
+        name,
+        storage_class,
+    } = decl;
+    match storage_class {
+        Some(StorageClass::Extern) => {
+            // an extern variable cannot be initialized at block scope, so
+            // raise an error if we see an expression in the init position.
+            if decl.init.is_some() {
+                return Err(SemanticAnalysisError::InitializerOnLocalExternVarDecl);
+            }
+            // ensure we're not redefining anything
+            if let Some((old_ctype, _old_attrs)) = symbol_table.get(name.as_str()) {
+                if *old_ctype != CType::Int {
+                    return Err(SemanticAnalysisError::FunctionRedeclaredAsVariable);
+                }
+            } else {
+                // fair game, add to symbol table.
+                symbol_table.insert(
+                    name.clone(),
+                    (
+                        CType::Int,
+                        IdentifierAttrs::StaticAttr {
+                            init: InitialValue::NoInitializer,
+                            global: true,
+                        },
+                    ),
+                );
+            }
+        }
+        Some(StorageClass::Static) => {
+            // for a static block-scope variable, there is no linkage.
+            // We either take the initializer
+            // or default to an initial value of zero if not present.
+            // Any non-constant initializer is a type error.
+            let new_init = match init {
+                Some(Expression::Constant(c)) => InitialValue::Initial(*c),
+                None => InitialValue::Initial(0),
+                _ => return Err(SemanticAnalysisError::NonConstInitOnLocalStaticVar),
+            };
+            symbol_table.insert(
+                name.clone(),
+                (
+                    CType::Int,
+                    IdentifierAttrs::StaticAttr {
+                        init: new_init,
+                        global: false,
+                    },
+                ),
+            );
+        }
+        None => {
+            // automatic variable: block scope, so easy to check
+            symbol_table.insert(name.clone(), (CType::Int, IdentifierAttrs::LocalAttr));
+            if let Some(init) = init {
+                typecheck_expr(init, symbol_table)?;
+            };
+        }
+    }
     Ok(())
 }
 
@@ -317,7 +492,7 @@ fn typecheck_for_init(
     symbol_table: &mut SymbolTable,
 ) -> Result<(), SemanticAnalysisError> {
     match init {
-        ForInit::InitDecl(decl) => typecheck_decl(decl, symbol_table),
+        ForInit::InitDecl(decl) => typecheck_local_var_decl(decl, symbol_table),
         ForInit::InitExp(expr) => typecheck_optional_expr(expr.as_ref(), symbol_table),
     }
 }
@@ -354,7 +529,7 @@ fn typecheck_expr(
         }
         Expression::Var(name) => {
             let stored_type = symbol_table.get(name); // TODO: Can this be None?
-            let Some((CType::Int, None)) = stored_type else {
+            if let Some((CType::FunType(_), IdentifierAttrs::FunAttr { .. })) = stored_type {
                 return Err(SemanticAnalysisError::FunctionUsedAsVariableName(
                     name.clone(),
                 ));
@@ -403,11 +578,12 @@ fn resolve_ast(ast: &mut AST, resolver: &mut Resolver) -> Result<(), SemanticAna
     let AST::Program(decls) = ast;
 
     for decl in decls {
-        // todo
-        let Declaration::FunDecl(function) = decl else {
-            panic!();
-        };
-        resolve_function_declaration(function, resolver)?;
+        match decl {
+            Declaration::FunDecl(function) => resolve_function_declaration(function, resolver)?,
+            Declaration::VarDecl(variable) => {
+                resolve_file_scope_variable_declaration(variable, resolver)
+            }
+        }
     }
     Ok(())
 }
@@ -417,12 +593,15 @@ fn resolve_block(block: &mut Block, resolver: &mut Resolver) -> Result<(), Seman
     for body_item in body.iter_mut() {
         match body_item {
             BlockItem::Decl(Declaration::VarDecl(declaration)) => {
-                resolve_decl(declaration, resolver)?
+                resolve_local_variable_declaration(declaration, resolver)?
             }
             BlockItem::Decl(Declaration::FunDecl(decl)) => {
                 if decl.block.is_some() {
                     // Nested function definitions are not permitted
                     return Err(SemanticAnalysisError::NestedFunctionDefinitionsNotAllowed);
+                }
+                if let Some(StorageClass::Static) = decl.storage_class {
+                    return Err(SemanticAnalysisError::NoStaticOnBlockScopeFuncs);
                 }
                 resolve_function_declaration(decl, resolver)?;
             }
@@ -431,6 +610,10 @@ fn resolve_block(block: &mut Block, resolver: &mut Resolver) -> Result<(), Seman
     }
 
     Ok(())
+}
+
+fn resolve_file_scope_variable_declaration(decl: &VariableDeclaration, resolver: &mut Resolver) {
+    resolver.resolve_variable(&decl.name, decl.name.clone(), true, true)
 }
 
 fn resolve_function_declaration(
@@ -466,15 +649,39 @@ fn resolve_param(name: &mut String, resolver: &mut Resolver) -> Result<(), Seman
     Ok(())
 }
 
-fn resolve_decl(
+fn resolve_local_variable_declaration(
     decl: &mut VariableDeclaration,
     resolver: &mut Resolver,
 ) -> Result<(), SemanticAnalysisError> {
-    let VariableDeclaration { name, init, .. } = decl;
-    resolve_param(name, resolver)?;
-    if let Some(init) = init {
-        resolve_expr(init, resolver)?;
-    };
+    let VariableDeclaration {
+        name,
+        init,
+        storage_class,
+    } = decl;
+    // first, check for conflicting entries with file-scoped variable
+    if let Some(ResolvedIdentifier {
+        in_current_scope,
+        has_linkage,
+        ..
+    }) = resolver.get_identifier(&name)
+    {
+        if *in_current_scope
+            && !(*has_linkage && matches!(storage_class, Some(StorageClass::Extern)))
+        {
+            return Err(SemanticAnalysisError::ConflictingLocalDeclarations);
+        }
+    }
+    // if its an extern variable, we should just add to resolver without
+    // using a temporary in the named position: it needs to link across files.
+    // C does not allow initializers in this position.
+    if let Some(StorageClass::Extern) = decl.storage_class {
+        resolver.resolve_variable(&decl.name, decl.name.clone(), true, true);
+    } else {
+        resolve_param(name, resolver)?;
+        if let Some(init) = init {
+            resolve_expr(init, resolver)?;
+        };
+    }
     Ok(())
 }
 
@@ -546,7 +753,7 @@ fn resolve_for_init(
     resolver: &mut Resolver,
 ) -> Result<(), SemanticAnalysisError> {
     match init {
-        ForInit::InitDecl(ref mut decl) => resolve_decl(decl, resolver),
+        ForInit::InitDecl(ref mut decl) => resolve_local_variable_declaration(decl, resolver),
         ForInit::InitExp(expr) => resolve_optional_expr(expr.as_mut(), resolver),
     }
 }
@@ -618,7 +825,7 @@ fn label_and_validate_loop_constructs(
 
     for decl in decls {
         let Declaration::FunDecl(function) = decl else {
-            panic!(); //todo
+            continue;
         };
         let FunctionDeclaration { block, name: _, .. } = function;
         if let Some(block) = block.as_mut() {
@@ -926,7 +1133,7 @@ mod tests {
         assert!(analysis.is_err());
         assert_eq!(
             analysis,
-            Err(SemanticAnalysisError::DuplicateDecl("b".into()))
+            Err(SemanticAnalysisError::ConflictingLocalDeclarations)
         );
     }
 
