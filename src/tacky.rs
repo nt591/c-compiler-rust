@@ -12,6 +12,7 @@ use crate::parser::Statement;
 use crate::parser::UnaryOp as ParserUnaryOp;
 use crate::parser::VariableDeclaration;
 use crate::parser::AST as ParserAST;
+use crate::semantic_analysis;
 use thiserror::Error;
 
 #[derive(Debug, PartialEq, Error)]
@@ -20,18 +21,24 @@ pub enum TackyError {
     InvalidLhsOfAssignment,
 }
 
-// Lifetime of source test, since we need
-// names. TODO: Figure out how to remove this dep.
 #[derive(Debug, PartialEq)]
 pub enum AST {
-    Program(Vec<Function>),
+    Program(Vec<TopLevel>),
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Function {
-    pub name: String,
-    pub params: Vec<String>,
-    pub instructions: Vec<Instruction>,
+pub enum TopLevel {
+    Function {
+        name: String,
+        params: Vec<String>,
+        global: bool,
+        instructions: Vec<Instruction>,
+    },
+    StaticVariable {
+        identifier: String,
+        global: bool,
+        init: usize,
+    },
 }
 
 #[derive(Debug, PartialEq)]
@@ -121,9 +128,16 @@ impl<'a> Tacky {
         }
     }
 
-    pub fn into_ast(mut self) -> Result<AST, TackyError> {
+    pub fn into_ast(
+        mut self,
+        symbol_table: semantic_analysis::SymbolTable,
+    ) -> Result<AST, TackyError> {
         let parser = std::mem::replace(&mut self.parser, ParserAST::Program(vec![]));
-        self.parse_program(parser)
+        let mut ast = self.parse_program(parser)?;
+        let defs = Self::convert_symbols_to_tacky_defs(symbol_table);
+        let AST::Program(ref mut ins) = ast;
+        ins.extend(defs);
+        Ok(ast)
     }
 
     fn parse_program(&mut self, parser: ParserAST) -> Result<AST, TackyError> {
@@ -131,10 +145,10 @@ impl<'a> Tacky {
         let funcs = decls
             .iter()
             .filter(|decl| {
-                let Declaration::FunDecl(fun) = decl else {
-                    panic!();
-                };
-                fun.block.is_some()
+                match decl {
+                    Declaration::FunDecl(fun) => fun.block.is_some(),
+                    Declaration::VarDecl(_) => false,
+                }
             })
             .map(|decl| {
                 let Declaration::FunDecl(ref fun) = decl else {
@@ -146,21 +160,48 @@ impl<'a> Tacky {
         Ok(AST::Program(funcs))
     }
 
-    fn parse_function(&mut self, function: &FunctionDeclaration) -> Result<Function, TackyError> {
+    fn convert_symbols_to_tacky_defs(
+        symbol_table: semantic_analysis::SymbolTable,
+    ) -> Vec<TopLevel> {
+        use crate::semantic_analysis::{IdentifierAttrs, InitialValue};
+        let mut defs = vec![];
+        for (name, entry) in symbol_table {
+            if let (_, IdentifierAttrs::StaticAttr { init, global }) = entry {
+                match init {
+                    InitialValue::Initial(i) => defs.push(TopLevel::StaticVariable {
+                        identifier: name.clone(),
+                        global,
+                        init: i,
+                    }),
+                    InitialValue::Tentative => defs.push(TopLevel::StaticVariable {
+                        identifier: name.clone(),
+                        global,
+                        init: 0,
+                    }),
+                    _ => {}
+                }
+            }
+        }
+        defs
+    }
+
+    fn parse_function(&mut self, function: &FunctionDeclaration) -> Result<TopLevel, TackyError> {
         let FunctionDeclaration {
             name,
             block,
             params,
-            ..
+            storage_class,
         } = function;
         let Some(block) = block else {
             panic!("Somehow got a None block in parse_function")
         };
         let instructions = self.parse_instructions(block)?;
-        Ok(Function {
+        let global = *storage_class != Some(parser::StorageClass::Static);
+        Ok(TopLevel::Function {
             name: name.into(),
             instructions,
             params: params.clone(),
+            global,
         })
     }
 
@@ -846,6 +887,7 @@ mod tests {
     use crate::parser::Statement;
     use crate::parser::UnaryOp as ParserUnaryOp;
     use crate::parser::AST as ParserAST;
+    use crate::semantic_analysis;
 
     #[test]
     fn basic_parse() {
@@ -858,9 +900,10 @@ mod tests {
             storage_class: None,
         })]);
 
-        let expected = AST::Program(vec![Function {
+        let expected = AST::Program(vec![TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 Instruction::Ret(Val::Constant(100)),
                 Instruction::Ret(Val::Constant(0)),
@@ -868,7 +911,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast();
+        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -885,9 +928,10 @@ mod tests {
             storage_class: None,
         })]);
 
-        let expected = AST::Program(vec![Function {
+        let expected = AST::Program(vec![TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 Instruction::Unary {
                     op: UnaryOp::Negate,
@@ -900,7 +944,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast();
+        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -926,9 +970,10 @@ mod tests {
             storage_class: None,
         })]);
 
-        let expected = AST::Program(vec![Function {
+        let expected = AST::Program(vec![TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 Instruction::Unary {
                     op: UnaryOp::Negate,
@@ -951,7 +996,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast();
+        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -983,9 +1028,10 @@ mod tests {
             params: vec![],
             storage_class: None,
         })]);
-        let expected = AST::Program(vec![Function {
+        let expected = AST::Program(vec![TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 Instruction::Binary {
                     op: BinaryOp::Multiply,
@@ -1017,7 +1063,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast();
+        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1054,9 +1100,10 @@ mod tests {
             storage_class: None,
         })]);
 
-        let expected = AST::Program(vec![Function {
+        let expected = AST::Program(vec![TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 Instruction::Binary {
                     op: BinaryOp::Multiply,
@@ -1094,7 +1141,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast();
+        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1127,9 +1174,10 @@ mod tests {
             storage_class: None,
         })]);
 
-        let expected = AST::Program(vec![Function {
+        let expected = AST::Program(vec![TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 Instruction::Binary {
                     op: BinaryOp::Multiply,
@@ -1161,7 +1209,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast();
+        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1185,9 +1233,10 @@ mod tests {
             params: vec![],
             storage_class: None,
         })]);
-        let expected = AST::Program(vec![Function {
+        let expected = AST::Program(vec![TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 Instruction::Binary {
                     op: BinaryOp::Multiply,
@@ -1207,7 +1256,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast();
+        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1231,9 +1280,10 @@ mod tests {
             params: vec![],
             storage_class: None,
         })]);
-        let expected = AST::Program(vec![Function {
+        let expected = AST::Program(vec![TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 Instruction::Binary {
                     op: BinaryOp::Add,
@@ -1253,7 +1303,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast();
+        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1278,9 +1328,10 @@ mod tests {
             storage_class: None,
         })]);
 
-        let expected = AST::Program(vec![Function {
+        let expected = AST::Program(vec![TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 Instruction::Copy {
                     src: Val::Constant(5),
@@ -1321,7 +1372,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast();
+        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1346,9 +1397,10 @@ mod tests {
             storage_class: None,
         })]);
 
-        let expected = AST::Program(vec![Function {
+        let expected = AST::Program(vec![TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 Instruction::Copy {
                     src: Val::Constant(5),
@@ -1389,7 +1441,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast();
+        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1424,9 +1476,10 @@ mod tests {
             params: vec![],
             storage_class: None,
         })]);
-        let expected = AST::Program(vec![Function {
+        let expected = AST::Program(vec![TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 Instruction::Copy {
                     src: Val::Constant(1),
@@ -1452,7 +1505,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast();
+        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1499,9 +1552,10 @@ mod tests {
             storage_class: None,
         })]);
 
-        let expected = AST::Program(vec![Function {
+        let expected = AST::Program(vec![TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 Instruction::Copy {
                     src: Val::Constant(1),
@@ -1563,7 +1617,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast();
+        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1593,7 +1647,7 @@ mod tests {
             storage_class: None,
         })]);
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast();
+        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
         assert!(assembly.is_err());
     }
 
@@ -1616,15 +1670,16 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let assembly = asm.into_ast();
+        let assembly = asm.into_ast(symbol_table);
         let Ok(actual) = assembly else {
             panic!();
         };
-        let expected = AST::Program(vec![Function {
+        let expected = AST::Program(vec![TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 // first one: if/then
                 Instruction::Copy {
@@ -1677,15 +1732,16 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let assembly = asm.into_ast();
+        let assembly = asm.into_ast(symbol_table);
         let Ok(actual) = assembly else {
             panic!();
         };
-        let expected = AST::Program(vec![Function {
+        let expected = AST::Program(vec![TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 Instruction::Copy {
                     src: Val::Constant(1),
@@ -1729,15 +1785,16 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let assembly = asm.into_ast();
+        let assembly = asm.into_ast(symbol_table);
         let Ok(actual) = assembly else {
             panic!();
         };
-        let expected = AST::Program(vec![Function {
+        let expected = AST::Program(vec![TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 Instruction::Jump("foo.0.label".into()),
                 Instruction::Label("foo.0.label".into()),
@@ -1773,15 +1830,16 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let assembly = asm.into_ast();
+        let assembly = asm.into_ast(symbol_table);
         let Ok(actual) = assembly else {
             panic!();
         };
-        let expected = AST::Program(vec![Function {
+        let expected = AST::Program(vec![TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 Instruction::Copy {
                     src: Val::Constant(1),
@@ -1826,15 +1884,16 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let assembly = asm.into_ast();
+        let assembly = asm.into_ast(symbol_table);
         let Ok(actual) = assembly else {
             panic!();
         };
-        let expected = AST::Program(vec![Function {
+        let expected = AST::Program(vec![TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 /* handle initializer, write out for loop label,
                  * check condition, JumpIfZero, write out body, write out continue label,
@@ -1925,16 +1984,16 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let assembly = asm.into_ast();
+        let assembly = asm.into_ast(symbol_table);
         let Ok(actual) = assembly else {
             panic!();
         };
-        let expected = AST::Program(vec![Function {
+        let expected = AST::Program(vec![TopLevel::Function {
             name: "main".into(),
             params: vec![],
-
+            global: true,
             instructions: vec![
                 /* handle initializer, write out for loop label,
                  * check condition, JumpIfZero, write out body, write out continue label,
@@ -1996,16 +2055,17 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let assembly = asm.into_ast();
+        let assembly = asm.into_ast(symbol_table);
         let Ok(actual) = assembly else {
             panic!();
         };
         let expected = AST::Program(vec![
-            Function {
+            TopLevel::Function {
                 name: "foo".into(),
                 params: vec!["x.1.decl".into(), "y.2.decl".into()],
+                global: true,
                 instructions: vec![
                     Instruction::Binary {
                         op: BinaryOp::Add,
@@ -2017,9 +2077,10 @@ mod tests {
                     Instruction::Ret(Val::Constant(0)),
                 ],
             },
-            Function {
+            TopLevel::Function {
                 name: "main".into(),
                 params: vec![],
+                global: true,
                 instructions: vec![
                     Instruction::FunCall {
                         name: "foo".into(),
@@ -2038,5 +2099,59 @@ mod tests {
             },
         ]);
         assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn static_variable() {
+        let src = r#"
+            static int x = 5;
+            int main(void) {
+                return x;
+            }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = crate::parser::Parser::new(&tokens);
+        let mut ast = parse.into_ast().unwrap();
+        let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let asm = Tacky::new(ast);
+        let actual = asm.into_ast(symbol_table).unwrap();
+
+        let AST::Program(top_levels) = actual;
+        let mut iter = top_levels.into_iter();
+
+        // First: main function with global: true
+        let main_fn = iter.next().unwrap();
+        assert!(matches!(main_fn, TopLevel::Function { ref name, global: true, .. } if name == "main"));
+
+        // Second: static variable x with global: false, init: 5
+        let static_var = iter.next().unwrap();
+        assert!(matches!(static_var, TopLevel::StaticVariable { ref identifier, global: false, init: 5 } if identifier == "x"));
+    }
+
+    #[test]
+    fn static_function() {
+        let src = r#"
+            static int foo(void) { return 1; }
+            int main(void) { return foo(); }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = crate::parser::Parser::new(&tokens);
+        let mut ast = parse.into_ast().unwrap();
+        let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let asm = Tacky::new(ast);
+        let actual = asm.into_ast(symbol_table).unwrap();
+
+        let AST::Program(top_levels) = actual;
+        let mut iter = top_levels.into_iter();
+
+        // First: foo with global: false (static function)
+        let foo_fn = iter.next().unwrap();
+        assert!(matches!(foo_fn, TopLevel::Function { ref name, global: false, .. } if name == "foo"));
+
+        // Second: main with global: true
+        let main_fn = iter.next().unwrap();
+        assert!(matches!(main_fn, TopLevel::Function { ref name, global: true, .. } if name == "main"));
     }
 }

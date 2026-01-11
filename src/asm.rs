@@ -114,12 +114,16 @@ impl Asm {
         }
     }
 
-    fn parse_function(func: &tacky::Function) -> Function {
-        let tacky::Function {
+    fn parse_function(func: &tacky::TopLevel) -> Function {
+        let tacky::TopLevel::Function {
             name,
             instructions,
             params,
-        } = func;
+            ..
+        } = func
+        else {
+            panic!("Expected TopLevel::Function in parse_function")
+        };
         let mut base_insns = vec![];
         // we move the first 6 params to their respective registers, and
         // the rest to stack offsets starting at -16 and decrementing by 8
@@ -519,9 +523,10 @@ mod tests {
     use crate::tacky::UnaryOp as TUOp;
     #[test]
     fn basic_parse() {
-        let ast = tacky::AST::Program(vec![tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![tacky::Instruction::Ret(tacky::Val::Constant(100))],
         }]);
 
@@ -540,9 +545,10 @@ mod tests {
 
     #[test]
     fn parse_with_pseudos() {
-        let ast = tacky::AST::Program(vec![tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 tacky::Instruction::Unary {
                     op: tacky::UnaryOp::Negate,
@@ -570,9 +576,10 @@ mod tests {
 
     #[test]
     fn parse_nested_unaries() {
-        let ast = tacky::AST::Program(vec![tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 tacky::Instruction::Unary {
                     op: tacky::UnaryOp::Negate,
@@ -616,9 +623,10 @@ mod tests {
 
     #[test]
     fn generate_binary_expressions() {
-        let ast = tacky::AST::Program(vec![tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Multiply,
@@ -681,9 +689,10 @@ mod tests {
 
     #[test]
     fn complex_binary_expressions() {
-        let ast = tacky::AST::Program(vec![tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Multiply,
@@ -763,9 +772,10 @@ mod tests {
 
     #[test]
     fn simple_bitwise() {
-        let ast = tacky::AST::Program(vec![tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Multiply,
@@ -830,9 +840,10 @@ mod tests {
 
     #[test]
     fn shiftleft() {
-        let ast = tacky::AST::Program(vec![tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Multiply,
@@ -875,9 +886,10 @@ mod tests {
 
     #[test]
     fn shiftright_lhs_is_negative() {
-        let ast = tacky::AST::Program(vec![tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 tacky::Instruction::Unary {
                     op: tacky::UnaryOp::Negate,
@@ -919,9 +931,10 @@ mod tests {
 
     #[test]
     fn shiftleft_rhs_is_expr() {
-        let ast = tacky::AST::Program(vec![tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Add,
@@ -964,9 +977,10 @@ mod tests {
 
     #[test]
     fn unary_not() {
-        let ast = tacky::AST::Program(vec![tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 tacky::Instruction::Unary {
                     op: TUOp::Not,
@@ -999,9 +1013,10 @@ mod tests {
 
     #[test]
     fn binary_greater_or_equal() {
-        let ast = tacky::AST::Program(vec![tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::GreaterOrEqual,
@@ -1029,9 +1044,10 @@ mod tests {
 
     #[test]
     fn jump_if_zero() {
-        let ast = tacky::AST::Program(vec![tacky::Function {
+        let ast = tacky::AST::Program(vec![tacky::TopLevel::Function {
             name: "main".into(),
             params: vec![],
+            global: true,
             instructions: vec![
                 tacky::Instruction::Copy {
                     src: tacky::Val::Constant(5),
@@ -1114,9 +1130,9 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let tacky = crate::tacky::Tacky::new(ast);
-        let tacky = tacky.into_ast();
+        let tacky = tacky.into_ast(symbol_table);
         let Ok(ast) = tacky else {
             panic!();
         };

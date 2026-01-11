@@ -127,13 +127,13 @@ fn process_file(input: PathBuf, stage: ProcessingStage) -> anyhow::Result<Option
         return Ok(None);
     };
 
-    semantic_analysis::resolve(&mut ast)?;
+    let symbol_table = semantic_analysis::resolve(&mut ast)?;
     if stage == ProcessingStage::Validate {
         return Ok(None);
     };
 
     let asm = Tacky::new(ast);
-    let ast = asm.into_ast()?;
+    let ast = asm.into_ast(symbol_table)?;
     if stage == ProcessingStage::Tacky {
         return Ok(None);
     }

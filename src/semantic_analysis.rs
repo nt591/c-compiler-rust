@@ -180,37 +180,37 @@ impl Resolver {
 
 /* BEGIN Symbol Table types for typechecking */
 #[derive(PartialEq, Debug)]
-enum CType {
+pub enum CType {
     Int,
     FunType(usize), // param_count
 }
 
 #[derive(PartialEq, Debug)]
-enum InitialValue {
+pub enum InitialValue {
     Tentative,
     Initial(usize), // for our Int CType
     NoInitializer,  // extern variable declarations are not tentative
 }
 
 #[derive(Debug, PartialEq)]
-enum IdentifierAttrs {
+pub enum IdentifierAttrs {
     FunAttr { defined: bool, global: bool },
     StaticAttr { init: InitialValue, global: bool },
     LocalAttr,
 }
 
 // TODO: harden types so CType::FunType ONLY goes with IdentifierAttrs::FunAttr
-type SymbolTable = HashMap<String, (CType, IdentifierAttrs)>;
+pub type SymbolTable = HashMap<String, (CType, IdentifierAttrs)>;
 /* END: Symbol Table types for typechecking */
 
-pub fn resolve(ast: &mut AST) -> Result<(), SemanticAnalysisError> {
+pub fn resolve(ast: &mut AST) -> Result<SymbolTable, SemanticAnalysisError> {
     let mut resolver = Resolver::new();
     resolve_ast(ast, &mut resolver)?;
     label_and_validate_loop_constructs(ast, &mut resolver)?;
     validate_labels(&resolver)?;
     let mut table = SymbolTable::new();
     typecheck_ast(ast, &mut table)?;
-    Ok(())
+    Ok(table)
 }
 
 fn typecheck_ast(ast: &AST, symbol_table: &mut SymbolTable) -> Result<(), SemanticAnalysisError> {
@@ -237,7 +237,11 @@ fn typecheck_function_declaration(
     let mut already_defined = false;
     let mut global = decl.storage_class != Some(StorageClass::Static);
     if let Some((old_ctype, attrs)) = symbol_table.get(&decl.name) {
-        let IdentifierAttrs::FunAttr { defined, global: old_global } = attrs else {
+        let IdentifierAttrs::FunAttr {
+            defined,
+            global: old_global,
+        } = attrs
+        else {
             panic!("Somehow fetched attrs that are not FunType when querying symbol for typechecking function declaration");
         };
         let defined = match old_ctype {
