@@ -130,7 +130,7 @@ impl<'a> Tacky {
 
     pub fn into_ast(
         mut self,
-        symbol_table: semantic_analysis::SymbolTable,
+        symbol_table: &semantic_analysis::SymbolTable,
     ) -> Result<AST, TackyError> {
         let parser = std::mem::replace(&mut self.parser, ParserAST::Program(vec![]));
         let mut ast = self.parse_program(parser)?;
@@ -144,11 +144,9 @@ impl<'a> Tacky {
         let ParserAST::Program(decls) = parser;
         let funcs = decls
             .iter()
-            .filter(|decl| {
-                match decl {
-                    Declaration::FunDecl(fun) => fun.block.is_some(),
-                    Declaration::VarDecl(_) => false,
-                }
+            .filter(|decl| match decl {
+                Declaration::FunDecl(fun) => fun.block.is_some(),
+                Declaration::VarDecl(_) => false,
             })
             .map(|decl| {
                 let Declaration::FunDecl(ref fun) = decl else {
@@ -161,7 +159,7 @@ impl<'a> Tacky {
     }
 
     fn convert_symbols_to_tacky_defs(
-        symbol_table: semantic_analysis::SymbolTable,
+        symbol_table: &semantic_analysis::SymbolTable,
     ) -> Vec<TopLevel> {
         use crate::semantic_analysis::{IdentifierAttrs, InitialValue};
         let mut defs = vec![];
@@ -170,12 +168,12 @@ impl<'a> Tacky {
                 match init {
                     InitialValue::Initial(i) => defs.push(TopLevel::StaticVariable {
                         identifier: name.clone(),
-                        global,
-                        init: i,
+                        global: *global,
+                        init: *i,
                     }),
                     InitialValue::Tentative => defs.push(TopLevel::StaticVariable {
                         identifier: name.clone(),
-                        global,
+                        global: *global,
                         init: 0,
                     }),
                     _ => {}
@@ -911,7 +909,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -944,7 +942,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -996,7 +994,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1063,7 +1061,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1141,7 +1139,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1209,7 +1207,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1256,7 +1254,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1303,7 +1301,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1372,7 +1370,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1441,7 +1439,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1505,7 +1503,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1617,7 +1615,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1647,7 +1645,7 @@ mod tests {
             storage_class: None,
         })]);
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
         assert!(assembly.is_err());
     }
 
@@ -1672,7 +1670,7 @@ mod tests {
         let mut ast = parse.into_ast().unwrap();
         let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let assembly = asm.into_ast(symbol_table);
+        let assembly = asm.into_ast(&symbol_table);
         let Ok(actual) = assembly else {
             panic!();
         };
@@ -1734,7 +1732,7 @@ mod tests {
         let mut ast = parse.into_ast().unwrap();
         let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let assembly = asm.into_ast(symbol_table);
+        let assembly = asm.into_ast(&symbol_table);
         let Ok(actual) = assembly else {
             panic!();
         };
@@ -1787,7 +1785,7 @@ mod tests {
         let mut ast = parse.into_ast().unwrap();
         let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let assembly = asm.into_ast(symbol_table);
+        let assembly = asm.into_ast(&symbol_table);
         let Ok(actual) = assembly else {
             panic!();
         };
@@ -1832,7 +1830,7 @@ mod tests {
         let mut ast = parse.into_ast().unwrap();
         let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let assembly = asm.into_ast(symbol_table);
+        let assembly = asm.into_ast(&symbol_table);
         let Ok(actual) = assembly else {
             panic!();
         };
@@ -1886,7 +1884,7 @@ mod tests {
         let mut ast = parse.into_ast().unwrap();
         let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let assembly = asm.into_ast(symbol_table);
+        let assembly = asm.into_ast(&symbol_table);
         let Ok(actual) = assembly else {
             panic!();
         };
@@ -1986,7 +1984,7 @@ mod tests {
         let mut ast = parse.into_ast().unwrap();
         let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let assembly = asm.into_ast(symbol_table);
+        let assembly = asm.into_ast(&symbol_table);
         let Ok(actual) = assembly else {
             panic!();
         };
@@ -2057,7 +2055,7 @@ mod tests {
         let mut ast = parse.into_ast().unwrap();
         let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let assembly = asm.into_ast(symbol_table);
+        let assembly = asm.into_ast(&symbol_table);
         let Ok(actual) = assembly else {
             panic!();
         };
@@ -2115,18 +2113,22 @@ mod tests {
         let mut ast = parse.into_ast().unwrap();
         let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let actual = asm.into_ast(symbol_table).unwrap();
+        let actual = asm.into_ast(&symbol_table).unwrap();
 
         let AST::Program(top_levels) = actual;
         let mut iter = top_levels.into_iter();
 
         // First: main function with global: true
         let main_fn = iter.next().unwrap();
-        assert!(matches!(main_fn, TopLevel::Function { ref name, global: true, .. } if name == "main"));
+        assert!(
+            matches!(main_fn, TopLevel::Function { ref name, global: true, .. } if name == "main")
+        );
 
         // Second: static variable x with global: false, init: 5
         let static_var = iter.next().unwrap();
-        assert!(matches!(static_var, TopLevel::StaticVariable { ref identifier, global: false, init: 5 } if identifier == "x"));
+        assert!(
+            matches!(static_var, TopLevel::StaticVariable { ref identifier, global: false, init: 5 } if identifier == "x")
+        );
     }
 
     #[test]
@@ -2141,17 +2143,21 @@ mod tests {
         let mut ast = parse.into_ast().unwrap();
         let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let actual = asm.into_ast(symbol_table).unwrap();
+        let actual = asm.into_ast(&symbol_table).unwrap();
 
         let AST::Program(top_levels) = actual;
         let mut iter = top_levels.into_iter();
 
         // First: foo with global: false (static function)
         let foo_fn = iter.next().unwrap();
-        assert!(matches!(foo_fn, TopLevel::Function { ref name, global: false, .. } if name == "foo"));
+        assert!(
+            matches!(foo_fn, TopLevel::Function { ref name, global: false, .. } if name == "foo")
+        );
 
         // Second: main with global: true
         let main_fn = iter.next().unwrap();
-        assert!(matches!(main_fn, TopLevel::Function { ref name, global: true, .. } if name == "main"));
+        assert!(
+            matches!(main_fn, TopLevel::Function { ref name, global: true, .. } if name == "main")
+        );
     }
 }

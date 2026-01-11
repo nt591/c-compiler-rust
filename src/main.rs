@@ -132,12 +132,12 @@ fn process_file(input: PathBuf, stage: ProcessingStage) -> anyhow::Result<Option
         return Ok(None);
     };
 
-    let asm = Tacky::new(ast);
-    let ast = asm.into_ast(symbol_table)?;
+    let tacky = Tacky::new(ast);
+    let tacky_ast = tacky.into_ast(&symbol_table)?;
     if stage == ProcessingStage::Tacky {
         return Ok(None);
     }
-    let asm = Asm::from_tacky(ast);
+    let asm = Asm::from_tacky(tacky_ast, &symbol_table);
     if stage == ProcessingStage::Codegen {
         return Ok(None);
     };

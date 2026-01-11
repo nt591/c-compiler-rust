@@ -27,7 +27,9 @@ impl Emitter {
     fn emit_code<W: Write>(asm: &Asm, output: &mut W) -> std::io::Result<()> {
         let Asm::Program(funcs) = asm;
         for func in funcs {
-            Self::emit_function(func, output)?;
+            if let asm::TopLevel::Func(func) = func {
+                Self::emit_function(func, output)?;
+            }
         }
         Ok(())
     }
@@ -37,7 +39,9 @@ impl Emitter {
     }
 
     fn emit_function<W: Write>(func: &asm::Function, output: &mut W) -> std::io::Result<()> {
-        let asm::Function { name, instructions } = func;
+        let asm::Function {
+            name, instructions, ..
+        } = func;
         writeln!(output, "  .globl _{}", name)?;
         writeln!(output, "_{}:", name)?;
         Self::emit_comment("FUNCTION PROLOGUE", output)?;
@@ -283,13 +287,14 @@ mod tests {
 
     #[test]
     fn basic_emit() {
-        let ast = Asm::Program(vec![asm::Function {
+        let ast = Asm::Program(vec![asm::TopLevel::Func(asm::Function {
             name: "main".into(),
+            global: true,
             instructions: vec![
                 asm::Instruction::Mov(asm::Operand::Imm(100), asm::Operand::Reg(asm::Register::AX)),
                 asm::Instruction::Ret,
             ],
-        }]);
+        })]);
 
         let expected = r#"  .globl _main
 _main:
@@ -314,8 +319,9 @@ _main:
 
     #[test]
     fn complex_emit() {
-        let ast = asm::Asm::Program(vec![asm::Function {
+        let ast = asm::Asm::Program(vec![asm::TopLevel::Func(asm::Function {
             name: "main".into(),
+            global: true,
             instructions: vec![
                 asm::Instruction::AllocateStack(12),
                 asm::Instruction::Mov(asm::Operand::Imm(100), asm::Operand::Stack(-4)),
@@ -344,7 +350,7 @@ _main:
                 ),
                 asm::Instruction::Ret,
             ],
-        }]);
+        })]);
         let expected = r#"  .globl _main
 _main:
                        # FUNCTION PROLOGUE
@@ -375,8 +381,9 @@ _main:
 
     #[test]
     fn binary_operators() {
-        let ast = asm::Asm::Program(vec![asm::Function {
+        let ast = asm::Asm::Program(vec![asm::TopLevel::Func(asm::Function {
             name: "main".into(),
+            global: true,
             instructions: vec![
                 asm::Instruction::AllocateStack(16),
                 // tmp0 = 1 * 2
@@ -427,7 +434,7 @@ _main:
                 ),
                 asm::Instruction::Ret,
             ],
-        }]);
+        })]);
 
         let expected = r#"  .globl _main
 _main:
@@ -465,8 +472,9 @@ _main:
 
     #[test]
     fn simple_bitwise() {
-        let ast = asm::Asm::Program(vec![asm::Function {
+        let ast = asm::Asm::Program(vec![asm::TopLevel::Func(asm::Function {
             name: "main".into(),
+            global: true,
             instructions: vec![
                 asm::Instruction::AllocateStack(16),
                 // tmp0 = 5 * 4
@@ -530,7 +538,7 @@ _main:
                 ),
                 asm::Instruction::Ret,
             ],
-        }]);
+        })]);
 
         let expected = r#"  .globl _main
 _main:
@@ -567,8 +575,9 @@ _main:
 
     #[test]
     fn shiftleft() {
-        let ast = asm::Asm::Program(vec![asm::Function {
+        let ast = asm::Asm::Program(vec![asm::TopLevel::Func(asm::Function {
             name: "main".into(),
+            global: true,
             instructions: vec![
                 asm::Instruction::AllocateStack(8),
                 // tmp0 = 5 * 4
@@ -608,7 +617,7 @@ _main:
                 ),
                 asm::Instruction::Ret,
             ],
-        }]);
+        })]);
         let expected = r#"  .globl _main
 _main:
                        # FUNCTION PROLOGUE
@@ -638,7 +647,7 @@ _main:
 
     #[test]
     fn jump_cond() {
-        let ast = Asm::Program(vec![Function {
+        let ast = Asm::Program(vec![TopLevel::Func(Function {
             name: "main".into(),
             instructions: vec![
                 Instruction::AllocateStack(16),
@@ -659,7 +668,8 @@ _main:
                 Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        }]);
+            global: true,
+        })]);
         let expected = r#"  .globl _main
 _main:
                        # FUNCTION PROLOGUE

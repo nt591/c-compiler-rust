@@ -1,19 +1,29 @@
 // Responsible for taking a TACKY AST
 // and converting to an assembly AST
+use crate::semantic_analysis;
 use crate::tacky;
 use std::collections::HashMap;
 
-// Lifetime of source test, since we need
-// names. TODO: Figure out how to remove this dep.
 #[derive(Debug, PartialEq)]
 pub enum Asm {
-    Program(Vec<Function>),
+    Program(Vec<TopLevel>),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum TopLevel {
+    Func(Function),
+    StaticVariable {
+        identifier: String,
+        global: bool,
+        init: usize,
+    },
 }
 
 #[derive(Debug, PartialEq)]
 pub struct Function {
     pub name: String,
     pub instructions: Vec<Instruction>,
+    pub global: bool,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -73,6 +83,7 @@ pub enum Operand {
     Reg(Register),
     Pseudo(String),
     Stack(i32),
+    Data(String), // RIP-relative access to .data and .bss
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -95,31 +106,52 @@ struct AsmGenerator {
 }
 
 impl Asm {
-    pub fn from_tacky(tacky: tacky::AST) -> Asm {
+    pub fn from_tacky(tacky: tacky::AST, symbol_table: &semantic_analysis::SymbolTable) -> Asm {
         let mut asm = Self::parse_program(&tacky);
         let mut generator = AsmGenerator::default();
-        Self::fixup(&mut asm, &mut generator);
+        Self::fixup(&mut asm, &mut generator, symbol_table);
         asm
     }
 
     fn parse_program(tacky: &tacky::AST) -> Asm {
         match tacky {
-            tacky::AST::Program(funcs) => {
-                let funcs = funcs
+            tacky::AST::Program(ins) => {
+                let ins = ins
                     .into_iter()
-                    .map(|func| Self::parse_function(func))
+                    .map(|instruct| match instruct {
+                        func @ tacky::TopLevel::Function { .. } => Self::parse_function(func),
+                        sv @ tacky::TopLevel::StaticVariable { .. } => {
+                            Self::parse_static_variable(sv)
+                        }
+                    })
                     .collect::<Vec<_>>();
-                Asm::Program(funcs)
+                Asm::Program(ins)
             }
         }
     }
 
-    fn parse_function(func: &tacky::TopLevel) -> Function {
+    fn parse_static_variable(sv: &tacky::TopLevel) -> TopLevel {
+        let tacky::TopLevel::StaticVariable {
+            identifier,
+            global,
+            init,
+        } = sv
+        else {
+            panic!();
+        };
+        TopLevel::StaticVariable {
+            identifier: identifier.clone(),
+            global: *global,
+            init: *init,
+        }
+    }
+
+    fn parse_function(func: &tacky::TopLevel) -> TopLevel {
         let tacky::TopLevel::Function {
             name,
             instructions,
             params,
-            ..
+            global,
         } = func
         else {
             panic!("Expected TopLevel::Function in parse_function")
@@ -158,10 +190,11 @@ impl Asm {
 
         let instructions = Self::parse_instructions(&instructions);
         base_insns.extend(instructions);
-        Function {
+        TopLevel::Func(Function {
             name: name.into(),
             instructions: base_insns,
-        }
+            global: *global,
+        })
     }
 
     fn parse_instructions(ins: &[tacky::Instruction]) -> Vec<Instruction> {
@@ -359,65 +392,90 @@ impl Asm {
         ]
     }
 
-    fn fixup(asm: &mut Asm, gen: &mut AsmGenerator) {
+    fn fixup(asm: &mut Asm, gen: &mut AsmGenerator, symbol_table: &semantic_analysis::SymbolTable) {
         match asm {
             Asm::Program(ref mut funcs) => {
                 for func in funcs {
-                    Self::fixup_function(func, gen);
+                    if let TopLevel::Func(func) = func {
+                        Self::fixup_function(func, gen, symbol_table);
+                    }
                 }
             }
         };
     }
-    fn fixup_function(func: &mut Function, gen: &mut AsmGenerator) {
+    fn fixup_function(
+        func: &mut Function,
+        gen: &mut AsmGenerator,
+        symbol_table: &semantic_analysis::SymbolTable,
+    ) {
         let Function {
             name: _name,
             ref mut instructions,
+            ..
         } = func;
         gen.stack_offset = 0; // reset for each function call
-        Self::fixup_pseudos_in_instructions(instructions, gen);
+        Self::fixup_pseudos_in_instructions(instructions, gen, symbol_table);
         Self::insert_alloc_stack_func(func, gen);
         Self::fixup_invalid_memory_accesses(func);
     }
 
-    fn fixup_pseudos_in_instructions(ins: &mut [Instruction], gen: &mut AsmGenerator) {
+    fn fixup_pseudos_in_instructions(
+        ins: &mut [Instruction],
+        gen: &mut AsmGenerator,
+        symbol_table: &semantic_analysis::SymbolTable,
+    ) {
         ins.iter_mut().for_each(|instruction| match instruction {
             Instruction::Mov(src, dst) => {
-                *src = Self::replace_pseudo_in_op(src, gen);
-                *dst = Self::replace_pseudo_in_op(dst, gen);
+                *src = Self::replace_pseudo_in_op(src, gen, symbol_table);
+                *dst = Self::replace_pseudo_in_op(dst, gen, symbol_table);
             }
             Instruction::Unary(_op, dst) => {
-                *dst = Self::replace_pseudo_in_op(dst, gen);
+                *dst = Self::replace_pseudo_in_op(dst, gen, symbol_table);
             }
             Instruction::Binary(_op, src1, src2) => {
-                *src1 = Self::replace_pseudo_in_op(src1, gen);
-                *src2 = Self::replace_pseudo_in_op(src2, gen);
+                *src1 = Self::replace_pseudo_in_op(src1, gen, symbol_table);
+                *src2 = Self::replace_pseudo_in_op(src2, gen, symbol_table);
             }
             Instruction::Idiv(src) => {
-                *src = Self::replace_pseudo_in_op(src, gen);
+                *src = Self::replace_pseudo_in_op(src, gen, symbol_table);
             }
             Instruction::Cmp(src, dst) => {
-                *src = Self::replace_pseudo_in_op(src, gen);
-                *dst = Self::replace_pseudo_in_op(dst, gen);
+                *src = Self::replace_pseudo_in_op(src, gen, symbol_table);
+                *dst = Self::replace_pseudo_in_op(dst, gen, symbol_table);
             }
             Instruction::SetCC(_cc, dst) => {
-                *dst = Self::replace_pseudo_in_op(dst, gen);
+                *dst = Self::replace_pseudo_in_op(dst, gen, symbol_table);
             }
-            Instruction::Push(op) => *op = Self::replace_pseudo_in_op(op, gen),
+            Instruction::Push(op) => *op = Self::replace_pseudo_in_op(op, gen, symbol_table),
             _ => {}
         })
     }
 
-    fn replace_pseudo_in_op(op: &Operand, gen: &mut AsmGenerator) -> Operand {
+    fn replace_pseudo_in_op(
+        op: &Operand,
+        gen: &mut AsmGenerator,
+        symbol_table: &semantic_analysis::SymbolTable,
+    ) -> Operand {
         match op {
-            Operand::Pseudo(var) => gen
-                .identifiers
-                .entry(var.clone())
-                .or_insert_with(|| {
-                    let next_offset = gen.stack_offset - 4;
-                    gen.stack_offset = next_offset;
-                    Operand::Stack(next_offset)
-                })
-                .clone(),
+            Operand::Pseudo(var) => {
+                // if the pseudo has static linkage, we use a Data operand. Otherwise, fixup with a
+                // stack location.
+                if let Some((_ctype, attr)) = symbol_table.get(var) {
+                    // how could it be missing?
+                    if let semantic_analysis::IdentifierAttrs::StaticAttr { .. } = attr {
+                        return Operand::Data(var.clone());
+                    }
+                };
+
+                gen.identifiers
+                    .entry(var.clone())
+                    .or_insert_with(|| {
+                        let next_offset = gen.stack_offset - 4;
+                        gen.stack_offset = next_offset;
+                        Operand::Stack(next_offset)
+                    })
+                    .clone()
+            }
             o => o.clone(), //no transformation otherwise
         }
     }
@@ -440,7 +498,10 @@ impl Asm {
         let mut v = Vec::with_capacity(old_ins.len());
         for ins in old_ins.into_iter() {
             match ins {
-                Instruction::Mov(src @ Operand::Stack(_), dst @ Operand::Stack(_)) => {
+                Instruction::Mov(src @ Operand::Stack(_), dst @ Operand::Stack(_))
+                | Instruction::Mov(src @ Operand::Data(_), dst @ Operand::Data(_))
+                | Instruction::Mov(src @ Operand::Stack(_), dst @ Operand::Data(_))
+                | Instruction::Mov(src @ Operand::Data(_), dst @ Operand::Stack(_)) => {
                     // movl can't move from two memory addrs, so
                     // use a temporary variable along the way in %r10d
                     v.push(Instruction::Mov(src, Operand::Reg(Register::R10)));
@@ -519,6 +580,7 @@ impl Asm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::semantic_analysis;
     use crate::tacky;
     use crate::tacky::UnaryOp as TUOp;
     #[test]
@@ -530,16 +592,17 @@ mod tests {
             instructions: vec![tacky::Instruction::Ret(tacky::Val::Constant(100))],
         }]);
 
-        let expected = Asm::Program(vec![Function {
+        let expected = Asm::Program(vec![TopLevel::Func(Function {
             name: "main".into(),
+            global: true,
             instructions: vec![
                 Instruction::AllocateStack(0),
                 Instruction::Mov(Operand::Imm(100), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        }]);
+        })]);
 
-        let assembly = Asm::from_tacky(ast);
+        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
         assert_eq!(assembly, expected);
     }
 
@@ -559,8 +622,9 @@ mod tests {
             ],
         }]);
 
-        let expected = Asm::Program(vec![Function {
+        let expected = Asm::Program(vec![TopLevel::Func(Function {
             name: "main".into(),
+            global: true,
             instructions: vec![
                 Instruction::AllocateStack(16),
                 Instruction::Mov(Operand::Imm(100), Operand::Stack(-4)),
@@ -568,9 +632,9 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        }]);
+        })]);
 
-        let assembly = Asm::from_tacky(ast);
+        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
         assert_eq!(assembly, expected);
     }
 
@@ -600,8 +664,9 @@ mod tests {
             ],
         }]);
 
-        let expected = Asm::Program(vec![Function {
+        let expected = Asm::Program(vec![TopLevel::Func(Function {
             name: "main".into(),
+            global: true,
             instructions: vec![
                 Instruction::AllocateStack(16),
                 Instruction::Mov(Operand::Imm(100), Operand::Stack(-4)),
@@ -615,9 +680,9 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-12), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        }]);
+        })]);
 
-        let assembly = Asm::from_tacky(ast);
+        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
         assert_eq!(assembly, expected);
     }
 
@@ -655,8 +720,9 @@ mod tests {
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.3".into())),
             ],
         }]);
-        let expected = Asm::Program(vec![Function {
+        let expected = Asm::Program(vec![TopLevel::Func(Function {
             name: "main".into(),
+            global: true,
             instructions: vec![
                 Instruction::AllocateStack(16),
                 // tmp0 = 1 * 2
@@ -681,9 +747,9 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        }]);
+        })]);
 
-        let assembly = Asm::from_tacky(ast);
+        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
         assert_eq!(assembly, expected);
     }
 
@@ -728,8 +794,9 @@ mod tests {
             ],
         }]);
 
-        let expected = Asm::Program(vec![Function {
+        let expected = Asm::Program(vec![TopLevel::Func(Function {
             name: "main".into(),
+            global: true,
             instructions: vec![
                 Instruction::AllocateStack(32),
                 // tmp0 = 5 * 4 = 20
@@ -764,9 +831,9 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-20), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        }]);
+        })]);
 
-        let assembly = Asm::from_tacky(ast);
+        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
         assert_eq!(assembly, expected);
     }
 
@@ -804,8 +871,9 @@ mod tests {
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.3".into())),
             ],
         }]);
-        let expected = Asm::Program(vec![Function {
+        let expected = Asm::Program(vec![TopLevel::Func(Function {
             name: "main".into(),
+            global: true,
             instructions: vec![
                 Instruction::AllocateStack(16),
                 // tmp0 = 5 * 4
@@ -833,8 +901,8 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        }]);
-        let assembly = Asm::from_tacky(ast);
+        })]);
+        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
         assert_eq!(assembly, expected);
     }
 
@@ -861,8 +929,9 @@ mod tests {
             ],
         }]);
 
-        let expected = Asm::Program(vec![Function {
+        let expected = Asm::Program(vec![TopLevel::Func(Function {
             name: "main".into(),
+            global: true,
             instructions: vec![
                 Instruction::AllocateStack(16),
                 // tmp0 = 5 * 4
@@ -879,8 +948,8 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        }]);
-        let assembly = Asm::from_tacky(ast);
+        })]);
+        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
         assert_eq!(assembly, expected);
     }
 
@@ -905,8 +974,9 @@ mod tests {
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.1".into())),
             ],
         }]);
-        let expected = Asm::Program(vec![Function {
+        let expected = Asm::Program(vec![TopLevel::Func(Function {
             name: "main".into(),
+            global: true,
             instructions: vec![
                 Instruction::AllocateStack(16),
                 // tmp0 = -5
@@ -924,8 +994,8 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        }]);
-        let assembly = Asm::from_tacky(ast);
+        })]);
+        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
         assert_eq!(assembly, expected);
     }
 
@@ -951,8 +1021,9 @@ mod tests {
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.1".into())),
             ],
         }]);
-        let expected = Asm::Program(vec![Function {
+        let expected = Asm::Program(vec![TopLevel::Func(Function {
             name: "main".into(),
+            global: true,
             instructions: vec![
                 Instruction::AllocateStack(16),
                 // tmp0 = 1 + 2
@@ -970,8 +1041,8 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        }]);
-        let assembly = Asm::from_tacky(ast);
+        })]);
+        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
         assert_eq!(assembly, expected);
     }
 
@@ -990,8 +1061,9 @@ mod tests {
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.0".into())),
             ],
         }]);
-        let expected = Asm::Program(vec![Function {
+        let expected = Asm::Program(vec![TopLevel::Func(Function {
             name: "main".into(),
+            global: true,
             // move 1 into register 11,
             // then check if 1 == 0
             // clear out the next address, then check if cmp set ZF
@@ -1006,8 +1078,8 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        }]);
-        let assembly = Asm::from_tacky(ast);
+        })]);
+        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
         assert_eq!(assembly, expected);
     }
 
@@ -1027,8 +1099,9 @@ mod tests {
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.1".into())),
             ],
         }]);
-        let expected = Asm::Program(vec![Function {
+        let expected = Asm::Program(vec![TopLevel::Func(Function {
             name: "main".into(),
+            global: true,
             instructions: vec![
                 Instruction::AllocateStack(16),
                 Instruction::Cmp(Operand::Imm(2), Operand::Stack(-4)),
@@ -1037,8 +1110,8 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        }]);
-        let assembly = Asm::from_tacky(ast);
+        })]);
+        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
         assert_eq!(assembly, expected);
     }
 
@@ -1086,8 +1159,9 @@ mod tests {
             ],
         }]);
 
-        let expected = Asm::Program(vec![Function {
+        let expected = Asm::Program(vec![TopLevel::Func(Function {
             name: "main".into(),
+            global: true,
             instructions: vec![
                 Instruction::AllocateStack(16),
                 Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),
@@ -1107,8 +1181,8 @@ mod tests {
                 Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
-        }]);
-        let assembly = Asm::from_tacky(ast);
+        })]);
+        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
         assert_eq!(assembly, expected);
     }
 
@@ -1132,14 +1206,15 @@ mod tests {
         let mut ast = parse.into_ast().unwrap();
         let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let tacky = crate::tacky::Tacky::new(ast);
-        let tacky = tacky.into_ast(symbol_table);
-        let Ok(ast) = tacky else {
+        let tacky = tacky.into_ast(&symbol_table);
+        let Ok(tacky_ast) = tacky else {
             panic!();
         };
-        let actual = Asm::from_tacky(ast);
+        let actual = Asm::from_tacky(tacky_ast, &symbol_table);
         let expected = Asm::Program(vec![
-            Function {
+            TopLevel::Func(Function {
                 name: "foo".into(),
+                global: true,
                 instructions: vec![
                     Instruction::AllocateStack(16),
                     Instruction::Mov(Operand::Reg(Register::DI), Operand::Stack(-4)),
@@ -1157,9 +1232,10 @@ mod tests {
                     Instruction::Mov(Operand::Imm(0), Operand::Reg(Register::AX)),
                     Instruction::Ret,
                 ],
-            },
-            Function {
+            }),
+            TopLevel::Func(Function {
                 name: "main".into(),
+                global: true,
                 instructions: vec![
                     Instruction::AllocateStack(16),
                     Instruction::Mov(Operand::Imm(1), Operand::Reg(Register::DI)),
@@ -1174,9 +1250,10 @@ mod tests {
                     Instruction::Mov(Operand::Imm(0), Operand::Reg(Register::AX)),
                     Instruction::Ret,
                 ],
-            },
-            Function {
+            }),
+            TopLevel::Func(Function {
                 name: "many_args".into(),
+                global: true,
                 instructions: vec![
                     Instruction::AllocateStack(32),
                     Instruction::Mov(Operand::Reg(Register::DI), Operand::Stack(-4)),
@@ -1194,7 +1271,7 @@ mod tests {
                     Instruction::Mov(Operand::Imm(0), Operand::Reg(Register::AX)),
                     Instruction::Ret,
                 ],
-            },
+            }),
         ]);
         assert_eq!(expected, actual);
     }
