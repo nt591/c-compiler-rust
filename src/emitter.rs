@@ -19,16 +19,20 @@ impl Emitter {
         Self(asm)
     }
 
-    // todo: write to a file
     pub fn emit<W: Write>(self, output: &mut W) -> std::io::Result<()> {
         Self::emit_code(&self.0, output)
     }
 
     fn emit_code<W: Write>(asm: &Asm, output: &mut W) -> std::io::Result<()> {
-        let Asm::Program(funcs) = asm;
-        for func in funcs {
-            if let asm::TopLevel::Func(func) = func {
-                Self::emit_function(func, output)?;
+        let Asm::Program(toplevel) = asm;
+        for directive in toplevel {
+            match directive {
+                asm::TopLevel::Func(func) => Self::emit_function(func, output)?,
+                asm::TopLevel::StaticVariable {
+                    identifier,
+                    global,
+                    init,
+                } => Self::emit_static_variable(identifier, *global, *init, output)?,
             }
         }
         Ok(())
@@ -40,15 +44,44 @@ impl Emitter {
 
     fn emit_function<W: Write>(func: &asm::Function, output: &mut W) -> std::io::Result<()> {
         let asm::Function {
-            name, instructions, ..
+            name,
+            instructions,
+            global,
         } = func;
-        writeln!(output, "  .globl _{}", name)?;
+        if *global {
+            writeln!(output, "  .globl _{}", name)?;
+        }
+        writeln!(output, "  .text")?;
         writeln!(output, "_{}:", name)?;
         Self::emit_comment("FUNCTION PROLOGUE", output)?;
         writeln!(output, "{}", "  pushq  %rbp")?;
         writeln!(output, "{}", "  movq   %rsp, %rbp")?;
         for instruction in instructions {
             Self::emit_instructions(instruction, output)?;
+        }
+        Ok(())
+    }
+
+    fn emit_static_variable<W: Write>(
+        identifier: &str,
+        global: bool,
+        init: usize,
+        output: &mut W,
+    ) -> std::io::Result<()> {
+        if global {
+            writeln!(output, "  .globl _{}", identifier)?;
+        }
+        if init == 0 {
+            writeln!(output, "  .bss")?;
+        } else {
+            writeln!(output, "  .data")?;
+        }
+        writeln!(output, "  .balign 4")?;
+        writeln!(output, "_{}:", identifier)?;
+        if init == 0 {
+            writeln!(output, "  .zero 4")?;
+        } else {
+            writeln!(output, "  .long {}", init)?;
         }
         Ok(())
     }
@@ -158,18 +191,21 @@ impl Emitter {
         output: &mut W,
     ) -> std::io::Result<()> {
         match op {
-            asm::Operand::Reg(reg) if regsize == RegisterSize::FourByte => {
-                Self::emit_register(reg, output)?
-            }
-            asm::Operand::Reg(reg) if regsize == RegisterSize::OneByte => {
-                Self::emit_register_one_byte(reg, output)?
-            }
-            asm::Operand::Reg(reg) if regsize == RegisterSize::EightByte => {
-                Self::emit_register_eight_bytes(reg, output)?
+            asm::Operand::Reg(reg) => {
+                if regsize == RegisterSize::FourByte {
+                    Self::emit_register(reg, output)?;
+                } else if regsize == RegisterSize::OneByte {
+                    Self::emit_register_one_byte(reg, output)?;
+                } else if regsize == RegisterSize::EightByte {
+                    Self::emit_register_eight_bytes(reg, output)?;
+                } else {
+                    unreachable!("Found unexpected regsize {regsize:?}");
+                }
             }
             asm::Operand::Imm(imm) => write!(output, "${}", imm)?,
             asm::Operand::Stack(n) => write!(output, "{}(%rbp)", n)?,
-            _ => todo!(),
+            asm::Operand::Data(var) => write!(output, "_{}(%rip)", var)?,
+            asm::Operand::Pseudo(p) => panic!("Unexpected Pseudo {} when emitting op", p),
         }
 
         Ok(())
@@ -297,6 +333,7 @@ mod tests {
         })]);
 
         let expected = r#"  .globl _main
+  .text
 _main:
                        # FUNCTION PROLOGUE
   pushq  %rbp
@@ -352,6 +389,7 @@ _main:
             ],
         })]);
         let expected = r#"  .globl _main
+  .text
 _main:
                        # FUNCTION PROLOGUE
   pushq  %rbp
@@ -437,6 +475,7 @@ _main:
         })]);
 
         let expected = r#"  .globl _main
+  .text
 _main:
                        # FUNCTION PROLOGUE
   pushq  %rbp
@@ -541,6 +580,7 @@ _main:
         })]);
 
         let expected = r#"  .globl _main
+  .text
 _main:
                        # FUNCTION PROLOGUE
   pushq  %rbp
@@ -619,6 +659,7 @@ _main:
             ],
         })]);
         let expected = r#"  .globl _main
+  .text
 _main:
                        # FUNCTION PROLOGUE
   pushq  %rbp
@@ -671,6 +712,7 @@ _main:
             global: true,
         })]);
         let expected = r#"  .globl _main
+  .text
 _main:
                        # FUNCTION PROLOGUE
   pushq  %rbp

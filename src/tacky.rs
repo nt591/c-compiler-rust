@@ -13,6 +13,7 @@ use crate::parser::UnaryOp as ParserUnaryOp;
 use crate::parser::VariableDeclaration;
 use crate::parser::AST as ParserAST;
 use crate::semantic_analysis;
+use crate::semantic_analysis::SymbolTable;
 use thiserror::Error;
 
 #[derive(Debug, PartialEq, Error)]
@@ -133,14 +134,18 @@ impl<'a> Tacky {
         symbol_table: &semantic_analysis::SymbolTable,
     ) -> Result<AST, TackyError> {
         let parser = std::mem::replace(&mut self.parser, ParserAST::Program(vec![]));
-        let mut ast = self.parse_program(parser)?;
+        let mut ast = self.parse_program(parser, &symbol_table)?;
         let defs = Self::convert_symbols_to_tacky_defs(symbol_table);
         let AST::Program(ref mut ins) = ast;
         ins.extend(defs);
         Ok(ast)
     }
 
-    fn parse_program(&mut self, parser: ParserAST) -> Result<AST, TackyError> {
+    fn parse_program(
+        &mut self,
+        parser: ParserAST,
+        symbol_table: &SymbolTable,
+    ) -> Result<AST, TackyError> {
         let ParserAST::Program(decls) = parser;
         let funcs = decls
             .iter()
@@ -152,7 +157,7 @@ impl<'a> Tacky {
                 let Declaration::FunDecl(ref fun) = decl else {
                     panic!();
                 };
-                self.parse_function(fun)
+                self.parse_function(fun, symbol_table)
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(AST::Program(funcs))
@@ -183,23 +188,33 @@ impl<'a> Tacky {
         defs
     }
 
-    fn parse_function(&mut self, function: &FunctionDeclaration) -> Result<TopLevel, TackyError> {
+    fn parse_function(
+        &mut self,
+        function: &FunctionDeclaration,
+        symbol_table: &SymbolTable,
+    ) -> Result<TopLevel, TackyError> {
         let FunctionDeclaration {
             name,
             block,
             params,
-            storage_class,
+            ..
         } = function;
         let Some(block) = block else {
             panic!("Somehow got a None block in parse_function")
         };
         let instructions = self.parse_instructions(block)?;
-        let global = *storage_class != Some(parser::StorageClass::Static);
+        let Some((
+            semantic_analysis::CType::FunType(_),
+            semantic_analysis::IdentifierAttrs::FunAttr { global, .. },
+        )) = symbol_table.get(name)
+        else {
+            panic!("Expected to find a function named {name} in symbol table");
+        };
         Ok(TopLevel::Function {
             name: name.into(),
             instructions,
             params: params.clone(),
-            global,
+            global: *global,
         })
     }
 
@@ -833,7 +848,9 @@ impl<'a> Tacky {
         if let VariableDeclaration {
             name,
             init: Some(init),
-            ..
+            // file-scope or local-scope with Static or Extern storage is
+            // ignored for .data or .bss reads
+            storage_class: None,
         } = decl
         {
             // emit instructions for rhs, then copy into lhs
@@ -887,6 +904,21 @@ mod tests {
     use crate::parser::AST as ParserAST;
     use crate::semantic_analysis;
 
+    fn main_symbol_table() -> semantic_analysis::SymbolTable {
+        let mut table = semantic_analysis::SymbolTable::new();
+        table.insert(
+            "main".into(),
+            (
+                semantic_analysis::CType::FunType(0),
+                semantic_analysis::IdentifierAttrs::FunAttr {
+                    defined: true,
+                    global: true,
+                },
+            ),
+        );
+        table
+    }
+
     #[test]
     fn basic_parse() {
         let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
@@ -909,7 +941,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -942,7 +974,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -994,7 +1026,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1061,7 +1093,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1139,7 +1171,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1207,7 +1239,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1254,7 +1286,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1301,7 +1333,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1370,7 +1402,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1439,7 +1471,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1503,7 +1535,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1615,7 +1647,7 @@ mod tests {
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1645,7 +1677,7 @@ mod tests {
             storage_class: None,
         })]);
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&semantic_analysis::SymbolTable::new());
+        let assembly = tacky.into_ast(&main_symbol_table());
         assert!(assembly.is_err());
     }
 

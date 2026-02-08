@@ -508,6 +508,9 @@ impl Asm {
                     v.push(Instruction::Mov(Operand::Reg(Register::R10), dst));
                 }
                 Instruction::Binary(binop, src @ Operand::Stack(_), dst @ Operand::Stack(_))
+                | Instruction::Binary(binop, src @ Operand::Data(_), dst @ Operand::Data(_))
+                | Instruction::Binary(binop, src @ Operand::Stack(_), dst @ Operand::Data(_))
+                | Instruction::Binary(binop, src @ Operand::Data(_), dst @ Operand::Stack(_))
                     if matches!(
                         binop,
                         BinaryOp::Add
@@ -557,7 +560,10 @@ impl Asm {
                     v.push(Instruction::Mov(imm, Operand::Reg(Register::R10)));
                     v.push(Instruction::Idiv(Operand::Reg(Register::R10)));
                 }
-                Instruction::Cmp(src @ Operand::Stack(_), dst @ Operand::Stack(_)) => {
+                Instruction::Cmp(src @ Operand::Stack(_), dst @ Operand::Stack(_))
+                | Instruction::Cmp(src @ Operand::Data(_), dst @ Operand::Data(_))
+                | Instruction::Cmp(src @ Operand::Stack(_), dst @ Operand::Data(_))
+                | Instruction::Cmp(src @ Operand::Data(_), dst @ Operand::Stack(_)) => {
                     // cmpl can't move from two memory addrs, so
                     // use a temporary variable along the way in %r10d
                     v.push(Instruction::Mov(src, Operand::Reg(Register::R10)));
