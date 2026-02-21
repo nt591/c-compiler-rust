@@ -430,6 +430,15 @@ impl<'a> Lexer<'a> {
                         if !matches!(&bytes[end], b'l' | b'L') {
                             return Err(Self::error_string(&bytes[start..=end]));
                         }
+                        // we need to make sure here that if there is another character available,
+                        // it is not a valid identifier character. Anything that would be a valid
+                        // word boundary is good here.
+                        let possible_end = end + 1;
+                        if possible_end < len
+                            && Self::is_valid_identifier_character(bytes[possible_end])
+                        {
+                            return Err(Self::error_string(&bytes[start..=possible_end]));
+                        }
                         let s =
                             std::str::from_utf8(&bytes[start..end]).expect("We know this is UTF8");
                         let constant: usize = s
@@ -545,6 +554,14 @@ mod tests {
         assert_eq!(Some(&Token::Semicolon), tokens.next());
         assert_eq!(Some(&Token::RightBrace), tokens.next());
         assert_eq!(None, tokens.next());
+    }
+
+    #[test]
+    fn invalid_long_constant() {
+        // TODO maybe make this work.
+        let source = "long x = 2LL";
+        let lexer = Lexer::lex(source);
+        assert!(lexer.is_err());
     }
 
     #[test]
