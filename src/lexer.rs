@@ -20,11 +20,13 @@ pub struct Lexer<'a> {
 pub enum Token<'a> {
     Identifier(&'a str),
     Constant(usize),
+    LongConstant(usize),
     SingleLineComment(&'a str),
     BlockComment(&'a str),
     PreprocessorBlock(&'a str), //todo
     // keywords
     Int,
+    Long,
     Main,
     Void,
     Return,
@@ -95,10 +97,12 @@ impl<'a> Token<'a> {
         match self {
             Identifier(s) => format!("Identifier {s}"),
             Constant(c) => format!("Constant {c}"),
+            LongConstant(c) => format!("LongConstant {c}"),
             SingleLineComment(c) => format!("SingleLineComment {c}"),
             BlockComment(c) => format!("BlockComment {c}"),
             PreprocessorBlock(c) => format!("PreprocessorBlock {c}"),
             Int => format!("Int"),
+            Long => format!("Long"),
             Main => format!("Main"),
             Void => format!("Void"),
             Return => format!("Return"),
@@ -415,21 +419,36 @@ impl<'a> Lexer<'a> {
                     while end < len && bytes[end].is_ascii_digit() {
                         end += 1;
                     }
-                    // If end == len, we parsed the last character. In that
-                    // case, let's just check that if idx < len, the next character
-                    // is not an alphabetic character.
-                    // This does not support floats!
-                    if end < len && bytes[end].is_ascii_alphabetic() {
-                        return Err(Self::error_string(&bytes[start..=end]));
-                    }
 
-                    // todo: is this the best I can do?
-                    let s = std::str::from_utf8(&bytes[start..end]).expect("We know this is UTF8");
-                    let constant: usize = s
-                        .parse()
-                        .expect("Didn't get a digit after parsing a string");
-                    tokens.push(Token::Constant(constant));
-                    idx = end - 1;
+                    // at this point, either end == len which means
+                    // we parsed the entire string, and it ends with a digit, OR
+                    // end < len and we are pointing to a non-digit character.
+                    // What do we do? If we're at the end, attempt to return a constant.
+                    // Else, we'll see if we have a valid suffix and push a different sized
+                    // constant. Still does not support floats yet.
+                    if end < len && bytes[end].is_ascii_alphabetic() {
+                        if !matches!(&bytes[end], b'l' | b'L') {
+                            return Err(Self::error_string(&bytes[start..=end]));
+                        }
+                        let s =
+                            std::str::from_utf8(&bytes[start..end]).expect("We know this is UTF8");
+                        let constant: usize = s
+                            .parse()
+                            .expect("Didn't get a digit after parsing a string");
+                        tokens.push(Token::LongConstant(constant));
+                        idx = end; // point to suffix, let increment at the end point after it.
+                    } else {
+                        // at this point, either end == len OR end < len and bytes[end] is a
+                        // non-alphabetic character (period, whitespace, etc). Just scrape up
+                        // the text and move on
+                        let s =
+                            std::str::from_utf8(&bytes[start..end]).expect("We know this is UTF8");
+                        let constant: usize = s
+                            .parse()
+                            .expect("Didn't get a digit after parsing a string");
+                        tokens.push(Token::Constant(constant));
+                        idx = end - 1; // increment at the end sets idx == end
+                    }
                 }
                 _ => return Err(LexerError::UnexpectedChar(bytes[idx].into())),
             }
@@ -446,6 +465,7 @@ impl<'a> Lexer<'a> {
     fn parse_keyword(s: &str) -> Option<Token> {
         match s {
             "int" => Some(Token::Int),
+            "long" => Some(Token::Long),
             "main" => Some(Token::Main),
             "return" => Some(Token::Return),
             "void" => Some(Token::Void),
@@ -477,7 +497,7 @@ mod tests {
 
     #[test]
     fn keywords() {
-        let source = "int main 123 static extern;";
+        let source = "int main 123 static extern long;";
         let lexer = Lexer::lex(source);
         assert!(lexer.is_ok());
         let lexer = lexer.unwrap();
@@ -487,6 +507,7 @@ mod tests {
         assert_eq!(Some(&Token::Constant(123)), tokens.next());
         assert_eq!(Some(&Token::Static), tokens.next());
         assert_eq!(Some(&Token::Extern), tokens.next());
+        assert_eq!(Some(&Token::Long), tokens.next());
         assert_eq!(Some(&Token::Semicolon), tokens.next());
         assert_eq!(None, tokens.next());
     }
@@ -495,6 +516,8 @@ mod tests {
     fn basic_source() {
         let source = r#"
         int main(void) {
+            long x = 2L;
+            long y = 3l;
             return 2;
         }"#;
         let lexer = Lexer::lex(source);
@@ -507,6 +530,16 @@ mod tests {
         assert_eq!(Some(&Token::Void), tokens.next());
         assert_eq!(Some(&Token::RightParen), tokens.next());
         assert_eq!(Some(&Token::LeftBrace), tokens.next());
+        assert_eq!(Some(&Token::Long), tokens.next());
+        assert_eq!(Some(&Token::Identifier("x")), tokens.next());
+        assert_eq!(Some(&Token::Equal), tokens.next());
+        assert_eq!(Some(&Token::LongConstant(2)), tokens.next());
+        assert_eq!(Some(&Token::Semicolon), tokens.next());
+        assert_eq!(Some(&Token::Long), tokens.next());
+        assert_eq!(Some(&Token::Identifier("y")), tokens.next());
+        assert_eq!(Some(&Token::Equal), tokens.next());
+        assert_eq!(Some(&Token::LongConstant(3)), tokens.next());
+        assert_eq!(Some(&Token::Semicolon), tokens.next());
         assert_eq!(Some(&Token::Return), tokens.next());
         assert_eq!(Some(&Token::Constant(2)), tokens.next());
         assert_eq!(Some(&Token::Semicolon), tokens.next());
