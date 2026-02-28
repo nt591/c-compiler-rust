@@ -198,9 +198,9 @@ impl Asm {
     }
 
     fn parse_instructions(ins: &[tacky::Instruction]) -> Vec<Instruction> {
+        use Instruction::*;
         use tacky::Instruction as TIns;
         use tacky::UnaryOp as TUnaryOp;
-        use Instruction::*;
         ins.iter()
             .flat_map(|instruction| match instruction {
                 TIns::Ret(val) => vec![Mov(val.into(), Operand::Reg(Register::AX)), Ret],
@@ -368,8 +368,8 @@ impl Asm {
         src2: &tacky::Val,
         dst: &tacky::Val,
     ) -> Vec<Instruction> {
-        use tacky::BinaryOp as TBO;
         use Instruction::*;
+        use tacky::BinaryOp as TBO;
         let cond_code = match op {
             TBO::Equal => CondCode::E,
             TBO::NotEqual => CondCode::NE,
@@ -392,12 +392,16 @@ impl Asm {
         ]
     }
 
-    fn fixup(asm: &mut Asm, gen: &mut AsmGenerator, symbol_table: &semantic_analysis::SymbolTable) {
+    fn fixup(
+        asm: &mut Asm,
+        generator: &mut AsmGenerator,
+        symbol_table: &semantic_analysis::SymbolTable,
+    ) {
         match asm {
-            Asm::Program(ref mut funcs) => {
+            Asm::Program(funcs) => {
                 for func in funcs {
                     if let TopLevel::Func(func) = func {
-                        Self::fixup_function(func, gen, symbol_table);
+                        Self::fixup_function(func, generator, symbol_table);
                     }
                 }
             }
@@ -405,55 +409,55 @@ impl Asm {
     }
     fn fixup_function(
         func: &mut Function,
-        gen: &mut AsmGenerator,
+        generator: &mut AsmGenerator,
         symbol_table: &semantic_analysis::SymbolTable,
     ) {
         let Function {
             name: _name,
-            ref mut instructions,
+            instructions,
             ..
         } = func;
-        gen.stack_offset = 0; // reset for each function call
-        Self::fixup_pseudos_in_instructions(instructions, gen, symbol_table);
-        Self::insert_alloc_stack_func(func, gen);
+        generator.stack_offset = 0; // reset for each function call
+        Self::fixup_pseudos_in_instructions(instructions, generator, symbol_table);
+        Self::insert_alloc_stack_func(func, generator);
         Self::fixup_invalid_memory_accesses(func);
     }
 
     fn fixup_pseudos_in_instructions(
         ins: &mut [Instruction],
-        gen: &mut AsmGenerator,
+        generator: &mut AsmGenerator,
         symbol_table: &semantic_analysis::SymbolTable,
     ) {
         ins.iter_mut().for_each(|instruction| match instruction {
             Instruction::Mov(src, dst) => {
-                *src = Self::replace_pseudo_in_op(src, gen, symbol_table);
-                *dst = Self::replace_pseudo_in_op(dst, gen, symbol_table);
+                *src = Self::replace_pseudo_in_op(src, generator, symbol_table);
+                *dst = Self::replace_pseudo_in_op(dst, generator, symbol_table);
             }
             Instruction::Unary(_op, dst) => {
-                *dst = Self::replace_pseudo_in_op(dst, gen, symbol_table);
+                *dst = Self::replace_pseudo_in_op(dst, generator, symbol_table);
             }
             Instruction::Binary(_op, src1, src2) => {
-                *src1 = Self::replace_pseudo_in_op(src1, gen, symbol_table);
-                *src2 = Self::replace_pseudo_in_op(src2, gen, symbol_table);
+                *src1 = Self::replace_pseudo_in_op(src1, generator, symbol_table);
+                *src2 = Self::replace_pseudo_in_op(src2, generator, symbol_table);
             }
             Instruction::Idiv(src) => {
-                *src = Self::replace_pseudo_in_op(src, gen, symbol_table);
+                *src = Self::replace_pseudo_in_op(src, generator, symbol_table);
             }
             Instruction::Cmp(src, dst) => {
-                *src = Self::replace_pseudo_in_op(src, gen, symbol_table);
-                *dst = Self::replace_pseudo_in_op(dst, gen, symbol_table);
+                *src = Self::replace_pseudo_in_op(src, generator, symbol_table);
+                *dst = Self::replace_pseudo_in_op(dst, generator, symbol_table);
             }
             Instruction::SetCC(_cc, dst) => {
-                *dst = Self::replace_pseudo_in_op(dst, gen, symbol_table);
+                *dst = Self::replace_pseudo_in_op(dst, generator, symbol_table);
             }
-            Instruction::Push(op) => *op = Self::replace_pseudo_in_op(op, gen, symbol_table),
+            Instruction::Push(op) => *op = Self::replace_pseudo_in_op(op, generator, symbol_table),
             _ => {}
         })
     }
 
     fn replace_pseudo_in_op(
         op: &Operand,
-        gen: &mut AsmGenerator,
+        generator: &mut AsmGenerator,
         symbol_table: &semantic_analysis::SymbolTable,
     ) -> Operand {
         match op {
@@ -467,11 +471,12 @@ impl Asm {
                     }
                 };
 
-                gen.identifiers
+                generator
+                    .identifiers
                     .entry(var.clone())
                     .or_insert_with(|| {
-                        let next_offset = gen.stack_offset - 4;
-                        gen.stack_offset = next_offset;
+                        let next_offset = generator.stack_offset - 4;
+                        generator.stack_offset = next_offset;
                         Operand::Stack(next_offset)
                     })
                     .clone()
@@ -480,10 +485,10 @@ impl Asm {
         }
     }
 
-    fn insert_alloc_stack_func(func: &mut Function, gen: &AsmGenerator) {
+    fn insert_alloc_stack_func(func: &mut Function, generator: &AsmGenerator) {
         let old_ins = std::mem::take(&mut func.instructions);
         // round stack offset to next multiple of 16 for easier alignment
-        let multiple = gen.stack_offset as f32 / -16.0;
+        let multiple = generator.stack_offset as f32 / -16.0;
         let rounded = multiple.ceil() as usize;
         let new_offset = rounded * 16;
         let mut v = vec![Instruction::AllocateStack(new_offset)];

@@ -471,7 +471,7 @@ impl<'a> Lexer<'a> {
         matches!(c, b'a'..=b'z' | b'A'..=b'Z'| b'0'..=b'9' | b'_')
     }
 
-    fn parse_keyword(s: &str) -> Option<Token> {
+    fn parse_keyword(s: &str) -> Option<Token<'_>> {
         match s {
             "int" => Some(Token::Int),
             "long" => Some(Token::Long),

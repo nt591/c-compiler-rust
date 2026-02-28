@@ -1,8 +1,8 @@
 // takes the asm parser and emits X64
 // only works on my Mac, so do with that what you will.
 
-use crate::asm;
 use crate::Asm;
+use crate::asm;
 use std::io::Write;
 
 pub struct Emitter(Asm);

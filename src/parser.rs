@@ -27,6 +27,8 @@ pub enum ParserError {
     InvalidTypeSpecifier,
     #[error("Invalid storage class")]
     InvalidStorageClass,
+    #[error("Integer too large to fit in a C int or long")]
+    IntegerTooLargeToFitInConstant,
 }
 
 use crate::lexer::Token;
@@ -47,6 +49,7 @@ pub struct FunctionDeclaration {
     pub params: Vec<String>, // should this be owned?
     pub block: Option<Block>,
     pub storage_class: Option<StorageClass>,
+    pub ftype: CType,
 }
 
 #[derive(Debug, PartialEq)]
@@ -54,6 +57,7 @@ pub struct VariableDeclaration {
     pub name: String,
     pub init: Option<Expression>,
     pub storage_class: Option<StorageClass>,
+    pub vtype: CType,
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -63,9 +67,14 @@ pub enum StorageClass {
 }
 
 // valid C types (int, unsigned, long, ...)
-#[derive(Debug, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum CType {
     Int,
+    Long,
+    FunType {
+        params: Vec<CType>,
+        ret: Box<CType>, // TODO: intern CType and carry a u32 everywhere.
+    },
 }
 
 #[derive(Debug, PartialEq)]
@@ -122,7 +131,7 @@ pub struct Block(pub Vec<BlockItem>);
 
 #[derive(Debug, PartialEq)]
 pub enum Expression {
-    Constant(usize),
+    Constant(Const),
     Var(String), // identifier for variable
     Unary(UnaryOp, Box<Expression>),
     Binary(BinaryOp, Box<Expression>, Box<Expression>),
@@ -136,6 +145,13 @@ pub enum Expression {
         name: String,
         args: Vec<Expression>,
     },
+    Cast(CType, Box<Expression>),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Const {
+    Int(i32),
+    Long(i64),
 }
 
 #[derive(Debug, PartialEq)]
@@ -210,6 +226,22 @@ impl<'a> Parser<'a> {
         Ok(AST::Program(decls))
     }
 
+    fn parse_storage_class(classes: &[StorageClass]) -> Result<Option<StorageClass>, ParserError> {
+        if classes.len() > 1 {
+            return Err(ParserError::InvalidStorageClass);
+        }
+        Ok(classes.get(0).copied())
+    }
+
+    fn parse_type(specifier_list: &[Token]) -> Result<CType, ParserError> {
+        match specifier_list {
+            [Token::Int] => Ok(CType::Int),
+            [Token::Long] => Ok(CType::Long),
+            [Token::Long, Token::Int] | [Token::Int, Token::Long] => Ok(CType::Long),
+            _otherwise => Err(ParserError::InvalidTypeSpecifier),
+        }
+    }
+
     fn parse_type_and_storage_class(
         &mut self,
     ) -> Result<(CType, Option<StorageClass>), ParserError> {
@@ -218,45 +250,51 @@ impl<'a> Parser<'a> {
 
         loop {
             match self.tokens.peek() {
-                Some(Token::Int) => types.push(CType::Int),
+                Some(Token::Int) => types.push(Token::Int),
+                Some(Token::Long) => types.push(Token::Long),
                 Some(Token::Static) => classes.push(StorageClass::Static),
                 Some(Token::Extern) => classes.push(StorageClass::Extern),
                 _ => break,
             }
             self.tokens.next();
         }
-        if types.len() != 1 {
-            return Err(ParserError::InvalidTypeSpecifier);
-        }
-        if classes.len() > 1 {
-            return Err(ParserError::InvalidStorageClass);
-        }
-        let type_ = types[0];
-        assert_eq!(type_, CType::Int);
-        let storage_class = classes.get(0).copied();
+        let type_ = Self::parse_type(&types)?;
+        let storage_class = Self::parse_storage_class(&classes)?;
         Ok((type_, storage_class))
     }
 
     /*
-     * "int" <identifier> "(" <param-list> ")" ( <block> | ";" )
-     * param-list ::= "void" | "int" <identifier> { "," "int" <identifier> }
+     * <function-declaration> ::= { <specifier> }+ <identifier> "(" <param-list> ")" ( <block> | ";")
+     * <param-list> ::= "void"
+     *                | { <type-specifier> }+ <identifier> { "," { <type-specifier> }+ <identifier> }
      */
     fn parse_function(
         &mut self,
         name: String,
         storage_class: Option<StorageClass>,
+        return_type: CType,
     ) -> Result<FunctionDeclaration, ParserError> {
         self.expect(Token::LeftParen)?;
         // check if we're void, or taking a param list
         // Should we store Void in the identifier list?
         // Emptiness is a way of knowing it's a void function.
         let mut params: Vec<String> = vec![];
+        let mut param_types = vec![];
         if let Some(Token::Void) = self.tokens.peek() {
             self.expect(Token::Void)?;
             self.expect(Token::RightParen)?;
         } else {
             loop {
-                self.expect(Token::Int)?;
+                // collect token until we see an identifier, then
+                // we'll parse a CType
+                let mut types = vec![];
+                loop {
+                    if !token_is_valid_specifier(self.tokens.peek().copied()) {
+                        break;
+                    }
+                    types.push(self.tokens.next().copied().unwrap());
+                }
+                param_types.push(Self::parse_type(&types)?);
                 let Some(Token::Identifier(ident)) = self.tokens.next() else {
                     return Err(ParserError::ExpectedIdentifierAfterType);
                 };
@@ -285,6 +323,10 @@ impl<'a> Parser<'a> {
             block,
             params,
             storage_class,
+            ftype: CType::FunType {
+                params: param_types,
+                ret: Box::new(return_type),
+            },
         })
     }
 
@@ -317,7 +359,9 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_for_init(&mut self) -> Result<ForInit, ParserError> {
-        if let Some(Token::Int) = self.tokens.peek() {
+        // technically this matches static and extern, but
+        // we'll reject at typecheck time
+        if token_is_valid_specifier(self.tokens.peek().copied()) {
             let decl = self.parse_declaration()?;
             let Declaration::VarDecl(var_decl) = decl else {
                 return Err(ParserError::WrongDeclarationInForInit);
@@ -360,7 +404,7 @@ impl<'a> Parser<'a> {
      * var-decl ::= { <specifier> }+ <identifier> [ '=' <expr>] ';'
      * fun-decl::= { <specifier> }+ <identifier> '(' <param-list> ')' ( <block> | ';' )
      * param-list ::= "void" | "int" <identifier> { ',' "int" identifier }
-     * <specifier> ::= "int" | "static" | "extern"
+     * <specifier> ::= <type-specifier> | "static" | "extern"
      *
      * since vardecl and fundecl start the same, but differ
      * when we see a paren or not, let's grab all specifiers,
@@ -368,10 +412,10 @@ impl<'a> Parser<'a> {
      * pass in the relevant added values.
      */
     fn parse_declaration(&mut self) -> Result<Declaration, ParserError> {
-        let (_ctype, storage_class) = self.parse_type_and_storage_class()?;
+        let (ctype, storage_class) = self.parse_type_and_storage_class()?;
         let identifier = self.parse_identifier()?;
         if let Some(Token::LeftParen) = self.tokens.peek() {
-            let func = self.parse_function(identifier, storage_class)?;
+            let func = self.parse_function(identifier, storage_class, ctype)?;
             Ok(Declaration::FunDecl(func))
         } else {
             let init = if let Some(Token::Equal) = self.tokens.peek() {
@@ -388,6 +432,7 @@ impl<'a> Parser<'a> {
                 name: identifier.into(),
                 init,
                 storage_class,
+                vtype: ctype,
             }))
         }
     }
@@ -443,7 +488,7 @@ impl<'a> Parser<'a> {
                         return Err(ParserError::UnexpectedToken(
                             Token::Identifier("anything").into_string(),
                             token.into_string(),
-                        ))
+                        ));
                     }
                 };
                 self.expect(Token::Semicolon)?;
@@ -661,9 +706,33 @@ impl<'a> Parser<'a> {
         Ok(left)
     }
 
+    fn parse_constant(tok: Token) -> Result<Const, ParserError> {
+        let v = match tok {
+            Token::Constant(c) | Token::LongConstant(c) => c,
+            _ => panic!("Somehow tried to parse a token that isn't a constant, got {tok:?}"),
+        };
+        if v > i64::MAX as usize {
+            return Err(ParserError::IntegerTooLargeToFitInConstant);
+        }
+        if let Token::Constant(_) = tok
+            && v <= i32::MAX as usize
+        {
+            return Ok(Const::Int(
+                v.try_into()
+                    .map_err(|_| ParserError::IntegerTooLargeToFitInConstant)?,
+            ));
+        }
+        Ok(Const::Long(v.try_into().map_err(|_| {
+            ParserError::IntegerTooLargeToFitInConstant
+        })?))
+    }
+
     fn parse_factor(&mut self) -> Result<Expression, ParserError> {
         match self.tokens.next() {
-            Some(Token::Constant(c)) => Ok(Expression::Constant(*c)),
+            Some(t @ Token::Constant(_) | t @ Token::LongConstant(_)) => {
+                let constant = Self::parse_constant(*t)?;
+                Ok(Expression::Constant(constant))
+            }
             Some(Token::Hyphen) => {
                 let inner_exp = self.parse_factor()?;
                 Ok(Expression::Unary(UnaryOp::Negate, Box::new(inner_exp)))
@@ -677,10 +746,23 @@ impl<'a> Parser<'a> {
                 Ok(Expression::Unary(UnaryOp::Not, Box::new(inner_exp)))
             }
             Some(Token::LeftParen) => {
+                // if the inside is a valid type specifier, we'll scoop up
+                // specifiers and turn this into a Cast expression. Else,
                 // throw away parens and use just inner expression
-                let inner_expr = self.parse_expression(0)?;
-                self.expect(Token::RightParen)?;
-                Ok(inner_expr)
+                if token_is_valid_specifier(self.tokens.peek().copied()) {
+                    let mut types = vec![];
+                    while token_is_valid_specifier(self.tokens.peek().copied()) {
+                        types.push(self.tokens.next().copied().unwrap());
+                    }
+                    let type_ = Self::parse_type(&types)?;
+                    self.expect(Token::RightParen)?;
+                    let expr = self.parse_factor()?;
+                    Ok(Expression::Cast(type_, Box::new(expr)))
+                } else {
+                    let inner_expr = self.parse_expression(0)?;
+                    self.expect(Token::RightParen)?;
+                    Ok(inner_expr)
+                }
             }
             Some(Token::Identifier(ident)) => {
                 if let Some(Token::LeftParen) = self.tokens.peek() {
@@ -779,7 +861,16 @@ impl<'a> Parser<'a> {
 }
 
 fn token_is_valid_specifier(tok: Option<&Token>) -> bool {
-    tok.map(|t| matches!(t, Token::Int | Token::Static | Token::Extern))
+    token_is_valid_type_specifier(tok) || token_is_valid_storage_class(tok)
+}
+
+fn token_is_valid_type_specifier(tok: Option<&Token>) -> bool {
+    tok.map(|t| matches!(t, Token::Int | Token::Long))
+        .unwrap_or(false)
+}
+
+fn token_is_valid_storage_class(tok: Option<&Token>) -> bool {
+    tok.map(|t| matches!(t, Token::Static | Token::Extern))
         .unwrap_or(false)
 }
 

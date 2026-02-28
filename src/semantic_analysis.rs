@@ -1,5 +1,7 @@
+use crate::parser::AST;
 use crate::parser::Block;
 use crate::parser::BlockItem;
+use crate::parser::Const;
 use crate::parser::Declaration;
 use crate::parser::Expression;
 use crate::parser::ForInit;
@@ -7,9 +9,8 @@ use crate::parser::FunctionDeclaration;
 use crate::parser::Statement;
 use crate::parser::StorageClass;
 use crate::parser::VariableDeclaration;
-use crate::parser::AST;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq)]
@@ -242,7 +243,9 @@ fn typecheck_function_declaration(
             global: old_global,
         } = attrs
         else {
-            panic!("Somehow fetched attrs that are not FunType when querying symbol for typechecking function declaration");
+            panic!(
+                "Somehow fetched attrs that are not FunType when querying symbol for typechecking function declaration"
+            );
         };
         let defined = match old_ctype {
             CType::Int => Err(SemanticAnalysisError::IncompatibleFunctionDeclaration),
@@ -288,7 +291,7 @@ fn typecheck_file_scope_variable_declaration(
     // Tentative if the storage class is Static or unknown,
     // or explicitly no initializer for an extern variable
     let mut initial_value = match var.init {
-        Some(Expression::Constant(i)) => InitialValue::Initial(i),
+        Some(Expression::Constant(Const::Int(i))) => InitialValue::Initial(i.try_into().unwrap()),
         None if var.storage_class == Some(StorageClass::Extern) => InitialValue::NoInitializer,
         None => InitialValue::Tentative,
         _ => return Err(SemanticAnalysisError::NonConstantInitializer),
@@ -380,6 +383,7 @@ fn typecheck_local_var_decl(
         init,
         name,
         storage_class,
+        ..
     } = decl;
     match storage_class {
         Some(StorageClass::Extern) => {
@@ -413,7 +417,9 @@ fn typecheck_local_var_decl(
             // or default to an initial value of zero if not present.
             // Any non-constant initializer is a type error.
             let new_init = match init {
-                Some(Expression::Constant(c)) => InitialValue::Initial(*c),
+                Some(Expression::Constant(Const::Int(c))) => {
+                    InitialValue::Initial((*c).try_into().unwrap())
+                }
                 None => InitialValue::Initial(0),
                 _ => return Err(SemanticAnalysisError::NonConstInitOnLocalStaticVar),
             };
@@ -565,6 +571,7 @@ fn typecheck_expr(
             typecheck_expr(rhs.as_ref(), symbol_table)?;
             Ok(())
         }
+        Expression::Cast(_, expr) => typecheck_expr(expr.as_ref(), symbol_table),
     }
 }
 
@@ -593,7 +600,7 @@ fn resolve_ast(ast: &mut AST, resolver: &mut Resolver) -> Result<(), SemanticAna
 }
 
 fn resolve_block(block: &mut Block, resolver: &mut Resolver) -> Result<(), SemanticAnalysisError> {
-    let Block(ref mut body) = block;
+    let Block(body) = block;
     for body_item in body.iter_mut() {
         match body_item {
             BlockItem::Decl(Declaration::VarDecl(declaration)) => {
@@ -661,6 +668,7 @@ fn resolve_local_variable_declaration(
         name,
         init,
         storage_class,
+        ..
     } = decl;
     // first, check for conflicting entries with file-scoped variable
     if let Some(ResolvedIdentifier {
@@ -757,7 +765,7 @@ fn resolve_for_init(
     resolver: &mut Resolver,
 ) -> Result<(), SemanticAnalysisError> {
     match init {
-        ForInit::InitDecl(ref mut decl) => resolve_local_variable_declaration(decl, resolver),
+        ForInit::InitDecl(decl) => resolve_local_variable_declaration(decl, resolver),
         ForInit::InitExp(expr) => resolve_optional_expr(expr.as_mut(), resolver),
     }
 }
@@ -783,7 +791,7 @@ fn resolve_expr(
             None => {
                 return Err(SemanticAnalysisError::UndeclaredVariableInInitializer(
                     ident.clone(),
-                ))
+                ));
             }
         },
         Expression::Unary(_op, expr) => resolve_expr(expr, resolver)?,
@@ -817,6 +825,7 @@ fn resolve_expr(
                 resolve_expr(arg, resolver)?;
             }
         }
+        Expression::Cast(_, expr) => resolve_expr(expr, resolver)?,
     };
     Ok(())
 }
@@ -845,7 +854,7 @@ fn label_block(
     current_label: Option<String>,
     resolver: &mut Resolver,
 ) -> Result<(), SemanticAnalysisError> {
-    let Block(ref mut body) = block;
+    let Block(body) = block;
     for body_item in body.iter_mut() {
         if let BlockItem::Stmt(statement) = body_item {
             label_statement(statement, current_label.clone(), resolver)?;
@@ -910,13 +919,13 @@ fn label_statement(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::AST;
     use crate::parser::BinaryOp;
     use crate::parser::Block;
     use crate::parser::BlockItem;
     use crate::parser::Expression;
     use crate::parser::FunctionDeclaration;
     use crate::parser::Statement;
-    use crate::parser::AST;
 
     #[test]
     fn basic_resolve_repeated_variable() {

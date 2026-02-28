@@ -2,8 +2,10 @@
 // Mostly copied from asm.rs
 
 use crate::parser;
+use crate::parser::AST as ParserAST;
 use crate::parser::BinaryOp as ParserBinaryOp;
 use crate::parser::Block;
+use crate::parser::Const;
 use crate::parser::Declaration;
 use crate::parser::Expression;
 use crate::parser::ForInit;
@@ -11,7 +13,6 @@ use crate::parser::FunctionDeclaration;
 use crate::parser::Statement;
 use crate::parser::UnaryOp as ParserUnaryOp;
 use crate::parser::VariableDeclaration;
-use crate::parser::AST as ParserAST;
 use crate::semantic_analysis;
 use crate::semantic_analysis::SymbolTable;
 use thiserror::Error;
@@ -154,7 +155,7 @@ impl<'a> Tacky {
                 Declaration::VarDecl(_) => false,
             })
             .map(|decl| {
-                let Declaration::FunDecl(ref fun) = decl else {
+                let Declaration::FunDecl(fun) = decl else {
                     panic!();
                 };
                 self.parse_function(fun, symbol_table)
@@ -224,7 +225,8 @@ impl<'a> Tacky {
         instructions: &mut Vec<Instruction>,
     ) -> Result<Val, TackyError> {
         match expr {
-            Expression::Constant(imm) => Ok(Val::Constant(*imm)),
+            Expression::Constant(Const::Int(imm)) => Ok(Val::Constant((*imm).try_into().unwrap())),
+            Expression::Constant(Const::Long(_)) => todo!(),
             Expression::Unary(op, exp) => {
                 let src = self.parse_expression(exp, instructions)?;
                 let dst_name = self.make_temporary();
@@ -293,6 +295,7 @@ impl<'a> Tacky {
                 });
                 Ok(dst)
             }
+            Expression::Cast(_, _expr) => todo!(),
         }
     }
 
@@ -851,6 +854,7 @@ impl<'a> Tacky {
             // file-scope or local-scope with Static or Extern storage is
             // ignored for .data or .bss reads
             storage_class: None,
+            ..
         } = decl
         {
             // emit instructions for rhs, then copy into lhs
@@ -894,6 +898,7 @@ fn create_continue_label(lbl: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::AST as ParserAST;
     use crate::parser::BinaryOp as ParserBinaryOp;
     use crate::parser::Block;
     use crate::parser::BlockItem;
@@ -901,7 +906,6 @@ mod tests {
     use crate::parser::FunctionDeclaration;
     use crate::parser::Statement;
     use crate::parser::UnaryOp as ParserUnaryOp;
-    use crate::parser::AST as ParserAST;
     use crate::semantic_analysis;
 
     fn main_symbol_table() -> semantic_analysis::SymbolTable {
