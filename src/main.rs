@@ -6,11 +6,13 @@ use std::io::BufWriter;
 use std::path::PathBuf;
 
 mod asm;
+mod ast;
 mod emitter;
 mod lexer;
 mod parser;
 mod semantic_analysis;
 mod tacky;
+mod types;
 use asm::Asm;
 use emitter::Emitter;
 use lexer::Lexer;

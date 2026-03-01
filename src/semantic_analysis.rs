@@ -3,6 +3,7 @@ use crate::parser::Block;
 use crate::parser::BlockItem;
 use crate::parser::Const;
 use crate::parser::Declaration;
+use crate::parser::ExprKind;
 use crate::parser::Expression;
 use crate::parser::ForInit;
 use crate::parser::FunctionDeclaration;
@@ -61,6 +62,8 @@ pub enum SemanticAnalysisError {
     InitializerOnLocalExternVarDecl,
     #[error("Non-constant initializer on local static variable declaration")]
     NonConstInitOnLocalStaticVar,
+    #[error("Storage class specifier not allowed in for-loop init declaration")]
+    StorageClassInForInit,
 }
 
 #[derive(Debug, Clone)]
@@ -290,11 +293,13 @@ fn typecheck_file_scope_variable_declaration(
     // Can either be a known constant value,
     // Tentative if the storage class is Static or unknown,
     // or explicitly no initializer for an extern variable
-    let mut initial_value = match var.init {
-        Some(Expression::Constant(Const::Int(i))) => InitialValue::Initial(i.try_into().unwrap()),
+    let mut initial_value = match &var.init {
         None if var.storage_class == Some(StorageClass::Extern) => InitialValue::NoInitializer,
         None => InitialValue::Tentative,
-        _ => return Err(SemanticAnalysisError::NonConstantInitializer),
+        Some(expr) => match expr.kind.as_ref() {
+            ExprKind::Constant(Const::Int(i)) => InitialValue::Initial((*i).try_into().unwrap()),
+            _ => return Err(SemanticAnalysisError::NonConstantInitializer),
+        },
     };
 
     // is this variable global?
@@ -359,16 +364,16 @@ fn typecheck_block(
     decl: &Block,
     symbol_table: &mut SymbolTable,
 ) -> Result<(), SemanticAnalysisError> {
-    let Block(body) = decl;
+    let crate::ast::Block(body) = decl;
     for body_item in body.iter() {
         match body_item {
             BlockItem::Decl(Declaration::VarDecl(declaration)) => {
-                typecheck_local_var_decl(declaration, symbol_table)?
+                typecheck_local_var_decl(&declaration, symbol_table)?
             }
             BlockItem::Decl(Declaration::FunDecl(decl)) => {
-                typecheck_function_declaration(decl, symbol_table)?;
+                typecheck_function_declaration(&decl, symbol_table)?;
             }
-            BlockItem::Stmt(statement) => typecheck_statement(statement, symbol_table)?,
+            BlockItem::Stmt(statement) => typecheck_statement(&statement, symbol_table)?,
         }
     }
 
@@ -417,11 +422,11 @@ fn typecheck_local_var_decl(
             // or default to an initial value of zero if not present.
             // Any non-constant initializer is a type error.
             let new_init = match init {
-                Some(Expression::Constant(Const::Int(c))) => {
-                    InitialValue::Initial((*c).try_into().unwrap())
-                }
                 None => InitialValue::Initial(0),
-                _ => return Err(SemanticAnalysisError::NonConstInitOnLocalStaticVar),
+                Some(expr) => match expr.kind.as_ref() {
+                    ExprKind::Constant(Const::Int(c)) => InitialValue::Initial((*c).try_into().unwrap()),
+                    _ => return Err(SemanticAnalysisError::NonConstInitOnLocalStaticVar),
+                },
             };
             symbol_table.insert(
                 name.clone(),
@@ -521,8 +526,8 @@ fn typecheck_expr(
     expr: &Expression,
     symbol_table: &mut SymbolTable,
 ) -> Result<(), SemanticAnalysisError> {
-    match expr {
-        Expression::FunctionCall { name, args } => {
+    match expr.kind.as_ref() {
+        ExprKind::FunctionCall { name, args } => {
             let stored_type = symbol_table.get(name); // TODO: Can this be None?
             let Some((CType::FunType(count), _)) = stored_type else {
                 return Err(SemanticAnalysisError::VariableUsedAsFunctionName(
@@ -537,7 +542,7 @@ fn typecheck_expr(
             }
             Ok(())
         }
-        Expression::Var(name) => {
+        ExprKind::Var(name) => {
             let stored_type = symbol_table.get(name); // TODO: Can this be None?
             if let Some((CType::FunType(_), IdentifierAttrs::FunAttr { .. })) = stored_type {
                 return Err(SemanticAnalysisError::FunctionUsedAsVariableName(
@@ -546,17 +551,17 @@ fn typecheck_expr(
             };
             Ok(())
         }
-        Expression::Constant(_) => Ok(()),
-        Expression::Binary(_op, lhs, rhs) => {
+        ExprKind::Constant(_) => Ok(()),
+        ExprKind::Binary(_op, lhs, rhs) => {
             typecheck_expr(lhs.as_ref(), symbol_table)?;
             typecheck_expr(rhs.as_ref(), symbol_table)?;
             Ok(())
         }
-        Expression::Unary(_op, expr) => {
+        ExprKind::Unary(_op, expr) => {
             typecheck_expr(expr.as_ref(), symbol_table)?;
             Ok(())
         }
-        Expression::Conditional {
+        ExprKind::Conditional {
             condition,
             then,
             else_,
@@ -566,12 +571,12 @@ fn typecheck_expr(
             typecheck_expr(else_.as_ref(), symbol_table)?;
             Ok(())
         }
-        Expression::Assignment(lhs, rhs) => {
+        ExprKind::Assignment(lhs, rhs) => {
             typecheck_expr(lhs.as_ref(), symbol_table)?;
             typecheck_expr(rhs.as_ref(), symbol_table)?;
             Ok(())
         }
-        Expression::Cast(_, expr) => typecheck_expr(expr.as_ref(), symbol_table),
+        ExprKind::Cast(_, expr) => typecheck_expr(expr.as_ref(), symbol_table),
     }
 }
 
@@ -600,7 +605,7 @@ fn resolve_ast(ast: &mut AST, resolver: &mut Resolver) -> Result<(), SemanticAna
 }
 
 fn resolve_block(block: &mut Block, resolver: &mut Resolver) -> Result<(), SemanticAnalysisError> {
-    let Block(body) = block;
+    let crate::ast::Block(body) = block;
     for body_item in body.iter_mut() {
         match body_item {
             BlockItem::Decl(Declaration::VarDecl(declaration)) => {
@@ -765,7 +770,12 @@ fn resolve_for_init(
     resolver: &mut Resolver,
 ) -> Result<(), SemanticAnalysisError> {
     match init {
-        ForInit::InitDecl(decl) => resolve_local_variable_declaration(decl, resolver),
+        ForInit::InitDecl(decl) => {
+            if decl.storage_class.is_some() {
+                return Err(SemanticAnalysisError::StorageClassInForInit);
+            }
+            resolve_local_variable_declaration(decl, resolver)
+        }
         ForInit::InitExp(expr) => resolve_optional_expr(expr.as_mut(), resolver),
     }
 }
@@ -784,9 +794,9 @@ fn resolve_expr(
     expr: &mut Expression,
     resolver: &mut Resolver,
 ) -> Result<(), SemanticAnalysisError> {
-    match expr {
-        Expression::Constant(_) => (),
-        Expression::Var(ident) => match resolver.get_resolved_variable(&ident) {
+    match &mut *expr.kind {
+        ExprKind::Constant(_) => (),
+        ExprKind::Var(ident) => match resolver.get_resolved_variable(&ident) {
             Some(renamed) => *ident = renamed,
             None => {
                 return Err(SemanticAnalysisError::UndeclaredVariableInInitializer(
@@ -794,19 +804,19 @@ fn resolve_expr(
                 ));
             }
         },
-        Expression::Unary(_op, expr) => resolve_expr(expr, resolver)?,
-        Expression::Binary(_op, lhs, rhs) => {
+        ExprKind::Unary(_op, expr) => resolve_expr(expr, resolver)?,
+        ExprKind::Binary(_op, lhs, rhs) => {
             resolve_expr(&mut *lhs, resolver)?;
             resolve_expr(&mut *rhs, resolver)?;
         }
-        Expression::Assignment(lhs, rhs) => {
-            if !matches!(**lhs, Expression::Var(_)) {
+        ExprKind::Assignment(lhs, rhs) => {
+            if !matches!(*lhs.kind, ExprKind::Var(_)) {
                 return Err(SemanticAnalysisError::InvalidLhsAssignmentNode);
             }
             resolve_expr(&mut *lhs, resolver)?;
             resolve_expr(&mut *rhs, resolver)?;
         }
-        Expression::Conditional {
+        ExprKind::Conditional {
             condition,
             then,
             else_,
@@ -815,7 +825,7 @@ fn resolve_expr(
             resolve_expr(&mut *then, resolver)?;
             resolve_expr(&mut *else_, resolver)?;
         }
-        Expression::FunctionCall { name, args } => {
+        ExprKind::FunctionCall { name, args } => {
             let ident = resolver
                 .get_identifier(name)
                 .ok_or_else(|| SemanticAnalysisError::UndeclaredFunction)?;
@@ -825,7 +835,7 @@ fn resolve_expr(
                 resolve_expr(arg, resolver)?;
             }
         }
-        Expression::Cast(_, expr) => resolve_expr(expr, resolver)?,
+        ExprKind::Cast(_, expr) => resolve_expr(expr, resolver)?,
     };
     Ok(())
 }
@@ -854,7 +864,7 @@ fn label_block(
     current_label: Option<String>,
     resolver: &mut Resolver,
 ) -> Result<(), SemanticAnalysisError> {
-    let Block(body) = block;
+    let crate::ast::Block(body) = block;
     for body_item in body.iter_mut() {
         if let BlockItem::Stmt(statement) = body_item {
             label_statement(statement, current_label.clone(), resolver)?;
@@ -869,7 +879,7 @@ fn label_statement(
     current_label: Option<String>,
     resolver: &mut Resolver,
 ) -> Result<(), SemanticAnalysisError> {
-    use Statement::*;
+    use crate::ast::Statement::*;
     match statement {
         Goto(_) | Return(_) | Expr(_) | Null => Ok(()),
         Break(_) if current_label.is_none() => {
@@ -921,36 +931,36 @@ mod tests {
     use super::*;
     use crate::parser::AST;
     use crate::parser::BinaryOp;
-    use crate::parser::Block;
     use crate::parser::BlockItem;
     use crate::parser::Expression;
     use crate::parser::FunctionDeclaration;
     use crate::parser::Statement;
+    use crate::types::CType;
 
     #[test]
     fn basic_resolve_repeated_variable() {
         let mut before = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![
+            block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::Constant(Const::Int(1))),
+                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
                     storage_class: None,
-                    vtype: crate::parser::CType::Int,
+                    vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::Constant(Const::Int(1))),
+                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
                     storage_class: None,
-                    vtype: crate::parser::CType::Int,
+                    vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("a".into())))),
             ])),
             params: vec![],
             storage_class: None,
-            ftype: crate::parser::CType::FunType {
+            ftype: CType::FunType {
                 params: vec![],
-                ret: Box::new(crate::parser::CType::Int),
+                ret: Box::new(CType::Int),
             },
         })]);
 
@@ -962,20 +972,20 @@ mod tests {
     fn basic_resolve_undeclared_variable() {
         let mut before = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![
+            block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::Var("c".into())),
+                    init: Some(Expression::new(ExprKind::Var("c".into()))),
                     storage_class: None,
-                    vtype: crate::parser::CType::Int,
+                    vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("a".into())))),
             ])),
             params: vec![],
             storage_class: None,
-            ftype: crate::parser::CType::FunType {
+            ftype: CType::FunType {
                 params: vec![],
-                ret: Box::new(crate::parser::CType::Int),
+                ret: Box::new(CType::Int),
             },
         })]);
 
@@ -987,26 +997,26 @@ mod tests {
     fn basic_resolve_successful() {
         let mut before = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![
+            block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::Constant(Const::Int(1))),
+                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
                     storage_class: None,
-                    vtype: crate::parser::CType::Int,
+                    vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b".into(),
-                    init: Some(Expression::Var("a".into())),
+                    init: Some(Expression::new(ExprKind::Var("a".into()))),
                     storage_class: None,
-                    vtype: crate::parser::CType::Int,
+                    vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("a".into())))),
             ])),
             params: vec![],
             storage_class: None,
-            ftype: crate::parser::CType::FunType {
+            ftype: CType::FunType {
                 params: vec![],
-                ret: Box::new(crate::parser::CType::Int),
+                ret: Box::new(CType::Int),
             },
         })]);
 
@@ -1014,26 +1024,26 @@ mod tests {
         assert!(actual.is_ok());
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![
+            block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a.0.decl".into(),
-                    init: Some(Expression::Constant(Const::Int(1))),
+                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
                     storage_class: None,
-                    vtype: crate::parser::CType::Int,
+                    vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b.1.decl".into(),
-                    init: Some(Expression::Var("a.0.decl".into())),
+                    init: Some(Expression::new(ExprKind::Var("a.0.decl".into()))),
                     storage_class: None,
-                    vtype: crate::parser::CType::Int,
+                    vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Return(Expression::Var("a.0.decl".into()))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("a.0.decl".into())))),
             ])),
             params: vec![],
             storage_class: None,
-            ftype: crate::parser::CType::FunType {
+            ftype: CType::FunType {
                 params: vec![],
-                ret: Box::new(crate::parser::CType::Int),
+                ret: Box::new(CType::Int),
             },
         })]);
 
@@ -1045,36 +1055,36 @@ mod tests {
     fn complex_resolve_successful() {
         let mut before = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![
+            block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::Constant(Const::Int(1))),
+                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
                     storage_class: None,
-                    vtype: crate::parser::CType::Int,
+                    vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b".into(),
-                    init: Some(Expression::Var("a".into())),
+                    init: Some(Expression::new(ExprKind::Var("a".into()))),
                     storage_class: None,
-                    vtype: crate::parser::CType::Int,
+                    vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "c".into(),
-                    init: Some(Expression::Binary(
+                    init: Some(Expression::new(ExprKind::Binary(
                         BinaryOp::Add,
-                        Box::new(Expression::Var("a".into())),
-                        Box::new(Expression::Var("b".into())),
-                    )),
+                        Box::new(Expression::new(ExprKind::Var("a".into()))),
+                        Box::new(Expression::new(ExprKind::Var("b".into()))),
+                    ))),
                     storage_class: None,
-                    vtype: crate::parser::CType::Int,
+                    vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Return(Expression::Var("c".into()))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("c".into())))),
             ])),
             params: vec![],
             storage_class: None,
-            ftype: crate::parser::CType::FunType {
+            ftype: CType::FunType {
                 params: vec![],
-                ret: Box::new(crate::parser::CType::Int),
+                ret: Box::new(CType::Int),
             },
         })]);
 
@@ -1082,36 +1092,36 @@ mod tests {
         assert!(actual.is_ok());
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![
+            block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a.0.decl".into(),
-                    init: Some(Expression::Constant(Const::Int(1))),
+                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
                     storage_class: None,
-                    vtype: crate::parser::CType::Int,
+                    vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b.1.decl".into(),
-                    init: Some(Expression::Var("a.0.decl".into())),
+                    init: Some(Expression::new(ExprKind::Var("a.0.decl".into()))),
                     storage_class: None,
-                    vtype: crate::parser::CType::Int,
+                    vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "c.2.decl".into(),
-                    init: Some(Expression::Binary(
+                    init: Some(Expression::new(ExprKind::Binary(
                         BinaryOp::Add,
-                        Box::new(Expression::Var("a.0.decl".into())),
-                        Box::new(Expression::Var("b.1.decl".into())),
-                    )),
+                        Box::new(Expression::new(ExprKind::Var("a.0.decl".into()))),
+                        Box::new(Expression::new(ExprKind::Var("b.1.decl".into()))),
+                    ))),
                     storage_class: None,
-                    vtype: crate::parser::CType::Int,
+                    vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Return(Expression::Var("c.2.decl".into()))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("c.2.decl".into())))),
             ])),
             params: vec![],
             storage_class: None,
-            ftype: crate::parser::CType::FunType {
+            ftype: CType::FunType {
                 params: vec![],
-                ret: Box::new(crate::parser::CType::Int),
+                ret: Box::new(CType::Int),
             },
         })]);
 
@@ -1207,30 +1217,30 @@ mod tests {
 
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![
+            block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "x.0.decl".into(),
-                    init: Some(Expression::Constant(Const::Int(1))),
+                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
                     storage_class: None,
-                    vtype: crate::parser::CType::Int,
+                    vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Compound(Block(vec![BlockItem::Decl(
+                BlockItem::Stmt(Statement::Compound(crate::ast::Block(vec![BlockItem::Decl(
                     // Declaration is the same name, but has a new renamed variable
                     // since we want to ensure any label is pinned to one value
                     Declaration::VarDecl(VariableDeclaration {
                         name: "x.1.decl".into(),
-                        init: Some(Expression::Constant(Const::Int(2))),
+                        init: Some(Expression::new(ExprKind::Constant(Const::Int(2)))),
                         storage_class: None,
-                        vtype: crate::parser::CType::Int,
+                        vtype: CType::Int,
                     }),
                 )]))),
-                BlockItem::Stmt(Statement::Return(Expression::Var("x.0.decl".into()))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("x.0.decl".into())))),
             ])),
             params: vec![],
             storage_class: None,
-            ftype: crate::parser::CType::FunType {
+            ftype: CType::FunType {
                 params: vec![],
-                ret: Box::new(crate::parser::CType::Int),
+                ret: Box::new(CType::Int),
             },
         })]);
 
@@ -1261,62 +1271,62 @@ mod tests {
 
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![
+            block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a.0.decl".into(),
                     init: None,
                     storage_class: None,
-                    vtype: crate::parser::CType::Int,
+                    vtype: CType::Int,
                 })),
                 BlockItem::Stmt(Statement::For {
-                    init: ForInit::InitExp(Some(Expression::Assignment(
-                        Box::new(Expression::Var("a.0.decl".into())),
-                        Box::new(Expression::Constant(Const::Int(1))),
-                    ))),
-                    condition: Some(Expression::Binary(
+                    init: ForInit::InitExp(Some(Expression::new(ExprKind::Assignment(
+                        Box::new(Expression::new(ExprKind::Var("a.0.decl".into()))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                    )))),
+                    condition: Some(Expression::new(ExprKind::Binary(
                         BinaryOp::LessThan,
-                        Box::new(Expression::Var("a.0.decl".into())),
-                        Box::new(Expression::Constant(Const::Int(10))),
-                    )),
-                    post: Some(Expression::Assignment(
-                        Box::new(Expression::Var("a.0.decl".into())),
-                        Box::new(Expression::Binary(
+                        Box::new(Expression::new(ExprKind::Var("a.0.decl".into()))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(10)))),
+                    ))),
+                    post: Some(Expression::new(ExprKind::Assignment(
+                        Box::new(Expression::new(ExprKind::Var("a.0.decl".into()))),
+                        Box::new(Expression::new(ExprKind::Binary(
                             BinaryOp::Add,
-                            Box::new(Expression::Var("a.0.decl".into())),
-                            Box::new(Expression::Constant(Const::Int(1))),
-                        )),
-                    )),
-                    body: Box::new(Statement::Compound(Block(vec![BlockItem::Stmt(
+                            Box::new(Expression::new(ExprKind::Var("a.0.decl".into()))),
+                            Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                        ))),
+                    ))),
+                    body: Box::new(Statement::Compound(crate::ast::Block(vec![BlockItem::Stmt(
                         Statement::Continue("for_label.1".into()),
                     )]))),
                     label: "for_label.1".into(),
                 }),
                 BlockItem::Stmt(Statement::DoWhile {
-                    body: Box::new(Statement::Compound(Block(vec![BlockItem::Stmt(
+                    body: Box::new(Statement::Compound(crate::ast::Block(vec![BlockItem::Stmt(
                         Statement::Continue("do_while_label.2".into()),
                     )]))),
-                    condition: Expression::Binary(
+                    condition: Expression::new(ExprKind::Binary(
                         BinaryOp::LessThan,
-                        Box::new(Expression::Var("a.0.decl".into())),
-                        Box::new(Expression::Constant(Const::Int(0))),
-                    ),
+                        Box::new(Expression::new(ExprKind::Var("a.0.decl".into()))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(0)))),
+                    )),
                     label: "do_while_label.2".into(),
                 }),
                 BlockItem::Stmt(Statement::While {
-                    condition: Expression::Binary(
+                    condition: Expression::new(ExprKind::Binary(
                         BinaryOp::GreaterThan,
-                        Box::new(Expression::Var("a.0.decl".into())),
-                        Box::new(Expression::Constant(Const::Int(0))),
-                    ),
+                        Box::new(Expression::new(ExprKind::Var("a.0.decl".into()))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(0)))),
+                    )),
                     body: Box::new(Statement::Break("while_label.3".into())),
                     label: "while_label.3".into(),
                 }),
             ])),
             params: vec![],
             storage_class: None,
-            ftype: crate::parser::CType::FunType {
+            ftype: CType::FunType {
                 params: vec![],
-                ret: Box::new(crate::parser::CType::Int),
+                ret: Box::new(CType::Int),
             },
         })]);
         assert_eq!(ast, expected);

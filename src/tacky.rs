@@ -7,6 +7,7 @@ use crate::parser::BinaryOp as ParserBinaryOp;
 use crate::parser::Block;
 use crate::parser::Const;
 use crate::parser::Declaration;
+use crate::parser::ExprKind;
 use crate::parser::Expression;
 use crate::parser::ForInit;
 use crate::parser::FunctionDeclaration;
@@ -224,10 +225,10 @@ impl<'a> Tacky {
         expr: &Expression,
         instructions: &mut Vec<Instruction>,
     ) -> Result<Val, TackyError> {
-        match expr {
-            Expression::Constant(Const::Int(imm)) => Ok(Val::Constant((*imm).try_into().unwrap())),
-            Expression::Constant(Const::Long(_)) => todo!(),
-            Expression::Unary(op, exp) => {
+        match expr.kind.as_ref() {
+            ExprKind::Constant(Const::Int(imm)) => Ok(Val::Constant((*imm).try_into().unwrap())),
+            ExprKind::Constant(Const::Long(_)) => todo!(),
+            ExprKind::Unary(op, exp) => {
                 let src = self.parse_expression(exp, instructions)?;
                 let dst_name = self.make_temporary();
                 let dst = Val::Var(dst_name);
@@ -243,28 +244,28 @@ impl<'a> Tacky {
                 });
                 Ok(dst)
             }
-            Expression::Binary(op @ ParserBinaryOp::BinAnd, left, right)
-            | Expression::Binary(op @ ParserBinaryOp::BinOr, left, right) => {
+            ExprKind::Binary(op @ ParserBinaryOp::BinAnd, left, right)
+            | ExprKind::Binary(op @ ParserBinaryOp::BinOr, left, right) => {
                 self.parse_short_circuit_expression(op, left, right, instructions)
             }
-            Expression::Binary(op @ ParserBinaryOp::AddAssign, left, right)
-            | Expression::Binary(op @ ParserBinaryOp::MinusAssign, left, right)
-            | Expression::Binary(op @ ParserBinaryOp::MultiplyAssign, left, right)
-            | Expression::Binary(op @ ParserBinaryOp::DivideAssign, left, right)
-            | Expression::Binary(op @ ParserBinaryOp::RemainderAssign, left, right)
-            | Expression::Binary(op @ ParserBinaryOp::BitwiseAndAssign, left, right)
-            | Expression::Binary(op @ ParserBinaryOp::BitwiseOrAssign, left, right)
-            | Expression::Binary(op @ ParserBinaryOp::XorAssign, left, right)
-            | Expression::Binary(op @ ParserBinaryOp::ShiftLeftAssign, left, right)
-            | Expression::Binary(op @ ParserBinaryOp::ShiftRightAssign, left, right) => {
+            ExprKind::Binary(op @ ParserBinaryOp::AddAssign, left, right)
+            | ExprKind::Binary(op @ ParserBinaryOp::MinusAssign, left, right)
+            | ExprKind::Binary(op @ ParserBinaryOp::MultiplyAssign, left, right)
+            | ExprKind::Binary(op @ ParserBinaryOp::DivideAssign, left, right)
+            | ExprKind::Binary(op @ ParserBinaryOp::RemainderAssign, left, right)
+            | ExprKind::Binary(op @ ParserBinaryOp::BitwiseAndAssign, left, right)
+            | ExprKind::Binary(op @ ParserBinaryOp::BitwiseOrAssign, left, right)
+            | ExprKind::Binary(op @ ParserBinaryOp::XorAssign, left, right)
+            | ExprKind::Binary(op @ ParserBinaryOp::ShiftLeftAssign, left, right)
+            | ExprKind::Binary(op @ ParserBinaryOp::ShiftRightAssign, left, right) => {
                 self.parse_eager_compound_binary_expression(op, left, right, instructions)
             }
-            Expression::Binary(op, left, right) => {
+            ExprKind::Binary(op, left, right) => {
                 self.parse_eager_binary_expression(op, left, right, instructions)
             }
-            Expression::Var(ident) => Ok(Val::Var(ident.clone())),
-            Expression::Assignment(lhs, rhs) => {
-                let Expression::Var(ref ident) = **lhs else {
+            ExprKind::Var(ident) => Ok(Val::Var(ident.clone())),
+            ExprKind::Assignment(lhs, rhs) => {
+                let ExprKind::Var(ref ident) = *lhs.kind else {
                     return Err(TackyError::InvalidLhsOfAssignment);
                 };
                 // emit instructions for rhs, then copy into lhs
@@ -275,12 +276,12 @@ impl<'a> Tacky {
                 });
                 Ok(Val::Var(ident.clone()))
             }
-            Expression::Conditional {
+            ExprKind::Conditional {
                 condition,
                 then,
                 else_,
             } => self.parse_conditional(condition, then, else_, instructions),
-            Expression::FunctionCall { name, args } => {
+            ExprKind::FunctionCall { name, args } => {
                 let args = args
                     .iter()
                     .map(|arg| self.parse_expression(arg, instructions))
@@ -295,7 +296,7 @@ impl<'a> Tacky {
                 });
                 Ok(dst)
             }
-            Expression::Cast(_, _expr) => todo!(),
+            ExprKind::Cast(_, _expr) => todo!(),
         }
     }
 
@@ -828,14 +829,14 @@ impl<'a> Tacky {
         instructions: &mut Vec<Instruction>,
     ) -> Result<(), TackyError> {
         use parser::BlockItem;
-        let Block(body) = block;
+        let crate::ast::Block(body) = block;
         for body_item in body {
             match body_item {
                 BlockItem::Stmt(stmt) => {
-                    self.parse_statement(stmt, instructions)?;
+                    self.parse_statement(&stmt, instructions)?;
                 }
                 BlockItem::Decl(Declaration::VarDecl(declaration)) => {
-                    self.emit_declaration(declaration, instructions)?;
+                    self.emit_declaration(&declaration, instructions)?;
                 }
                 BlockItem::Decl(Declaration::FunDecl(_decl)) => (),
             }
@@ -900,13 +901,13 @@ mod tests {
     use super::*;
     use crate::parser::AST as ParserAST;
     use crate::parser::BinaryOp as ParserBinaryOp;
-    use crate::parser::Block;
     use crate::parser::BlockItem;
     use crate::parser::Declaration;
     use crate::parser::FunctionDeclaration;
     use crate::parser::Statement;
     use crate::parser::UnaryOp as ParserUnaryOp;
     use crate::semantic_analysis;
+    use crate::types::CType;
 
     fn main_symbol_table() -> semantic_analysis::SymbolTable {
         let mut table = semantic_analysis::SymbolTable::new();
@@ -927,14 +928,14 @@ mod tests {
     fn basic_parse() {
         let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Constant(Const::Int(100)),
+            block: Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::new(ExprKind::Constant(Const::Int(100))),
             ))])),
             params: vec![],
             storage_class: None,
-            ftype: crate::parser::CType::FunType {
+            ftype: CType::FunType {
                 params: vec![],
-                ret: Box::new(crate::parser::CType::Int),
+                ret: Box::new(CType::Int),
             },
         })]);
 
@@ -959,17 +960,17 @@ mod tests {
     fn unary_op_parse() {
         let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Unary(
+            block: Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::new(ExprKind::Unary(
                     ParserUnaryOp::Negate,
-                    Box::new(Expression::Constant(Const::Int(100))),
-                ),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(100)))),
+                )),
             ))])),
             params: vec![],
             storage_class: None,
-            ftype: crate::parser::CType::FunType {
+            ftype: CType::FunType {
                 params: vec![],
-                ret: Box::new(crate::parser::CType::Int),
+                ret: Box::new(CType::Int),
             },
         })]);
 
@@ -999,23 +1000,23 @@ mod tests {
     fn complex_unary_parse() {
         let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Unary(
+            block: Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::new(ExprKind::Unary(
                     ParserUnaryOp::Negate,
-                    Box::new(Expression::Unary(
+                    Box::new(Expression::new(ExprKind::Unary(
                         ParserUnaryOp::Complement,
-                        Box::new(Expression::Unary(
+                        Box::new(Expression::new(ExprKind::Unary(
                             ParserUnaryOp::Negate,
-                            Box::new(Expression::Constant(Const::Int(100))),
-                        )),
-                    )),
-                ),
+                            Box::new(Expression::new(ExprKind::Constant(Const::Int(100)))),
+                        ))),
+                    ))),
+                )),
             ))])),
             params: vec![],
             storage_class: None,
-            ftype: crate::parser::CType::FunType {
+            ftype: CType::FunType {
                 params: vec![],
-                ret: Box::new(crate::parser::CType::Int),
+                ret: Box::new(CType::Int),
             },
         })]);
 
@@ -1055,30 +1056,30 @@ mod tests {
     fn complex_binary_parse() {
         let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Binary(
+            block: Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::new(ExprKind::Binary(
                     ParserBinaryOp::Subtract,
-                    Box::new(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Binary(
                         ParserBinaryOp::Multiply,
-                        Box::new(Expression::Constant(Const::Int(1))),
-                        Box::new(Expression::Constant(Const::Int(2))),
-                    )),
-                    Box::new(Expression::Binary(
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                    ))),
+                    Box::new(Expression::new(ExprKind::Binary(
                         ParserBinaryOp::Multiply,
-                        Box::new(Expression::Constant(Const::Int(3))),
-                        Box::new(Expression::Binary(
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(3)))),
+                        Box::new(Expression::new(ExprKind::Binary(
                             ParserBinaryOp::Add,
-                            Box::new(Expression::Constant(Const::Int(4))),
-                            Box::new(Expression::Constant(Const::Int(5))),
-                        )),
-                    )),
-                ),
+                            Box::new(Expression::new(ExprKind::Constant(Const::Int(4)))),
+                            Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
+                        ))),
+                    ))),
+                )),
             ))])),
             params: vec![],
             storage_class: None,
-            ftype: crate::parser::CType::FunType {
+            ftype: CType::FunType {
                 params: vec![],
-                ret: Box::new(crate::parser::CType::Int),
+                ret: Box::new(CType::Int),
             },
         })]);
         let expected = AST::Program(vec![TopLevel::Function {
@@ -1126,34 +1127,34 @@ mod tests {
     fn complex_binary_parse2() {
         let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Binary(
+            block: Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::new(ExprKind::Binary(
                     ParserBinaryOp::Subtract,
-                    Box::new(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Binary(
                         ParserBinaryOp::Divide,
-                        Box::new(Expression::Binary(
+                        Box::new(Expression::new(ExprKind::Binary(
                             ParserBinaryOp::Multiply,
-                            Box::new(Expression::Constant(Const::Int(5))),
-                            Box::new(Expression::Constant(Const::Int(4))),
-                        )),
-                        Box::new(Expression::Constant(Const::Int(2))),
-                    )),
-                    Box::new(Expression::Binary(
+                            Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
+                            Box::new(Expression::new(ExprKind::Constant(Const::Int(4)))),
+                        ))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                    ))),
+                    Box::new(Expression::new(ExprKind::Binary(
                         ParserBinaryOp::Remainder,
-                        Box::new(Expression::Constant(Const::Int(3))),
-                        Box::new(Expression::Binary(
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(3)))),
+                        Box::new(Expression::new(ExprKind::Binary(
                             ParserBinaryOp::Add,
-                            Box::new(Expression::Constant(Const::Int(2))),
-                            Box::new(Expression::Constant(Const::Int(1))),
-                        )),
-                    )),
-                ),
+                            Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                            Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                        ))),
+                    ))),
+                )),
             ))])),
             params: vec![],
             storage_class: None,
-            ftype: crate::parser::CType::FunType {
+            ftype: CType::FunType {
                 params: vec![],
-                ret: Box::new(crate::parser::CType::Int),
+                ret: Box::new(CType::Int),
             },
         })]);
 
@@ -1208,30 +1209,30 @@ mod tests {
     fn simple_bitwise() {
         let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Binary(
+            block: Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::new(ExprKind::Binary(
                     ParserBinaryOp::BitwiseOr,
-                    Box::new(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Binary(
                         ParserBinaryOp::Multiply,
-                        Box::new(Expression::Constant(Const::Int(5))),
-                        Box::new(Expression::Constant(Const::Int(4))),
-                    )),
-                    Box::new(Expression::Binary(
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(4)))),
+                    ))),
+                    Box::new(Expression::new(ExprKind::Binary(
                         ParserBinaryOp::BitwiseAnd,
-                        Box::new(Expression::Binary(
+                        Box::new(Expression::new(ExprKind::Binary(
                             ParserBinaryOp::Subtract,
-                            Box::new(Expression::Constant(Const::Int(4))),
-                            Box::new(Expression::Constant(Const::Int(5))),
-                        )),
-                        Box::new(Expression::Constant(Const::Int(6))),
-                    )),
-                ),
+                            Box::new(Expression::new(ExprKind::Constant(Const::Int(4)))),
+                            Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
+                        ))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(6)))),
+                    ))),
+                )),
             ))])),
             params: vec![],
             storage_class: None,
-            ftype: crate::parser::CType::FunType {
+            ftype: CType::FunType {
                 params: vec![],
-                ret: Box::new(crate::parser::CType::Int),
+                ret: Box::new(CType::Int),
             },
         })]);
 
@@ -1280,22 +1281,22 @@ mod tests {
     fn shiftleft() {
         let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Binary(
+            block: Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::new(ExprKind::Binary(
                     ParserBinaryOp::ShiftLeft,
-                    Box::new(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Binary(
                         ParserBinaryOp::Multiply,
-                        Box::new(Expression::Constant(Const::Int(5))),
-                        Box::new(Expression::Constant(Const::Int(4))),
-                    )),
-                    Box::new(Expression::Constant(Const::Int(2))),
-                ),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(4)))),
+                    ))),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                )),
             ))])),
             params: vec![],
             storage_class: None,
-            ftype: crate::parser::CType::FunType {
+            ftype: CType::FunType {
                 params: vec![],
-                ret: Box::new(crate::parser::CType::Int),
+                ret: Box::new(CType::Int),
             },
         })]);
         let expected = AST::Program(vec![TopLevel::Function {
@@ -1331,22 +1332,22 @@ mod tests {
     fn shiftleft_rhs_is_expr() {
         let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Binary(
+            block: Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::new(ExprKind::Binary(
                     ParserBinaryOp::ShiftLeft,
-                    Box::new(Expression::Constant(Const::Int(5))),
-                    Box::new(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
+                    Box::new(Expression::new(ExprKind::Binary(
                         ParserBinaryOp::Add,
-                        Box::new(Expression::Constant(Const::Int(1))),
-                        Box::new(Expression::Constant(Const::Int(2))),
-                    )),
-                ),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                    ))),
+                )),
             ))])),
             params: vec![],
             storage_class: None,
-            ftype: crate::parser::CType::FunType {
+            ftype: CType::FunType {
                 params: vec![],
-                ret: Box::new(crate::parser::CType::Int),
+                ret: Box::new(CType::Int),
             },
         })]);
         let expected = AST::Program(vec![TopLevel::Function {
@@ -1382,22 +1383,22 @@ mod tests {
     fn test_short_circuit_and() {
         let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Binary(
+            block: Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::new(ExprKind::Binary(
                     ParserBinaryOp::BinAnd,
-                    Box::new(Expression::Constant(Const::Int(5))),
-                    Box::new(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
+                    Box::new(Expression::new(ExprKind::Binary(
                         ParserBinaryOp::Add,
-                        Box::new(Expression::Constant(Const::Int(1))),
-                        Box::new(Expression::Constant(Const::Int(2))),
-                    )),
-                ),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                    ))),
+                )),
             ))])),
             params: vec![],
             storage_class: None,
-            ftype: crate::parser::CType::FunType {
+            ftype: CType::FunType {
                 params: vec![],
-                ret: Box::new(crate::parser::CType::Int),
+                ret: Box::new(CType::Int),
             },
         })]);
 
@@ -1455,22 +1456,22 @@ mod tests {
     fn test_short_circuit_or() {
         let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Binary(
+            block: Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::new(ExprKind::Binary(
                     ParserBinaryOp::BinOr,
-                    Box::new(Expression::Constant(Const::Int(5))),
-                    Box::new(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
+                    Box::new(Expression::new(ExprKind::Binary(
                         ParserBinaryOp::Add,
-                        Box::new(Expression::Constant(Const::Int(1))),
-                        Box::new(Expression::Constant(Const::Int(2))),
-                    )),
-                ),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                    ))),
+                )),
             ))])),
             params: vec![],
             storage_class: None,
-            ftype: crate::parser::CType::FunType {
+            ftype: CType::FunType {
                 params: vec![],
-                ret: Box::new(crate::parser::CType::Int),
+                ret: Box::new(CType::Int),
             },
         })]);
 
@@ -1528,36 +1529,36 @@ mod tests {
     fn basic_declarations() {
         let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![
+            block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a.0.decl".into(),
-                    init: Some(Expression::Constant(Const::Int(1))),
+                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
                     storage_class: None,
-                    vtype: crate::parser::CType::Int,
+                    vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b.1.decl".into(),
-                    init: Some(Expression::Var("a.0.decl".into())),
+                    init: Some(Expression::new(ExprKind::Var("a.0.decl".into()))),
                     storage_class: None,
-                    vtype: crate::parser::CType::Int,
+                    vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "c.2.decl".into(),
-                    init: Some(Expression::Binary(
+                    init: Some(Expression::new(ExprKind::Binary(
                         ParserBinaryOp::Add,
-                        Box::new(Expression::Var("a.0.decl".into())),
-                        Box::new(Expression::Var("b.1.decl".into())),
-                    )),
+                        Box::new(Expression::new(ExprKind::Var("a.0.decl".into()))),
+                        Box::new(Expression::new(ExprKind::Var("b.1.decl".into()))),
+                    ))),
                     storage_class: None,
-                    vtype: crate::parser::CType::Int,
+                    vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Return(Expression::Var("c.2.decl".into()))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("c.2.decl".into())))),
             ])),
             params: vec![],
             storage_class: None,
-            ftype: crate::parser::CType::FunType {
+            ftype: CType::FunType {
                 params: vec![],
-                ret: Box::new(crate::parser::CType::Int),
+                ret: Box::new(CType::Int),
             },
         })]);
         let expected = AST::Program(vec![TopLevel::Function {
@@ -1599,45 +1600,45 @@ mod tests {
     fn test_compound_assignment() {
         let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![
+            block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::Constant(Const::Int(1))),
+                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
                     storage_class: None,
-                    vtype: crate::parser::CType::Int,
+                    vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Binary(
                     ParserBinaryOp::AddAssign,
-                    Box::new(Expression::Var("a".into())),
-                    Box::new(Expression::Constant(Const::Int(2))),
-                ))),
-                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Var("a".into()))),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                )))),
+                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Binary(
                     ParserBinaryOp::MinusAssign,
-                    Box::new(Expression::Var("a".into())),
-                    Box::new(Expression::Constant(Const::Int(2))),
-                ))),
-                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Var("a".into()))),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                )))),
+                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Binary(
                     ParserBinaryOp::MultiplyAssign,
-                    Box::new(Expression::Var("a".into())),
-                    Box::new(Expression::Constant(Const::Int(2))),
-                ))),
-                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Var("a".into()))),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                )))),
+                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Binary(
                     ParserBinaryOp::DivideAssign,
-                    Box::new(Expression::Var("a".into())),
-                    Box::new(Expression::Constant(Const::Int(2))),
-                ))),
-                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Var("a".into()))),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                )))),
+                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Binary(
                     ParserBinaryOp::RemainderAssign,
-                    Box::new(Expression::Var("a".into())),
-                    Box::new(Expression::Constant(Const::Int(2))),
-                ))),
-                BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
+                    Box::new(Expression::new(ExprKind::Var("a".into()))),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                )))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("a".into())))),
             ])),
             params: vec![],
             storage_class: None,
-            ftype: crate::parser::CType::FunType {
+            ftype: CType::FunType {
                 params: vec![],
-                ret: Box::new(crate::parser::CType::Int),
+                ret: Box::new(CType::Int),
             },
         })]);
 
@@ -1716,28 +1717,28 @@ mod tests {
     fn test_invalid_lhs_compound_assignment() {
         let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
-            block: Some(Block(vec![
+            block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::Constant(Const::Int(10))),
+                    init: Some(Expression::new(ExprKind::Constant(Const::Int(10)))),
                     storage_class: None,
-                    vtype: crate::parser::CType::Int,
+                    vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Binary(
                     ParserBinaryOp::MinusAssign,
-                    Box::new(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Binary(
                         ParserBinaryOp::AddAssign,
-                        Box::new(Expression::Var("a".into())),
-                        Box::new(Expression::Constant(Const::Int(1))),
-                    )),
-                    Box::new(Expression::Constant(Const::Int(2))),
-                ))),
+                        Box::new(Expression::new(ExprKind::Var("a".into()))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                    ))),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                )))),
             ])),
             params: vec![],
             storage_class: None,
-            ftype: crate::parser::CType::FunType {
+            ftype: CType::FunType {
                 params: vec![],
-                ret: Box::new(crate::parser::CType::Int),
+                ret: Box::new(CType::Int),
             },
         })]);
         let tacky = Tacky::new(ast);

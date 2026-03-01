@@ -1,5 +1,19 @@
+use crate::lexer::Token;
+use crate::types::CType;
 use std::iter::Peekable;
+pub use crate::ast::{Const, StorageClass, BinaryOp, UnaryOp};
 use thiserror::Error;
+
+pub type AST = crate::ast::AST<()>;
+pub type Declaration = crate::ast::Declaration<()>;
+pub type Statement = crate::ast::Statement<()>;
+pub type ExprKind = crate::ast::ExprKind<()>;
+pub type Expression = crate::ast::Expression<()>;
+pub type FunctionDeclaration = crate::ast::FunctionDeclaration<()>;
+pub type VariableDeclaration = crate::ast::VariableDeclaration<()>;
+pub type ForInit = crate::ast::ForInit<()>;
+pub type BlockItem = crate::ast::BlockItem<()>;
+pub type Block = crate::ast::Block<()>;
 
 #[derive(Debug, Error, PartialEq)]
 pub enum ParserError {
@@ -29,192 +43,6 @@ pub enum ParserError {
     InvalidStorageClass,
     #[error("Integer too large to fit in a C int or long")]
     IntegerTooLargeToFitInConstant,
-}
-
-use crate::lexer::Token;
-#[derive(Debug, PartialEq)]
-pub enum AST {
-    Program(Vec<Declaration>),
-}
-
-#[derive(Debug, PartialEq)]
-pub enum Declaration {
-    VarDecl(VariableDeclaration),
-    FunDecl(FunctionDeclaration),
-}
-
-#[derive(Debug, PartialEq)]
-pub struct FunctionDeclaration {
-    pub name: String,
-    pub params: Vec<String>, // should this be owned?
-    pub block: Option<Block>,
-    pub storage_class: Option<StorageClass>,
-    pub ftype: CType,
-}
-
-impl FunctionDeclaration {
-    pub fn new(
-        name: String,
-        params: Vec<(String, CType)>,
-        block: Option<Block>,
-        storage_class: Option<StorageClass>,
-        return_type: CType,
-    ) -> FunctionDeclaration {
-        let ftype = CType::FunType {
-            ret: Box::new(return_type),
-            params: params.iter().map(|(_, t)| t.clone()).collect(),
-        };
-        let params = params.into_iter().map(|(s, _)| s).collect();
-        FunctionDeclaration {
-            name,
-            params,
-            block,
-            storage_class,
-            ftype,
-        }
-    }
-}
-
-#[derive(Debug, PartialEq)]
-pub struct VariableDeclaration {
-    pub name: String,
-    pub init: Option<Expression>,
-    pub storage_class: Option<StorageClass>,
-    pub vtype: CType,
-}
-
-#[derive(Debug, PartialEq, Copy, Clone)]
-pub enum StorageClass {
-    Static,
-    Extern,
-}
-
-// valid C types (int, unsigned, long, ...)
-#[derive(Debug, PartialEq, Clone)]
-pub enum CType {
-    Int,
-    Long,
-    FunType {
-        params: Vec<CType>,
-        ret: Box<CType>, // TODO: intern CType and carry a u32 everywhere.
-    },
-}
-
-#[derive(Debug, PartialEq)]
-pub enum ForInit {
-    InitDecl(VariableDeclaration),
-    InitExp(Option<Expression>),
-}
-
-#[derive(Debug, PartialEq)]
-pub enum Statement {
-    Goto(String),
-    Labelled {
-        label: String,
-        statement: Box<Statement>,
-    },
-    Return(Expression),
-    Expr(Expression),
-    If {
-        condition: Expression,
-        then: Box<Statement>,
-        else_: Option<Box<Statement>>,
-    },
-    Compound(Block),
-    Break(String),
-    Continue(String),
-    While {
-        condition: Expression,
-        body: Box<Statement>,
-        label: String,
-    },
-    DoWhile {
-        body: Box<Statement>,
-        condition: Expression,
-        label: String,
-    },
-    For {
-        init: ForInit,
-        condition: Option<Expression>,
-        post: Option<Expression>,
-        body: Box<Statement>,
-        label: String,
-    },
-    Null,
-}
-
-#[derive(Debug, PartialEq)]
-pub enum BlockItem {
-    Stmt(Statement),
-    Decl(Declaration),
-}
-
-#[derive(Debug, PartialEq)]
-pub struct Block(pub Vec<BlockItem>);
-
-#[derive(Debug, PartialEq)]
-pub enum Expression {
-    Constant(Const),
-    Var(String), // identifier for variable
-    Unary(UnaryOp, Box<Expression>),
-    Binary(BinaryOp, Box<Expression>, Box<Expression>),
-    Assignment(Box<Expression>, Box<Expression>), // LHS, RHS
-    Conditional {
-        condition: Box<Expression>,
-        then: Box<Expression>,
-        else_: Box<Expression>,
-    },
-    FunctionCall {
-        name: String,
-        args: Vec<Expression>,
-    },
-    Cast(CType, Box<Expression>),
-}
-
-#[derive(Debug, PartialEq)]
-pub enum Const {
-    Int(i32),
-    Long(i64),
-}
-
-#[derive(Debug, PartialEq)]
-pub enum UnaryOp {
-    Negate,
-    Complement,
-    Not,
-}
-
-#[derive(Debug, PartialEq)]
-pub enum BinaryOp {
-    Add,
-    Subtract,
-    Multiply,
-    Divide,
-    Remainder,
-    BitwiseAnd,
-    BitwiseOr,
-    Xor,
-    ShiftLeft,
-    ShiftRight,
-    Equal,
-    NotEqual,
-    LessThan,
-    LessOrEqual,
-    GreaterThan,
-    GreaterOrEqual,
-    BinAnd,
-    BinOr,
-    // Compound assignment operators
-    AddAssign,
-    MinusAssign,
-    MultiplyAssign,
-    DivideAssign,
-    RemainderAssign,
-    BitwiseAndAssign,
-    BitwiseOrAssign,
-    XorAssign,
-    ShiftLeftAssign,
-    ShiftRightAssign,
 }
 
 pub struct Parser<'a> {
@@ -357,7 +185,7 @@ impl<'a> Parser<'a> {
         }
         self.expect(Token::RightBrace)?;
 
-        Ok(Block(body))
+        Ok(crate::ast::Block(body))
     }
 
     fn parse_block_item(&mut self) -> Result<BlockItem, ParserError> {
@@ -513,7 +341,7 @@ impl<'a> Parser<'a> {
                 // if we have a colon after this, maybe we treat this as a label. Else, parse expr.
                 // we've peeked at the identifier, so index = 1 is
                 // second element
-                // SUPER HACKY CLONE! TODO - fix!
+                // crate::ast HACKY CLONE! TODO - fix!
                 let mut it = multipeek::multipeek(self.tokens.clone());
                 match it.peek_nth(1) {
                     Some(Token::Colon) => {
@@ -661,7 +489,7 @@ impl<'a> Parser<'a> {
                     }
                     let operator = self.parse_binop()?;
                     let right = self.parse_expression(new_prec + 1)?;
-                    left = Expression::Binary(operator, Box::new(left), Box::new(right));
+                    left = Expression::new(ExprKind::Binary(operator, Box::new(left), Box::new(right)));
                 }
                 Some(t @ Token::PlusEqual)
                 | Some(t @ Token::HyphenEqual)
@@ -679,7 +507,7 @@ impl<'a> Parser<'a> {
                     }
                     let operator = self.parse_binop()?;
                     let right = self.parse_expression(new_prec)?;
-                    left = Expression::Binary(operator, Box::new(left), Box::new(right));
+                    left = Expression::new(ExprKind::Binary(operator, Box::new(left), Box::new(right)));
                 }
                 Some(t @ Token::Equal) => {
                     // consume the equality, but since we're left associative
@@ -690,7 +518,7 @@ impl<'a> Parser<'a> {
                     }
                     self.tokens.next(); // consume the equal token
                     let right = self.parse_expression(new_prec)?;
-                    left = Expression::Assignment(Box::new(left), Box::new(right));
+                    left = Expression::new(ExprKind::Assignment(Box::new(left), Box::new(right)));
                 }
                 Some(t @ Token::QuestionMark) => {
                     // we're parsing a conditional AKA ternary. We throw away
@@ -707,11 +535,11 @@ impl<'a> Parser<'a> {
                         return Err(ParserError::UnexpectedTokenInConditional);
                     };
                     let else_ = self.parse_expression(new_prec)?;
-                    left = Expression::Conditional {
+                    left = Expression::new(ExprKind::Conditional {
                         condition: Box::new(left),
                         then: Box::new(then),
                         else_: Box::new(else_),
-                    }
+                    })
                 }
                 _ => break,
             }
@@ -745,19 +573,19 @@ impl<'a> Parser<'a> {
         match self.tokens.next() {
             Some(t @ Token::Constant(_) | t @ Token::LongConstant(_)) => {
                 let constant = Self::parse_constant(*t)?;
-                Ok(Expression::Constant(constant))
+                Ok(Expression::new(ExprKind::Constant(constant)))
             }
             Some(Token::Hyphen) => {
                 let inner_exp = self.parse_factor()?;
-                Ok(Expression::Unary(UnaryOp::Negate, Box::new(inner_exp)))
+                Ok(Expression::new(ExprKind::Unary(UnaryOp::Negate, Box::new(inner_exp))))
             }
             Some(Token::Tilde) => {
                 let inner_exp = self.parse_factor()?;
-                Ok(Expression::Unary(UnaryOp::Complement, Box::new(inner_exp)))
+                Ok(Expression::new(ExprKind::Unary(UnaryOp::Complement, Box::new(inner_exp))))
             }
             Some(Token::Bang) => {
                 let inner_exp = self.parse_factor()?;
-                Ok(Expression::Unary(UnaryOp::Not, Box::new(inner_exp)))
+                Ok(Expression::new(ExprKind::Unary(UnaryOp::Not, Box::new(inner_exp))))
             }
             Some(Token::LeftParen) => {
                 // if the inside is a valid type specifier, we'll scoop up
@@ -771,7 +599,7 @@ impl<'a> Parser<'a> {
                     let type_ = Self::parse_type(&types)?;
                     self.expect(Token::RightParen)?;
                     let expr = self.parse_factor()?;
-                    Ok(Expression::Cast(type_, Box::new(expr)))
+                    Ok(Expression::new(ExprKind::Cast(type_, Box::new(expr))))
                 } else {
                     let inner_expr = self.parse_expression(0)?;
                     self.expect(Token::RightParen)?;
@@ -801,12 +629,12 @@ impl<'a> Parser<'a> {
                             args
                         }
                     };
-                    Ok(Expression::FunctionCall {
+                    Ok(Expression::new(ExprKind::FunctionCall {
                         name: ident.to_string(),
                         args,
-                    })
+                    }))
                 } else {
-                    Ok(Expression::Var(ident.to_string()))
+                    Ok(Expression::new(ExprKind::Var(ident.to_string())))
                 }
             }
             Some(t) => Err(ParserError::UnexpectedExpressionToken(t.into_string())),
@@ -918,8 +746,8 @@ mod tests {
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
             "main".into(),
             vec![],
-            Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Constant(Const::Int(100)),
+            Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::new(ExprKind::Constant(Const::Int(100))),
             ))])),
             None,
             CType::Int,
@@ -971,11 +799,11 @@ mod tests {
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
             "main".into(),
             vec![],
-            Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Unary(
+            Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::new(ExprKind::Unary(
                     UnaryOp::Complement,
-                    Box::new(Expression::Constant(Const::Int(100))),
-                ),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(100)))),
+                )),
             ))])),
             None,
             CType::Int,
@@ -1005,11 +833,11 @@ mod tests {
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
             "main".into(),
             vec![],
-            Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Unary(
+            Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::new(ExprKind::Unary(
                     UnaryOp::Negate,
-                    Box::new(Expression::Constant(Const::Int(100))),
-                ),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(100)))),
+                )),
             ))])),
             None,
             CType::Int,
@@ -1041,11 +869,11 @@ mod tests {
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
             "main".into(),
             vec![],
-            Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Unary(
+            Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::new(ExprKind::Unary(
                     UnaryOp::Negate,
-                    Box::new(Expression::Constant(Const::Int(100))),
-                ),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(100)))),
+                )),
             ))])),
             None,
             CType::Int,
@@ -1139,24 +967,24 @@ mod tests {
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
             "main".into(),
             vec![],
-            Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Binary(
+            Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::new(ExprKind::Binary(
                     BinaryOp::Subtract,
-                    Box::new(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Binary(
                         BinaryOp::Multiply,
-                        Box::new(Expression::Constant(Const::Int(1))),
-                        Box::new(Expression::Constant(Const::Int(2))),
-                    )),
-                    Box::new(Expression::Binary(
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                    ))),
+                    Box::new(Expression::new(ExprKind::Binary(
                         BinaryOp::Multiply,
-                        Box::new(Expression::Constant(Const::Int(3))),
-                        Box::new(Expression::Binary(
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(3)))),
+                        Box::new(Expression::new(ExprKind::Binary(
                             BinaryOp::Add,
-                            Box::new(Expression::Constant(Const::Int(4))),
-                            Box::new(Expression::Constant(Const::Int(5))),
-                        )),
-                    )),
-                ),
+                            Box::new(Expression::new(ExprKind::Constant(Const::Int(4)))),
+                            Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
+                        ))),
+                    ))),
+                )),
             ))])),
             None,
             CType::Int,
@@ -1203,28 +1031,28 @@ mod tests {
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
             "main".into(),
             vec![],
-            Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Binary(
+            Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::new(ExprKind::Binary(
                     BinaryOp::Subtract,
-                    Box::new(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Binary(
                         BinaryOp::Divide,
-                        Box::new(Expression::Binary(
+                        Box::new(Expression::new(ExprKind::Binary(
                             BinaryOp::Multiply,
-                            Box::new(Expression::Constant(Const::Int(5))),
-                            Box::new(Expression::Constant(Const::Int(4))),
-                        )),
-                        Box::new(Expression::Constant(Const::Int(2))),
-                    )),
-                    Box::new(Expression::Binary(
+                            Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
+                            Box::new(Expression::new(ExprKind::Constant(Const::Int(4)))),
+                        ))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                    ))),
+                    Box::new(Expression::new(ExprKind::Binary(
                         BinaryOp::Remainder,
-                        Box::new(Expression::Constant(Const::Int(3))),
-                        Box::new(Expression::Binary(
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(3)))),
+                        Box::new(Expression::new(ExprKind::Binary(
                             BinaryOp::Add,
-                            Box::new(Expression::Constant(Const::Int(2))),
-                            Box::new(Expression::Constant(Const::Int(1))),
-                        )),
-                    )),
-                ),
+                            Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                            Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                        ))),
+                    ))),
+                )),
             ))])),
             None,
             CType::Int,
@@ -1267,24 +1095,24 @@ mod tests {
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
             "main".into(),
             vec![],
-            Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Binary(
+            Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::new(ExprKind::Binary(
                     BinaryOp::BitwiseOr,
-                    Box::new(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Binary(
                         BinaryOp::Multiply,
-                        Box::new(Expression::Constant(Const::Int(5))),
-                        Box::new(Expression::Constant(Const::Int(4))),
-                    )),
-                    Box::new(Expression::Binary(
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(4)))),
+                    ))),
+                    Box::new(Expression::new(ExprKind::Binary(
                         BinaryOp::BitwiseAnd,
-                        Box::new(Expression::Binary(
+                        Box::new(Expression::new(ExprKind::Binary(
                             BinaryOp::Subtract,
-                            Box::new(Expression::Constant(Const::Int(4))),
-                            Box::new(Expression::Constant(Const::Int(5))),
-                        )),
-                        Box::new(Expression::Constant(Const::Int(6))),
-                    )),
-                ),
+                            Box::new(Expression::new(ExprKind::Constant(Const::Int(4)))),
+                            Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
+                        ))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(6)))),
+                    ))),
+                )),
             ))])),
             None,
             CType::Int,
@@ -1326,16 +1154,16 @@ mod tests {
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
             "main".into(),
             vec![],
-            Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Binary(
+            Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::new(ExprKind::Binary(
                     BinaryOp::ShiftLeft,
-                    Box::new(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Binary(
                         BinaryOp::Multiply,
-                        Box::new(Expression::Constant(Const::Int(5))),
-                        Box::new(Expression::Constant(Const::Int(4))),
-                    )),
-                    Box::new(Expression::Constant(Const::Int(2))),
-                ),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(4)))),
+                    ))),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                )),
             ))])),
             None,
             CType::Int,
@@ -1376,16 +1204,16 @@ mod tests {
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
             "main".into(),
             vec![],
-            Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Binary(
+            Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::new(ExprKind::Binary(
                     BinaryOp::ShiftLeft,
-                    Box::new(Expression::Constant(Const::Int(5))),
-                    Box::new(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
+                    Box::new(Expression::new(ExprKind::Binary(
                         BinaryOp::Add,
-                        Box::new(Expression::Constant(Const::Int(1))),
-                        Box::new(Expression::Constant(Const::Int(2))),
-                    )),
-                ),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                    ))),
+                )),
             ))])),
             None,
             CType::Int,
@@ -1430,24 +1258,24 @@ mod tests {
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
             "main".into(),
             vec![],
-            Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Binary(
+            Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::new(ExprKind::Binary(
                     BinaryOp::NotEqual,
-                    Box::new(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Binary(
                         BinaryOp::LessOrEqual,
-                        Box::new(Expression::Constant(Const::Int(2))),
-                        Box::new(Expression::Binary(
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                        Box::new(Expression::new(ExprKind::Binary(
                             BinaryOp::Subtract,
-                            Box::new(Expression::Constant(Const::Int(3))),
-                            Box::new(Expression::Constant(Const::Int(2))),
-                        )),
-                    )),
-                    Box::new(Expression::Binary(
+                            Box::new(Expression::new(ExprKind::Constant(Const::Int(3)))),
+                            Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                        ))),
+                    ))),
+                    Box::new(Expression::new(ExprKind::Binary(
                         BinaryOp::Add,
-                        Box::new(Expression::Constant(Const::Int(4))),
-                        Box::new(Expression::Constant(Const::Int(5))),
-                    )),
-                ),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(4)))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
+                    ))),
+                )),
             ))])),
             None,
             CType::Int,
@@ -1488,14 +1316,14 @@ mod tests {
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
             "main".into(),
             vec![],
-            Some(Block(vec![
+            Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::Constant(Const::Int(1))),
+                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("a".into())))),
             ])),
             None,
             CType::Int,
@@ -1538,20 +1366,20 @@ mod tests {
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
             "main".into(),
             vec![],
-            Some(Block(vec![
+            Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
                     init: None,
                     storage_class: None,
                     vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Return(Expression::Assignment(
-                    Box::new(Expression::Var("a".into())),
-                    Box::new(Expression::Assignment(
-                        Box::new(Expression::Var("b".into())),
-                        Box::new(Expression::Var("c".into())),
-                    )),
-                ))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Assignment(
+                    Box::new(Expression::new(ExprKind::Var("a".into()))),
+                    Box::new(Expression::new(ExprKind::Assignment(
+                        Box::new(Expression::new(ExprKind::Var("b".into()))),
+                        Box::new(Expression::new(ExprKind::Var("c".into()))),
+                    ))),
+                )))),
             ])),
             None,
             CType::Int,
@@ -1591,13 +1419,13 @@ mod tests {
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
             "main".into(),
             vec![],
-            Some(Block(vec![
-                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+            Some(crate::ast::Block(vec![
+                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Binary(
                     BinaryOp::Add,
-                    Box::new(Expression::Constant(Const::Int(2))),
-                    Box::new(Expression::Constant(Const::Int(2))),
-                ))),
-                BlockItem::Stmt(Statement::Return(Expression::Constant(Const::Int(0)))),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                )))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Constant(Const::Int(0))))),
             ])),
             None,
             CType::Int,
@@ -1663,39 +1491,39 @@ mod tests {
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
             "main".into(),
             vec![],
-            Some(Block(vec![
+            Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::Constant(Const::Int(1))),
+                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Binary(
                     BinaryOp::AddAssign,
-                    Box::new(Expression::Var("a".into())),
-                    Box::new(Expression::Constant(Const::Int(2))),
-                ))),
-                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Var("a".into()))),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                )))),
+                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Binary(
                     BinaryOp::MinusAssign,
-                    Box::new(Expression::Var("a".into())),
-                    Box::new(Expression::Constant(Const::Int(2))),
-                ))),
-                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Var("a".into()))),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                )))),
+                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Binary(
                     BinaryOp::MultiplyAssign,
-                    Box::new(Expression::Var("a".into())),
-                    Box::new(Expression::Constant(Const::Int(2))),
-                ))),
-                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Var("a".into()))),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                )))),
+                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Binary(
                     BinaryOp::DivideAssign,
-                    Box::new(Expression::Var("a".into())),
-                    Box::new(Expression::Constant(Const::Int(2))),
-                ))),
-                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Var("a".into()))),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                )))),
+                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Binary(
                     BinaryOp::RemainderAssign,
-                    Box::new(Expression::Var("a".into())),
-                    Box::new(Expression::Constant(Const::Int(2))),
-                ))),
-                BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
+                    Box::new(Expression::new(ExprKind::Var("a".into()))),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                )))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("a".into())))),
             ])),
             None,
             CType::Int,
@@ -1757,38 +1585,38 @@ mod tests {
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
             "main".into(),
             vec![],
-            Some(Block(vec![
+            Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::Constant(Const::Int(1))),
+                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b".into(),
-                    init: Some(Expression::Constant(Const::Int(0))),
+                    init: Some(Expression::new(ExprKind::Constant(Const::Int(0)))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "c".into(),
-                    init: Some(Expression::Constant(Const::Int(2))),
+                    init: Some(Expression::new(ExprKind::Constant(Const::Int(2)))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Binary(
                     BinaryOp::AddAssign,
-                    Box::new(Expression::Var("a".into())),
-                    Box::new(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Var("a".into()))),
+                    Box::new(Expression::new(ExprKind::Binary(
                         BinaryOp::MinusAssign,
-                        Box::new(Expression::Var("b".into())),
-                        Box::new(Expression::Assignment(
-                            Box::new(Expression::Var("c".into())),
-                            Box::new(Expression::Constant(Const::Int(5))),
-                        )),
-                    )),
-                ))),
-                BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
+                        Box::new(Expression::new(ExprKind::Var("b".into()))),
+                        Box::new(Expression::new(ExprKind::Assignment(
+                            Box::new(Expression::new(ExprKind::Var("c".into()))),
+                            Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
+                        ))),
+                    ))),
+                )))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("a".into())))),
             ])),
             None,
             CType::Int,
@@ -1834,22 +1662,22 @@ mod tests {
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
             "main".into(),
             vec![],
-            Some(Block(vec![
+            Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::Constant(Const::Int(10))),
+                    init: Some(Expression::new(ExprKind::Constant(Const::Int(10)))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Binary(
                     BinaryOp::MinusAssign,
-                    Box::new(Expression::Binary(
+                    Box::new(Expression::new(ExprKind::Binary(
                         BinaryOp::AddAssign,
-                        Box::new(Expression::Var("a".into())),
-                        Box::new(Expression::Constant(Const::Int(1))),
-                    )),
-                    Box::new(Expression::Constant(Const::Int(2))),
-                ))),
+                        Box::new(Expression::new(ExprKind::Var("a".into()))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                    ))),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                )))),
             ])),
             None,
             CType::Int,
@@ -1878,20 +1706,20 @@ mod tests {
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
             "main".into(),
             vec![],
-            Some(Block(vec![BlockItem::Stmt(Statement::If {
-                condition: Expression::Var("a".into()),
+            Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::If {
+                condition: Expression::new(ExprKind::Var("a".into())),
                 then: Box::new(Statement::If {
-                    condition: Expression::Binary(
+                    condition: Expression::new(ExprKind::Binary(
                         BinaryOp::GreaterThan,
-                        Box::new(Expression::Var("a".into())),
-                        Box::new(Expression::Constant(Const::Int(10))),
-                    ),
-                    then: Box::new(Statement::Return(Expression::Var("a".into()))),
-                    else_: Some(Box::new(Statement::Return(Expression::Binary(
+                        Box::new(Expression::new(ExprKind::Var("a".into()))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(10)))),
+                    )),
+                    then: Box::new(Statement::Return(Expression::new(ExprKind::Var("a".into())))),
+                    else_: Some(Box::new(Statement::Return(Expression::new(ExprKind::Binary(
                         BinaryOp::Subtract,
-                        Box::new(Expression::Constant(Const::Int(10))),
-                        Box::new(Expression::Var("a".into())),
-                    )))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(10)))),
+                        Box::new(Expression::new(ExprKind::Var("a".into()))),
+                    ))))),
                 }),
                 else_: None,
             })])),
@@ -1921,46 +1749,46 @@ mod tests {
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
             "main".into(),
             vec![],
-            Some(Block(vec![
+            Some(crate::ast::Block(vec![
                 // first example:  we nest inner expression
-                BlockItem::Stmt(Statement::Expr(Expression::Conditional {
-                    condition: Box::new(Expression::Var("a".into())),
-                    then: Box::new(Expression::Conditional {
-                        condition: Box::new(Expression::Var("b".into())),
-                        then: Box::new(Expression::Constant(Const::Int(1))),
-                        else_: Box::new(Expression::Constant(Const::Int(2))),
-                    }),
-                    else_: Box::new(Expression::Constant(Const::Int(3))),
-                })),
+                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Conditional{
+                    condition: Box::new(Expression::new(ExprKind::Var("a".into()))),
+                    then: Box::new(Expression::new(ExprKind::Conditional{
+                        condition: Box::new(Expression::new(ExprKind::Var("b".into()))),
+                        then: Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                        else_: Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                    })),
+                    else_: Box::new(Expression::new(ExprKind::Constant(Const::Int(3)))),
+                }))),
                 // second example: else statement is nested parse
-                BlockItem::Stmt(Statement::Expr(Expression::Conditional {
-                    condition: Box::new(Expression::Var("a".into())),
-                    then: Box::new(Expression::Constant(Const::Int(1))),
-                    else_: Box::new(Expression::Conditional {
-                        condition: Box::new(Expression::Var("b".into())),
-                        then: Box::new(Expression::Constant(Const::Int(2))),
-                        else_: Box::new(Expression::Constant(Const::Int(3))),
-                    }),
-                })),
+                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Conditional{
+                    condition: Box::new(Expression::new(ExprKind::Var("a".into()))),
+                    then: Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                    else_: Box::new(Expression::new(ExprKind::Conditional{
+                        condition: Box::new(Expression::new(ExprKind::Var("b".into()))),
+                        then: Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                        else_: Box::new(Expression::new(ExprKind::Constant(Const::Int(3)))),
+                    })),
+                }))),
                 // third example: the conditional is a short-circuit expr
-                BlockItem::Stmt(Statement::Expr(Expression::Conditional {
-                    condition: Box::new(Expression::Binary(
+                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Conditional{
+                    condition: Box::new(Expression::new(ExprKind::Binary(
                         BinaryOp::BinOr,
-                        Box::new(Expression::Var("a".into())),
-                        Box::new(Expression::Var("b".into())),
-                    )),
-                    then: Box::new(Expression::Constant(Const::Int(2))),
-                    else_: Box::new(Expression::Constant(Const::Int(3))),
-                })),
+                        Box::new(Expression::new(ExprKind::Var("a".into()))),
+                        Box::new(Expression::new(ExprKind::Var("b".into()))),
+                    ))),
+                    then: Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                    else_: Box::new(Expression::new(ExprKind::Constant(Const::Int(3)))),
+                }))),
                 // fourth example: then should be an assignment
-                BlockItem::Stmt(Statement::Expr(Expression::Conditional {
-                    condition: Box::new(Expression::Var("x".into())),
-                    then: Box::new(Expression::Assignment(
-                        Box::new(Expression::Var("x".into())),
-                        Box::new(Expression::Constant(Const::Int(1))),
-                    )),
-                    else_: Box::new(Expression::Constant(Const::Int(2))),
-                })),
+                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Conditional{
+                    condition: Box::new(Expression::new(ExprKind::Var("x".into()))),
+                    then: Box::new(Expression::new(ExprKind::Assignment(
+                        Box::new(Expression::new(ExprKind::Var("x".into()))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                    ))),
+                    else_: Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                }))),
             ])),
             None,
             CType::Int,
@@ -1987,15 +1815,15 @@ mod tests {
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
             "main".into(),
             vec![],
-            Some(Block(vec![
+            Some(crate::ast::Block(vec![
                 BlockItem::Stmt(Statement::Goto("foo".into())),
                 BlockItem::Stmt(Statement::Labelled {
                     label: "foo".into(),
-                    statement: Box::new(Statement::Return(Expression::Binary(
+                    statement: Box::new(Statement::Return(Expression::new(ExprKind::Binary(
                         BinaryOp::Add,
-                        Box::new(Expression::Constant(Const::Int(1))),
-                        Box::new(Expression::Constant(Const::Int(2))),
-                    ))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                    )))),
                 }),
             ])),
             None,
@@ -2028,32 +1856,32 @@ mod tests {
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
             "main".into(),
             vec![],
-            Some(Block(vec![
+            Some(crate::ast::Block(vec![
                 BlockItem::Stmt(Statement::If {
-                    condition: Expression::Constant(Const::Int(1)),
-                    then: Box::new(Statement::Compound(Block(vec![
+                    condition: Expression::new(ExprKind::Constant(Const::Int(1))),
+                    then: Box::new(Statement::Compound(crate::ast::Block(vec![
                         BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                             name: "x".into(),
-                            init: Some(Expression::Constant(Const::Int(1))),
+                            init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
                             storage_class: None,
                             vtype: CType::Int,
                         })),
-                        BlockItem::Stmt(Statement::Return(Expression::Var("x".into()))),
+                        BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("x".into())))),
                     ]))),
                     else_: None,
                 }),
-                BlockItem::Stmt(Statement::Compound(Block(vec![
+                BlockItem::Stmt(Statement::Compound(crate::ast::Block(vec![
                     BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                         name: "b".into(),
-                        init: Some(Expression::Constant(Const::Int(2))),
+                        init: Some(Expression::new(ExprKind::Constant(Const::Int(2)))),
                         storage_class: None,
                         vtype: CType::Int,
                     })),
-                    BlockItem::Stmt(Statement::Expr(Expression::Binary(
+                    BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Binary(
                         BinaryOp::Add,
-                        Box::new(Expression::Var("b".into())),
-                        Box::new(Expression::Constant(Const::Int(1))),
-                    ))),
+                        Box::new(Expression::new(ExprKind::Var("b".into()))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                    )))),
                 ]))),
             ])),
             None,
@@ -2088,55 +1916,55 @@ mod tests {
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
             "main".into(),
             vec![],
-            Some(Block(vec![
+            Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::Constant(Const::Int(1))),
+                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
                 BlockItem::Stmt(Statement::For {
                     init: ForInit::InitDecl(VariableDeclaration {
                         name: "b".into(),
-                        init: Some(Expression::Constant(Const::Int(1))),
+                        init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
                         storage_class: None,
                         vtype: CType::Int,
                     }),
-                    condition: Some(Expression::Binary(
+                    condition: Some(Expression::new(ExprKind::Binary(
                         BinaryOp::LessThan,
-                        Box::new(Expression::Var("b".into())),
-                        Box::new(Expression::Constant(Const::Int(10))),
-                    )),
-                    post: Some(Expression::Assignment(
-                        Box::new(Expression::Var("b".into())),
-                        Box::new(Expression::Binary(
+                        Box::new(Expression::new(ExprKind::Var("b".into()))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(10)))),
+                    ))),
+                    post: Some(Expression::new(ExprKind::Assignment(
+                        Box::new(Expression::new(ExprKind::Var("b".into()))),
+                        Box::new(Expression::new(ExprKind::Binary(
                             BinaryOp::Add,
-                            Box::new(Expression::Var("b".into())),
-                            Box::new(Expression::Constant(Const::Int(1))),
-                        )),
-                    )),
-                    body: Box::new(Statement::Compound(Block(vec![BlockItem::Stmt(
+                            Box::new(Expression::new(ExprKind::Var("b".into()))),
+                            Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                        ))),
+                    ))),
+                    body: Box::new(Statement::Compound(crate::ast::Block(vec![BlockItem::Stmt(
                         Statement::Continue("".into()),
                     )]))),
                     label: "".into(),
                 }),
                 BlockItem::Stmt(Statement::DoWhile {
-                    body: Box::new(Statement::Compound(Block(vec![BlockItem::Stmt(
+                    body: Box::new(Statement::Compound(crate::ast::Block(vec![BlockItem::Stmt(
                         Statement::Continue("".into()),
                     )]))),
-                    condition: Expression::Binary(
+                    condition: Expression::new(ExprKind::Binary(
                         BinaryOp::LessThan,
-                        Box::new(Expression::Var("a".into())),
-                        Box::new(Expression::Constant(Const::Int(0))),
-                    ),
+                        Box::new(Expression::new(ExprKind::Var("a".into()))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(0)))),
+                    )),
                     label: "".into(),
                 }),
                 BlockItem::Stmt(Statement::While {
-                    condition: Expression::Binary(
+                    condition: Expression::new(ExprKind::Binary(
                         BinaryOp::GreaterThan,
-                        Box::new(Expression::Var("a".into())),
-                        Box::new(Expression::Constant(Const::Int(0))),
-                    ),
+                        Box::new(Expression::new(ExprKind::Var("a".into()))),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(0)))),
+                    )),
                     body: Box::new(Statement::Break("".into())),
                     label: "".into(),
                 }),
@@ -2178,18 +2006,18 @@ mod tests {
             Declaration::FunDecl(FunctionDeclaration::new(
                 "foo".into(),
                 vec![("x".into(), CType::Int), ("y".into(), CType::Int)],
-                Some(Block(vec![
+                Some(crate::ast::Block(vec![
                     BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                         name: "y".into(),
                         init: None,
                         storage_class: Some(StorageClass::Extern),
                         vtype: CType::Int,
                     })),
-                    BlockItem::Stmt(Statement::Return(Expression::Binary(
+                    BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Binary(
                         BinaryOp::Add,
-                        Box::new(Expression::Var("x".into())),
-                        Box::new(Expression::Var("y".into())),
-                    ))),
+                        Box::new(Expression::new(ExprKind::Var("x".into()))),
+                        Box::new(Expression::new(ExprKind::Var("y".into()))),
+                    )))),
                 ])),
                 Some(StorageClass::Extern),
                 CType::Int,
@@ -2197,25 +2025,25 @@ mod tests {
             Declaration::FunDecl(FunctionDeclaration::new(
                 "main".into(),
                 vec![],
-                Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                    Expression::Binary(
+                Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                    Expression::new(ExprKind::Binary(
                         BinaryOp::Add,
-                        Box::new(Expression::FunctionCall {
+                        Box::new(Expression::new(ExprKind::FunctionCall{
                             name: "foo".into(),
                             args: vec![
-                                Expression::Constant(Const::Int(1)),
-                                Expression::Constant(Const::Int(2)),
+                                Expression::new(ExprKind::Constant(Const::Int(1))),
+                                Expression::new(ExprKind::Constant(Const::Int(2))),
                             ],
-                        }),
-                        Box::new(Expression::Constant(Const::Int(3))),
-                    ),
+                        })),
+                        Box::new(Expression::new(ExprKind::Constant(Const::Int(3)))),
+                    )),
                 ))])),
                 None,
                 CType::Int,
             )),
             Declaration::VarDecl(VariableDeclaration {
                 name: "a".into(),
-                init: Some(Expression::Constant(Const::Int(3))),
+                init: Some(Expression::new(ExprKind::Constant(Const::Int(3)))),
                 storage_class: Some(StorageClass::Static),
                 vtype: CType::Int,
             }),
@@ -2241,7 +2069,7 @@ mod tests {
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
             "main".into(),
             vec![],
-            Some(Block(vec![
+            Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::FunDecl(FunctionDeclaration::new(
                     "foo".into(),
                     vec![("x".into(), CType::Int), ("y".into(), CType::Int)],
@@ -2249,17 +2077,17 @@ mod tests {
                     None,
                     CType::Int,
                 ))),
-                BlockItem::Stmt(Statement::Return(Expression::Binary(
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Binary(
                     BinaryOp::Add,
-                    Box::new(Expression::FunctionCall {
+                    Box::new(Expression::new(ExprKind::FunctionCall{
                         name: "foo".into(),
                         args: vec![
-                            Expression::Constant(Const::Int(1)),
-                            Expression::Constant(Const::Int(2)),
+                            Expression::new(ExprKind::Constant(Const::Int(1))),
+                            Expression::new(ExprKind::Constant(Const::Int(2))),
                         ],
-                    }),
-                    Box::new(Expression::Constant(Const::Int(3))),
-                ))),
+                    })),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(3)))),
+                )))),
             ])),
             None,
             CType::Int,
@@ -2286,7 +2114,7 @@ mod tests {
         let Declaration::FunDecl(main) = &decls[0] else {
             panic!()
         };
-        let Block(items) = main.block.as_ref().unwrap();
+        let crate::ast::Block(items) = main.block.as_ref().unwrap();
         let BlockItem::Decl(Declaration::VarDecl(vd)) = &items[0] else {
             panic!()
         };
@@ -2305,13 +2133,11 @@ mod tests {
             let tokens = lexer.as_syntactic_tokens();
             let ast = Parser::new(&tokens).into_ast();
             assert!(ast.is_ok(), "failed for: {src}");
-            let AST::Program(decls) = ast.unwrap() else {
-                panic!()
-            };
+            let AST::Program(decls) = ast.unwrap();
             let Declaration::FunDecl(main) = &decls[0] else {
                 panic!()
             };
-            let Block(items) = main.block.as_ref().unwrap();
+            let crate::ast::Block(items) = main.block.as_ref().unwrap();
             let BlockItem::Decl(Declaration::VarDecl(vd)) = &items[0] else {
                 panic!()
             };
@@ -2327,9 +2153,7 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let ast = Parser::new(&tokens).into_ast();
         assert!(ast.is_ok());
-        let AST::Program(decls) = ast.unwrap() else {
-            panic!()
-        };
+        let AST::Program(decls) = ast.unwrap();
         let Declaration::FunDecl(fun) = &decls[0] else {
             panic!()
         };
