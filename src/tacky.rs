@@ -928,10 +928,14 @@ mod tests {
         let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Constant(100),
+                Expression::Constant(Const::Int(100)),
             ))])),
             params: vec![],
             storage_class: None,
+            ftype: crate::parser::CType::FunType {
+                params: vec![],
+                ret: Box::new(crate::parser::CType::Int),
+            },
         })]);
 
         let expected = AST::Program(vec![TopLevel::Function {
@@ -956,10 +960,17 @@ mod tests {
         let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Unary(ParserUnaryOp::Negate, Box::new(Expression::Constant(100))),
+                Expression::Unary(
+                    ParserUnaryOp::Negate,
+                    Box::new(Expression::Constant(Const::Int(100))),
+                ),
             ))])),
             params: vec![],
             storage_class: None,
+            ftype: crate::parser::CType::FunType {
+                params: vec![],
+                ret: Box::new(crate::parser::CType::Int),
+            },
         })]);
 
         let expected = AST::Program(vec![TopLevel::Function {
@@ -995,13 +1006,17 @@ mod tests {
                         ParserUnaryOp::Complement,
                         Box::new(Expression::Unary(
                             ParserUnaryOp::Negate,
-                            Box::new(Expression::Constant(100)),
+                            Box::new(Expression::Constant(Const::Int(100))),
                         )),
                     )),
                 ),
             ))])),
             params: vec![],
             storage_class: None,
+            ftype: crate::parser::CType::FunType {
+                params: vec![],
+                ret: Box::new(crate::parser::CType::Int),
+            },
         })]);
 
         let expected = AST::Program(vec![TopLevel::Function {
@@ -1045,22 +1060,26 @@ mod tests {
                     ParserBinaryOp::Subtract,
                     Box::new(Expression::Binary(
                         ParserBinaryOp::Multiply,
-                        Box::new(Expression::Constant(1)),
-                        Box::new(Expression::Constant(2)),
+                        Box::new(Expression::Constant(Const::Int(1))),
+                        Box::new(Expression::Constant(Const::Int(2))),
                     )),
                     Box::new(Expression::Binary(
                         ParserBinaryOp::Multiply,
-                        Box::new(Expression::Constant(3)),
+                        Box::new(Expression::Constant(Const::Int(3))),
                         Box::new(Expression::Binary(
                             ParserBinaryOp::Add,
-                            Box::new(Expression::Constant(4)),
-                            Box::new(Expression::Constant(5)),
+                            Box::new(Expression::Constant(Const::Int(4))),
+                            Box::new(Expression::Constant(Const::Int(5))),
                         )),
                     )),
                 ),
             ))])),
             params: vec![],
             storage_class: None,
+            ftype: crate::parser::CType::FunType {
+                params: vec![],
+                ret: Box::new(crate::parser::CType::Int),
+            },
         })]);
         let expected = AST::Program(vec![TopLevel::Function {
             name: "main".into(),
@@ -1114,24 +1133,28 @@ mod tests {
                         ParserBinaryOp::Divide,
                         Box::new(Expression::Binary(
                             ParserBinaryOp::Multiply,
-                            Box::new(Expression::Constant(5)),
-                            Box::new(Expression::Constant(4)),
+                            Box::new(Expression::Constant(Const::Int(5))),
+                            Box::new(Expression::Constant(Const::Int(4))),
                         )),
-                        Box::new(Expression::Constant(2)),
+                        Box::new(Expression::Constant(Const::Int(2))),
                     )),
                     Box::new(Expression::Binary(
                         ParserBinaryOp::Remainder,
-                        Box::new(Expression::Constant(3)),
+                        Box::new(Expression::Constant(Const::Int(3))),
                         Box::new(Expression::Binary(
                             ParserBinaryOp::Add,
-                            Box::new(Expression::Constant(2)),
-                            Box::new(Expression::Constant(1)),
+                            Box::new(Expression::Constant(Const::Int(2))),
+                            Box::new(Expression::Constant(Const::Int(1))),
                         )),
                     )),
                 ),
             ))])),
             params: vec![],
             storage_class: None,
+            ftype: crate::parser::CType::FunType {
+                params: vec![],
+                ret: Box::new(crate::parser::CType::Int),
+            },
         })]);
 
         let expected = AST::Program(vec![TopLevel::Function {
@@ -1190,22 +1213,26 @@ mod tests {
                     ParserBinaryOp::BitwiseOr,
                     Box::new(Expression::Binary(
                         ParserBinaryOp::Multiply,
-                        Box::new(Expression::Constant(5)),
-                        Box::new(Expression::Constant(4)),
+                        Box::new(Expression::Constant(Const::Int(5))),
+                        Box::new(Expression::Constant(Const::Int(4))),
                     )),
                     Box::new(Expression::Binary(
                         ParserBinaryOp::BitwiseAnd,
                         Box::new(Expression::Binary(
                             ParserBinaryOp::Subtract,
-                            Box::new(Expression::Constant(4)),
-                            Box::new(Expression::Constant(5)),
+                            Box::new(Expression::Constant(Const::Int(4))),
+                            Box::new(Expression::Constant(Const::Int(5))),
                         )),
-                        Box::new(Expression::Constant(6)),
+                        Box::new(Expression::Constant(Const::Int(6))),
                     )),
                 ),
             ))])),
             params: vec![],
             storage_class: None,
+            ftype: crate::parser::CType::FunType {
+                params: vec![],
+                ret: Box::new(crate::parser::CType::Int),
+            },
         })]);
 
         let expected = AST::Program(vec![TopLevel::Function {
@@ -1258,14 +1285,18 @@ mod tests {
                     ParserBinaryOp::ShiftLeft,
                     Box::new(Expression::Binary(
                         ParserBinaryOp::Multiply,
-                        Box::new(Expression::Constant(5)),
-                        Box::new(Expression::Constant(4)),
+                        Box::new(Expression::Constant(Const::Int(5))),
+                        Box::new(Expression::Constant(Const::Int(4))),
                     )),
-                    Box::new(Expression::Constant(2)),
+                    Box::new(Expression::Constant(Const::Int(2))),
                 ),
             ))])),
             params: vec![],
             storage_class: None,
+            ftype: crate::parser::CType::FunType {
+                params: vec![],
+                ret: Box::new(crate::parser::CType::Int),
+            },
         })]);
         let expected = AST::Program(vec![TopLevel::Function {
             name: "main".into(),
@@ -1303,16 +1334,20 @@ mod tests {
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Binary(
                     ParserBinaryOp::ShiftLeft,
-                    Box::new(Expression::Constant(5)),
+                    Box::new(Expression::Constant(Const::Int(5))),
                     Box::new(Expression::Binary(
                         ParserBinaryOp::Add,
-                        Box::new(Expression::Constant(1)),
-                        Box::new(Expression::Constant(2)),
+                        Box::new(Expression::Constant(Const::Int(1))),
+                        Box::new(Expression::Constant(Const::Int(2))),
                     )),
                 ),
             ))])),
             params: vec![],
             storage_class: None,
+            ftype: crate::parser::CType::FunType {
+                params: vec![],
+                ret: Box::new(crate::parser::CType::Int),
+            },
         })]);
         let expected = AST::Program(vec![TopLevel::Function {
             name: "main".into(),
@@ -1350,16 +1385,20 @@ mod tests {
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Binary(
                     ParserBinaryOp::BinAnd,
-                    Box::new(Expression::Constant(5)),
+                    Box::new(Expression::Constant(Const::Int(5))),
                     Box::new(Expression::Binary(
                         ParserBinaryOp::Add,
-                        Box::new(Expression::Constant(1)),
-                        Box::new(Expression::Constant(2)),
+                        Box::new(Expression::Constant(Const::Int(1))),
+                        Box::new(Expression::Constant(Const::Int(2))),
                     )),
                 ),
             ))])),
             params: vec![],
             storage_class: None,
+            ftype: crate::parser::CType::FunType {
+                params: vec![],
+                ret: Box::new(crate::parser::CType::Int),
+            },
         })]);
 
         let expected = AST::Program(vec![TopLevel::Function {
@@ -1419,16 +1458,20 @@ mod tests {
             block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Binary(
                     ParserBinaryOp::BinOr,
-                    Box::new(Expression::Constant(5)),
+                    Box::new(Expression::Constant(Const::Int(5))),
                     Box::new(Expression::Binary(
                         ParserBinaryOp::Add,
-                        Box::new(Expression::Constant(1)),
-                        Box::new(Expression::Constant(2)),
+                        Box::new(Expression::Constant(Const::Int(1))),
+                        Box::new(Expression::Constant(Const::Int(2))),
                     )),
                 ),
             ))])),
             params: vec![],
             storage_class: None,
+            ftype: crate::parser::CType::FunType {
+                params: vec![],
+                ret: Box::new(crate::parser::CType::Int),
+            },
         })]);
 
         let expected = AST::Program(vec![TopLevel::Function {
@@ -1488,13 +1531,15 @@ mod tests {
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a.0.decl".into(),
-                    init: Some(Expression::Constant(1)),
+                    init: Some(Expression::Constant(Const::Int(1))),
                     storage_class: None,
+                    vtype: crate::parser::CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b.1.decl".into(),
                     init: Some(Expression::Var("a.0.decl".into())),
                     storage_class: None,
+                    vtype: crate::parser::CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "c.2.decl".into(),
@@ -1504,11 +1549,16 @@ mod tests {
                         Box::new(Expression::Var("b.1.decl".into())),
                     )),
                     storage_class: None,
+                    vtype: crate::parser::CType::Int,
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("c.2.decl".into()))),
             ])),
             params: vec![],
             storage_class: None,
+            ftype: crate::parser::CType::FunType {
+                params: vec![],
+                ret: Box::new(crate::parser::CType::Int),
+            },
         })]);
         let expected = AST::Program(vec![TopLevel::Function {
             name: "main".into(),
@@ -1552,38 +1602,43 @@ mod tests {
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::Constant(1)),
+                    init: Some(Expression::Constant(Const::Int(1))),
                     storage_class: None,
+                    vtype: crate::parser::CType::Int,
                 })),
                 BlockItem::Stmt(Statement::Expr(Expression::Binary(
                     ParserBinaryOp::AddAssign,
                     Box::new(Expression::Var("a".into())),
-                    Box::new(Expression::Constant(2)),
+                    Box::new(Expression::Constant(Const::Int(2))),
                 ))),
                 BlockItem::Stmt(Statement::Expr(Expression::Binary(
                     ParserBinaryOp::MinusAssign,
                     Box::new(Expression::Var("a".into())),
-                    Box::new(Expression::Constant(2)),
+                    Box::new(Expression::Constant(Const::Int(2))),
                 ))),
                 BlockItem::Stmt(Statement::Expr(Expression::Binary(
                     ParserBinaryOp::MultiplyAssign,
                     Box::new(Expression::Var("a".into())),
-                    Box::new(Expression::Constant(2)),
+                    Box::new(Expression::Constant(Const::Int(2))),
                 ))),
                 BlockItem::Stmt(Statement::Expr(Expression::Binary(
                     ParserBinaryOp::DivideAssign,
                     Box::new(Expression::Var("a".into())),
-                    Box::new(Expression::Constant(2)),
+                    Box::new(Expression::Constant(Const::Int(2))),
                 ))),
                 BlockItem::Stmt(Statement::Expr(Expression::Binary(
                     ParserBinaryOp::RemainderAssign,
                     Box::new(Expression::Var("a".into())),
-                    Box::new(Expression::Constant(2)),
+                    Box::new(Expression::Constant(Const::Int(2))),
                 ))),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
             ])),
             params: vec![],
             storage_class: None,
+            ftype: crate::parser::CType::FunType {
+                params: vec![],
+                ret: Box::new(crate::parser::CType::Int),
+            },
         })]);
 
         let expected = AST::Program(vec![TopLevel::Function {
@@ -1664,21 +1719,26 @@ mod tests {
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::Constant(10)),
+                    init: Some(Expression::Constant(Const::Int(10))),
                     storage_class: None,
+                    vtype: crate::parser::CType::Int,
                 })),
                 BlockItem::Stmt(Statement::Expr(Expression::Binary(
                     ParserBinaryOp::MinusAssign,
                     Box::new(Expression::Binary(
                         ParserBinaryOp::AddAssign,
                         Box::new(Expression::Var("a".into())),
-                        Box::new(Expression::Constant(1)),
+                        Box::new(Expression::Constant(Const::Int(1))),
                     )),
-                    Box::new(Expression::Constant(2)),
+                    Box::new(Expression::Constant(Const::Int(2))),
                 ))),
             ])),
             params: vec![],
             storage_class: None,
+            ftype: crate::parser::CType::FunType {
+                params: vec![],
+                ret: Box::new(crate::parser::CType::Int),
+            },
         })]);
         let tacky = Tacky::new(ast);
         let assembly = tacky.into_ast(&main_symbol_table());

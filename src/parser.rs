@@ -52,6 +52,29 @@ pub struct FunctionDeclaration {
     pub ftype: CType,
 }
 
+impl FunctionDeclaration {
+    pub fn new(
+        name: String,
+        params: Vec<(String, CType)>,
+        block: Option<Block>,
+        storage_class: Option<StorageClass>,
+        return_type: CType,
+    ) -> FunctionDeclaration {
+        let ftype = CType::FunType {
+            ret: Box::new(return_type),
+            params: params.iter().map(|(_, t)| t.clone()).collect(),
+        };
+        let params = params.into_iter().map(|(s, _)| s).collect();
+        FunctionDeclaration {
+            name,
+            params,
+            block,
+            storage_class,
+            ftype,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct VariableDeclaration {
     pub name: String,
@@ -278,8 +301,7 @@ impl<'a> Parser<'a> {
         // check if we're void, or taking a param list
         // Should we store Void in the identifier list?
         // Emptiness is a way of knowing it's a void function.
-        let mut params: Vec<String> = vec![];
-        let mut param_types = vec![];
+        let mut params: Vec<(String, CType)> = vec![];
         if let Some(Token::Void) = self.tokens.peek() {
             self.expect(Token::Void)?;
             self.expect(Token::RightParen)?;
@@ -294,11 +316,11 @@ impl<'a> Parser<'a> {
                     }
                     types.push(self.tokens.next().copied().unwrap());
                 }
-                param_types.push(Self::parse_type(&types)?);
+                let ty_ = Self::parse_type(&types)?;
                 let Some(Token::Identifier(ident)) = self.tokens.next() else {
                     return Err(ParserError::ExpectedIdentifierAfterType);
                 };
-                params.push(ident.to_string());
+                params.push((ident.to_string(), ty_));
                 if let Some(Token::RightParen) = self.tokens.peek() {
                     // consume the right paren
                     self.tokens.next();
@@ -318,16 +340,8 @@ impl<'a> Parser<'a> {
             }
         };
 
-        Ok(FunctionDeclaration {
-            name,
-            block,
-            params,
-            storage_class,
-            ftype: CType::FunType {
-                params: param_types,
-                ret: Box::new(return_type),
-            },
-        })
+        let decl = FunctionDeclaration::new(name, params, block, storage_class, return_type);
+        Ok(decl)
     }
 
     fn parse_block(&mut self) -> Result<Block, ParserError> {
@@ -901,14 +915,15 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let ast = ast.unwrap();
-        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
-            name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Constant(100),
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
+            "main".into(),
+            vec![],
+            Some(Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Constant(Const::Int(100)),
             ))])),
-            params: vec![],
-            storage_class: None,
-        })]);
+            None,
+            CType::Int,
+        ))]);
         assert_eq!(expected, ast);
     }
 
@@ -931,13 +946,7 @@ mod tests {
         let parse = Parser::new(&tokens);
         let ast = parse.into_ast();
         assert!(ast.is_err());
-        assert_eq!(
-            Err(ParserError::UnexpectedToken(
-                String::from("Int"),
-                String::from("RightParen")
-            )),
-            ast
-        );
+        assert_eq!(Err(ParserError::InvalidTypeSpecifier), ast);
     }
 
     #[test]
@@ -959,14 +968,18 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let ast = ast.unwrap();
-        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
-            name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Unary(UnaryOp::Complement, Box::new(Expression::Constant(100))),
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
+            "main".into(),
+            vec![],
+            Some(Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Unary(
+                    UnaryOp::Complement,
+                    Box::new(Expression::Constant(Const::Int(100))),
+                ),
             ))])),
-            params: vec![],
-            storage_class: None,
-        })]);
+            None,
+            CType::Int,
+        ))]);
         assert_eq!(expected, ast);
     }
 
@@ -989,14 +1002,18 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let ast = ast.unwrap();
-        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
-            name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Unary(UnaryOp::Negate, Box::new(Expression::Constant(100))),
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
+            "main".into(),
+            vec![],
+            Some(Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Unary(
+                    UnaryOp::Negate,
+                    Box::new(Expression::Constant(Const::Int(100))),
+                ),
             ))])),
-            params: vec![],
-            storage_class: None,
-        })]);
+            None,
+            CType::Int,
+        ))]);
         assert_eq!(expected, ast);
     }
 
@@ -1021,14 +1038,18 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let ast = ast.unwrap();
-        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
-            name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::Unary(UnaryOp::Negate, Box::new(Expression::Constant(100))),
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
+            "main".into(),
+            vec![],
+            Some(Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::Unary(
+                    UnaryOp::Negate,
+                    Box::new(Expression::Constant(Const::Int(100))),
+                ),
             ))])),
-            params: vec![],
-            storage_class: None,
-        })]);
+            None,
+            CType::Int,
+        ))]);
         assert_eq!(expected, ast);
     }
 
@@ -1115,30 +1136,31 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let actual = ast.unwrap();
-        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
-            name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
+            "main".into(),
+            vec![],
+            Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Binary(
                     BinaryOp::Subtract,
                     Box::new(Expression::Binary(
                         BinaryOp::Multiply,
-                        Box::new(Expression::Constant(1)),
-                        Box::new(Expression::Constant(2)),
+                        Box::new(Expression::Constant(Const::Int(1))),
+                        Box::new(Expression::Constant(Const::Int(2))),
                     )),
                     Box::new(Expression::Binary(
                         BinaryOp::Multiply,
-                        Box::new(Expression::Constant(3)),
+                        Box::new(Expression::Constant(Const::Int(3))),
                         Box::new(Expression::Binary(
                             BinaryOp::Add,
-                            Box::new(Expression::Constant(4)),
-                            Box::new(Expression::Constant(5)),
+                            Box::new(Expression::Constant(Const::Int(4))),
+                            Box::new(Expression::Constant(Const::Int(5))),
                         )),
                     )),
                 ),
             ))])),
-            params: vec![],
-            storage_class: None,
-        })]);
+            None,
+            CType::Int,
+        ))]);
 
         assert_eq!(expected, actual);
     }
@@ -1178,34 +1200,35 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let actual = ast.unwrap();
-        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
-            name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
+            "main".into(),
+            vec![],
+            Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Binary(
                     BinaryOp::Subtract,
                     Box::new(Expression::Binary(
                         BinaryOp::Divide,
                         Box::new(Expression::Binary(
                             BinaryOp::Multiply,
-                            Box::new(Expression::Constant(5)),
-                            Box::new(Expression::Constant(4)),
+                            Box::new(Expression::Constant(Const::Int(5))),
+                            Box::new(Expression::Constant(Const::Int(4))),
                         )),
-                        Box::new(Expression::Constant(2)),
+                        Box::new(Expression::Constant(Const::Int(2))),
                     )),
                     Box::new(Expression::Binary(
                         BinaryOp::Remainder,
-                        Box::new(Expression::Constant(3)),
+                        Box::new(Expression::Constant(Const::Int(3))),
                         Box::new(Expression::Binary(
                             BinaryOp::Add,
-                            Box::new(Expression::Constant(2)),
-                            Box::new(Expression::Constant(1)),
+                            Box::new(Expression::Constant(Const::Int(2))),
+                            Box::new(Expression::Constant(Const::Int(1))),
                         )),
                     )),
                 ),
             ))])),
-            params: vec![],
-            storage_class: None,
-        })]);
+            None,
+            CType::Int,
+        ))]);
 
         assert_eq!(expected, actual);
     }
@@ -1241,30 +1264,31 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let actual = ast.unwrap();
-        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
-            name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
+            "main".into(),
+            vec![],
+            Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Binary(
                     BinaryOp::BitwiseOr,
                     Box::new(Expression::Binary(
                         BinaryOp::Multiply,
-                        Box::new(Expression::Constant(5)),
-                        Box::new(Expression::Constant(4)),
+                        Box::new(Expression::Constant(Const::Int(5))),
+                        Box::new(Expression::Constant(Const::Int(4))),
                     )),
                     Box::new(Expression::Binary(
                         BinaryOp::BitwiseAnd,
                         Box::new(Expression::Binary(
                             BinaryOp::Subtract,
-                            Box::new(Expression::Constant(4)),
-                            Box::new(Expression::Constant(5)),
+                            Box::new(Expression::Constant(Const::Int(4))),
+                            Box::new(Expression::Constant(Const::Int(5))),
                         )),
-                        Box::new(Expression::Constant(6)),
+                        Box::new(Expression::Constant(Const::Int(6))),
                     )),
                 ),
             ))])),
-            params: vec![],
-            storage_class: None,
-        })]);
+            None,
+            CType::Int,
+        ))]);
 
         assert_eq!(expected, actual);
     }
@@ -1299,22 +1323,23 @@ mod tests {
         // multiple is a higher precedence than shift, so we
         // eval 5 * 4 first by pushing it to a lower node, then
         // leftshift the result by 2
-        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
-            name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
+            "main".into(),
+            vec![],
+            Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Binary(
                     BinaryOp::ShiftLeft,
                     Box::new(Expression::Binary(
                         BinaryOp::Multiply,
-                        Box::new(Expression::Constant(5)),
-                        Box::new(Expression::Constant(4)),
+                        Box::new(Expression::Constant(Const::Int(5))),
+                        Box::new(Expression::Constant(Const::Int(4))),
                     )),
-                    Box::new(Expression::Constant(2)),
+                    Box::new(Expression::Constant(Const::Int(2))),
                 ),
             ))])),
-            params: vec![],
-            storage_class: None,
-        })]);
+            None,
+            CType::Int,
+        ))]);
 
         assert_eq!(expected, actual);
     }
@@ -1348,22 +1373,23 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let actual = ast.unwrap();
-        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
-            name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
+            "main".into(),
+            vec![],
+            Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Binary(
                     BinaryOp::ShiftLeft,
-                    Box::new(Expression::Constant(5)),
+                    Box::new(Expression::Constant(Const::Int(5))),
                     Box::new(Expression::Binary(
                         BinaryOp::Add,
-                        Box::new(Expression::Constant(1)),
-                        Box::new(Expression::Constant(2)),
+                        Box::new(Expression::Constant(Const::Int(1))),
+                        Box::new(Expression::Constant(Const::Int(2))),
                     )),
                 ),
             ))])),
-            params: vec![],
-            storage_class: None,
-        })]);
+            None,
+            CType::Int,
+        ))]);
 
         assert_eq!(expected, actual);
     }
@@ -1401,30 +1427,31 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let actual = ast.unwrap();
-        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
-            name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
+            "main".into(),
+            vec![],
+            Some(Block(vec![BlockItem::Stmt(Statement::Return(
                 Expression::Binary(
                     BinaryOp::NotEqual,
                     Box::new(Expression::Binary(
                         BinaryOp::LessOrEqual,
-                        Box::new(Expression::Constant(2)),
+                        Box::new(Expression::Constant(Const::Int(2))),
                         Box::new(Expression::Binary(
                             BinaryOp::Subtract,
-                            Box::new(Expression::Constant(3)),
-                            Box::new(Expression::Constant(2)),
+                            Box::new(Expression::Constant(Const::Int(3))),
+                            Box::new(Expression::Constant(Const::Int(2))),
                         )),
                     )),
                     Box::new(Expression::Binary(
                         BinaryOp::Add,
-                        Box::new(Expression::Constant(4)),
-                        Box::new(Expression::Constant(5)),
+                        Box::new(Expression::Constant(Const::Int(4))),
+                        Box::new(Expression::Constant(Const::Int(5))),
                     )),
                 ),
             ))])),
-            params: vec![],
-            storage_class: None,
-        })]);
+            None,
+            CType::Int,
+        ))]);
 
         assert_eq!(expected, actual);
     }
@@ -1458,19 +1485,21 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let actual = ast.unwrap();
-        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
-            name: "main".into(),
-            block: Some(Block(vec![
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
+            "main".into(),
+            vec![],
+            Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::Constant(1)),
+                    init: Some(Expression::Constant(Const::Int(1))),
                     storage_class: None,
+                    vtype: CType::Int,
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
             ])),
-            params: vec![],
-            storage_class: None,
-        })]);
+            None,
+            CType::Int,
+        ))]);
 
         assert_eq!(expected, actual)
     }
@@ -1506,13 +1535,15 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let actual = ast.unwrap();
-        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
-            name: "main".into(),
-            block: Some(Block(vec![
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
+            "main".into(),
+            vec![],
+            Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
                     init: None,
                     storage_class: None,
+                    vtype: CType::Int,
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Assignment(
                     Box::new(Expression::Var("a".into())),
@@ -1522,9 +1553,9 @@ mod tests {
                     )),
                 ))),
             ])),
-            params: vec![],
-            storage_class: None,
-        })]);
+            None,
+            CType::Int,
+        ))]);
 
         assert_eq!(expected, actual)
     }
@@ -1557,19 +1588,20 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let actual = ast.unwrap();
-        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
-            name: "main".into(),
-            block: Some(Block(vec![
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
+            "main".into(),
+            vec![],
+            Some(Block(vec![
                 BlockItem::Stmt(Statement::Expr(Expression::Binary(
                     BinaryOp::Add,
-                    Box::new(Expression::Constant(2)),
-                    Box::new(Expression::Constant(2)),
+                    Box::new(Expression::Constant(Const::Int(2))),
+                    Box::new(Expression::Constant(Const::Int(2))),
                 ))),
-                BlockItem::Stmt(Statement::Return(Expression::Constant(0))),
+                BlockItem::Stmt(Statement::Return(Expression::Constant(Const::Int(0)))),
             ])),
-            params: vec![],
-            storage_class: None,
-        })]);
+            None,
+            CType::Int,
+        ))]);
 
         assert_eq!(expected, actual)
     }
@@ -1628,44 +1660,46 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let actual = ast.unwrap();
-        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
-            name: "main".into(),
-            block: Some(Block(vec![
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
+            "main".into(),
+            vec![],
+            Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::Constant(1)),
+                    init: Some(Expression::Constant(Const::Int(1))),
                     storage_class: None,
+                    vtype: CType::Int,
                 })),
                 BlockItem::Stmt(Statement::Expr(Expression::Binary(
                     BinaryOp::AddAssign,
                     Box::new(Expression::Var("a".into())),
-                    Box::new(Expression::Constant(2)),
+                    Box::new(Expression::Constant(Const::Int(2))),
                 ))),
                 BlockItem::Stmt(Statement::Expr(Expression::Binary(
                     BinaryOp::MinusAssign,
                     Box::new(Expression::Var("a".into())),
-                    Box::new(Expression::Constant(2)),
+                    Box::new(Expression::Constant(Const::Int(2))),
                 ))),
                 BlockItem::Stmt(Statement::Expr(Expression::Binary(
                     BinaryOp::MultiplyAssign,
                     Box::new(Expression::Var("a".into())),
-                    Box::new(Expression::Constant(2)),
+                    Box::new(Expression::Constant(Const::Int(2))),
                 ))),
                 BlockItem::Stmt(Statement::Expr(Expression::Binary(
                     BinaryOp::DivideAssign,
                     Box::new(Expression::Var("a".into())),
-                    Box::new(Expression::Constant(2)),
+                    Box::new(Expression::Constant(Const::Int(2))),
                 ))),
                 BlockItem::Stmt(Statement::Expr(Expression::Binary(
                     BinaryOp::RemainderAssign,
                     Box::new(Expression::Var("a".into())),
-                    Box::new(Expression::Constant(2)),
+                    Box::new(Expression::Constant(Const::Int(2))),
                 ))),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
             ])),
-            params: vec![],
-            storage_class: None,
-        })]);
+            None,
+            CType::Int,
+        ))]);
 
         assert_eq!(expected, actual)
     }
@@ -1720,23 +1754,27 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let actual = ast.unwrap();
-        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
-            name: "main".into(),
-            block: Some(Block(vec![
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
+            "main".into(),
+            vec![],
+            Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::Constant(1)),
+                    init: Some(Expression::Constant(Const::Int(1))),
                     storage_class: None,
+                    vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b".into(),
-                    init: Some(Expression::Constant(0)),
+                    init: Some(Expression::Constant(Const::Int(0))),
                     storage_class: None,
+                    vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "c".into(),
-                    init: Some(Expression::Constant(2)),
+                    init: Some(Expression::Constant(Const::Int(2))),
                     storage_class: None,
+                    vtype: CType::Int,
                 })),
                 BlockItem::Stmt(Statement::Expr(Expression::Binary(
                     BinaryOp::AddAssign,
@@ -1746,15 +1784,15 @@ mod tests {
                         Box::new(Expression::Var("b".into())),
                         Box::new(Expression::Assignment(
                             Box::new(Expression::Var("c".into())),
-                            Box::new(Expression::Constant(5)),
+                            Box::new(Expression::Constant(Const::Int(5))),
                         )),
                     )),
                 ))),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
             ])),
-            params: vec![],
-            storage_class: None,
-        })]);
+            None,
+            CType::Int,
+        ))]);
 
         assert_eq!(expected, actual)
     }
@@ -1793,27 +1831,29 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
         let actual = ast.unwrap();
-        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
-            name: "main".into(),
-            block: Some(Block(vec![
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
+            "main".into(),
+            vec![],
+            Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::Constant(10)),
+                    init: Some(Expression::Constant(Const::Int(10))),
                     storage_class: None,
+                    vtype: CType::Int,
                 })),
                 BlockItem::Stmt(Statement::Expr(Expression::Binary(
                     BinaryOp::MinusAssign,
                     Box::new(Expression::Binary(
                         BinaryOp::AddAssign,
                         Box::new(Expression::Var("a".into())),
-                        Box::new(Expression::Constant(1)),
+                        Box::new(Expression::Constant(Const::Int(1))),
                     )),
-                    Box::new(Expression::Constant(2)),
+                    Box::new(Expression::Constant(Const::Int(2))),
                 ))),
             ])),
-            params: vec![],
-            storage_class: None,
-        })]);
+            None,
+            CType::Int,
+        ))]);
 
         assert_eq!(expected, actual)
     }
@@ -1835,28 +1875,29 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
 
-        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
-            name: "main".into(),
-            block: Some(Block(vec![BlockItem::Stmt(Statement::If {
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
+            "main".into(),
+            vec![],
+            Some(Block(vec![BlockItem::Stmt(Statement::If {
                 condition: Expression::Var("a".into()),
                 then: Box::new(Statement::If {
                     condition: Expression::Binary(
                         BinaryOp::GreaterThan,
                         Box::new(Expression::Var("a".into())),
-                        Box::new(Expression::Constant(10)),
+                        Box::new(Expression::Constant(Const::Int(10))),
                     ),
                     then: Box::new(Statement::Return(Expression::Var("a".into()))),
                     else_: Some(Box::new(Statement::Return(Expression::Binary(
                         BinaryOp::Subtract,
-                        Box::new(Expression::Constant(10)),
+                        Box::new(Expression::Constant(Const::Int(10))),
                         Box::new(Expression::Var("a".into())),
                     )))),
                 }),
                 else_: None,
             })])),
-            params: vec![],
-            storage_class: None,
-        })]);
+            None,
+            CType::Int,
+        ))]);
 
         assert_eq!(ast.unwrap(), expected);
     }
@@ -1877,27 +1918,28 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
 
-        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
-            name: "main".into(),
-            block: Some(Block(vec![
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
+            "main".into(),
+            vec![],
+            Some(Block(vec![
                 // first example:  we nest inner expression
                 BlockItem::Stmt(Statement::Expr(Expression::Conditional {
                     condition: Box::new(Expression::Var("a".into())),
                     then: Box::new(Expression::Conditional {
                         condition: Box::new(Expression::Var("b".into())),
-                        then: Box::new(Expression::Constant(1)),
-                        else_: Box::new(Expression::Constant(2)),
+                        then: Box::new(Expression::Constant(Const::Int(1))),
+                        else_: Box::new(Expression::Constant(Const::Int(2))),
                     }),
-                    else_: Box::new(Expression::Constant(3)),
+                    else_: Box::new(Expression::Constant(Const::Int(3))),
                 })),
                 // second example: else statement is nested parse
                 BlockItem::Stmt(Statement::Expr(Expression::Conditional {
                     condition: Box::new(Expression::Var("a".into())),
-                    then: Box::new(Expression::Constant(1)),
+                    then: Box::new(Expression::Constant(Const::Int(1))),
                     else_: Box::new(Expression::Conditional {
                         condition: Box::new(Expression::Var("b".into())),
-                        then: Box::new(Expression::Constant(2)),
-                        else_: Box::new(Expression::Constant(3)),
+                        then: Box::new(Expression::Constant(Const::Int(2))),
+                        else_: Box::new(Expression::Constant(Const::Int(3))),
                     }),
                 })),
                 // third example: the conditional is a short-circuit expr
@@ -1907,22 +1949,22 @@ mod tests {
                         Box::new(Expression::Var("a".into())),
                         Box::new(Expression::Var("b".into())),
                     )),
-                    then: Box::new(Expression::Constant(2)),
-                    else_: Box::new(Expression::Constant(3)),
+                    then: Box::new(Expression::Constant(Const::Int(2))),
+                    else_: Box::new(Expression::Constant(Const::Int(3))),
                 })),
                 // fourth example: then should be an assignment
                 BlockItem::Stmt(Statement::Expr(Expression::Conditional {
                     condition: Box::new(Expression::Var("x".into())),
                     then: Box::new(Expression::Assignment(
                         Box::new(Expression::Var("x".into())),
-                        Box::new(Expression::Constant(1)),
+                        Box::new(Expression::Constant(Const::Int(1))),
                     )),
-                    else_: Box::new(Expression::Constant(2)),
+                    else_: Box::new(Expression::Constant(Const::Int(2))),
                 })),
             ])),
-            params: vec![],
-            storage_class: None,
-        })]);
+            None,
+            CType::Int,
+        ))]);
 
         assert_eq!(ast.unwrap(), expected);
     }
@@ -1942,22 +1984,23 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
 
-        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
-            name: "main".into(),
-            block: Some(Block(vec![
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
+            "main".into(),
+            vec![],
+            Some(Block(vec![
                 BlockItem::Stmt(Statement::Goto("foo".into())),
                 BlockItem::Stmt(Statement::Labelled {
                     label: "foo".into(),
                     statement: Box::new(Statement::Return(Expression::Binary(
                         BinaryOp::Add,
-                        Box::new(Expression::Constant(1)),
-                        Box::new(Expression::Constant(2)),
+                        Box::new(Expression::Constant(Const::Int(1))),
+                        Box::new(Expression::Constant(Const::Int(2))),
                     ))),
                 }),
             ])),
-            params: vec![],
-            storage_class: None,
-        })]);
+            None,
+            CType::Int,
+        ))]);
 
         assert_eq!(ast.unwrap(), expected);
     }
@@ -1982,16 +2025,18 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
 
-        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
-            name: "main".into(),
-            block: Some(Block(vec![
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
+            "main".into(),
+            vec![],
+            Some(Block(vec![
                 BlockItem::Stmt(Statement::If {
-                    condition: Expression::Constant(1),
+                    condition: Expression::Constant(Const::Int(1)),
                     then: Box::new(Statement::Compound(Block(vec![
                         BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                             name: "x".into(),
-                            init: Some(Expression::Constant(1)),
+                            init: Some(Expression::Constant(Const::Int(1))),
                             storage_class: None,
+                            vtype: CType::Int,
                         })),
                         BlockItem::Stmt(Statement::Return(Expression::Var("x".into()))),
                     ]))),
@@ -2000,19 +2045,20 @@ mod tests {
                 BlockItem::Stmt(Statement::Compound(Block(vec![
                     BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                         name: "b".into(),
-                        init: Some(Expression::Constant(2)),
+                        init: Some(Expression::Constant(Const::Int(2))),
                         storage_class: None,
+                        vtype: CType::Int,
                     })),
                     BlockItem::Stmt(Statement::Expr(Expression::Binary(
                         BinaryOp::Add,
                         Box::new(Expression::Var("b".into())),
-                        Box::new(Expression::Constant(1)),
+                        Box::new(Expression::Constant(Const::Int(1))),
                     ))),
                 ]))),
             ])),
-            params: vec![],
-            storage_class: None,
-        })]);
+            None,
+            CType::Int,
+        ))]);
 
         assert_eq!(ast.unwrap(), expected);
     }
@@ -2039,31 +2085,34 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
 
-        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
-            name: "main".into(),
-            block: Some(Block(vec![
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
+            "main".into(),
+            vec![],
+            Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::Constant(1)),
+                    init: Some(Expression::Constant(Const::Int(1))),
                     storage_class: None,
+                    vtype: CType::Int,
                 })),
                 BlockItem::Stmt(Statement::For {
                     init: ForInit::InitDecl(VariableDeclaration {
                         name: "b".into(),
-                        init: Some(Expression::Constant(1)),
+                        init: Some(Expression::Constant(Const::Int(1))),
                         storage_class: None,
+                        vtype: CType::Int,
                     }),
                     condition: Some(Expression::Binary(
                         BinaryOp::LessThan,
                         Box::new(Expression::Var("b".into())),
-                        Box::new(Expression::Constant(10)),
+                        Box::new(Expression::Constant(Const::Int(10))),
                     )),
                     post: Some(Expression::Assignment(
                         Box::new(Expression::Var("b".into())),
                         Box::new(Expression::Binary(
                             BinaryOp::Add,
                             Box::new(Expression::Var("b".into())),
-                            Box::new(Expression::Constant(1)),
+                            Box::new(Expression::Constant(Const::Int(1))),
                         )),
                     )),
                     body: Box::new(Statement::Compound(Block(vec![BlockItem::Stmt(
@@ -2078,7 +2127,7 @@ mod tests {
                     condition: Expression::Binary(
                         BinaryOp::LessThan,
                         Box::new(Expression::Var("a".into())),
-                        Box::new(Expression::Constant(0)),
+                        Box::new(Expression::Constant(Const::Int(0))),
                     ),
                     label: "".into(),
                 }),
@@ -2086,15 +2135,15 @@ mod tests {
                     condition: Expression::Binary(
                         BinaryOp::GreaterThan,
                         Box::new(Expression::Var("a".into())),
-                        Box::new(Expression::Constant(0)),
+                        Box::new(Expression::Constant(Const::Int(0))),
                     ),
                     body: Box::new(Statement::Break("".into())),
                     label: "".into(),
                 }),
             ])),
-            params: vec![],
-            storage_class: None,
-        })]);
+            None,
+            CType::Int,
+        ))]);
 
         assert_eq!(ast.unwrap(), expected);
     }
@@ -2119,19 +2168,22 @@ mod tests {
         assert!(ast.is_ok());
 
         let expected = AST::Program(vec![
-            Declaration::FunDecl(FunctionDeclaration {
-                name: "bar".into(),
-                block: None,
-                params: vec!["a".into()],
-                storage_class: Some(StorageClass::Static),
-            }),
-            Declaration::FunDecl(FunctionDeclaration {
-                name: "foo".into(),
-                block: Some(Block(vec![
+            Declaration::FunDecl(FunctionDeclaration::new(
+                "bar".into(),
+                vec![("a".into(), CType::Int)],
+                None,
+                Some(StorageClass::Static),
+                CType::Int,
+            )),
+            Declaration::FunDecl(FunctionDeclaration::new(
+                "foo".into(),
+                vec![("x".into(), CType::Int), ("y".into(), CType::Int)],
+                Some(Block(vec![
                     BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                         name: "y".into(),
                         init: None,
                         storage_class: Some(StorageClass::Extern),
+                        vtype: CType::Int,
                     })),
                     BlockItem::Stmt(Statement::Return(Expression::Binary(
                         BinaryOp::Add,
@@ -2139,28 +2191,33 @@ mod tests {
                         Box::new(Expression::Var("y".into())),
                     ))),
                 ])),
-                params: vec!["x".into(), "y".into()],
-                storage_class: Some(StorageClass::Extern),
-            }),
-            Declaration::FunDecl(FunctionDeclaration {
-                name: "main".into(),
-                block: Some(Block(vec![BlockItem::Stmt(Statement::Return(
+                Some(StorageClass::Extern),
+                CType::Int,
+            )),
+            Declaration::FunDecl(FunctionDeclaration::new(
+                "main".into(),
+                vec![],
+                Some(Block(vec![BlockItem::Stmt(Statement::Return(
                     Expression::Binary(
                         BinaryOp::Add,
                         Box::new(Expression::FunctionCall {
                             name: "foo".into(),
-                            args: vec![Expression::Constant(1), Expression::Constant(2)],
+                            args: vec![
+                                Expression::Constant(Const::Int(1)),
+                                Expression::Constant(Const::Int(2)),
+                            ],
                         }),
-                        Box::new(Expression::Constant(3)),
+                        Box::new(Expression::Constant(Const::Int(3))),
                     ),
                 ))])),
-                params: vec![],
-                storage_class: None,
-            }),
+                None,
+                CType::Int,
+            )),
             Declaration::VarDecl(VariableDeclaration {
                 name: "a".into(),
-                init: Some(Expression::Constant(3)),
+                init: Some(Expression::Constant(Const::Int(3))),
                 storage_class: Some(StorageClass::Static),
+                vtype: CType::Int,
             }),
         ]);
 
@@ -2181,29 +2238,108 @@ mod tests {
         let ast = parse.into_ast();
         assert!(ast.is_ok());
 
-        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
-            name: "main".into(),
-            block: Some(Block(vec![
-                BlockItem::Decl(Declaration::FunDecl(FunctionDeclaration {
-                    name: "foo".into(),
-                    params: vec!["x".into(), "y".into()],
-                    block: None,
-                    storage_class: None,
-                })),
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
+            "main".into(),
+            vec![],
+            Some(Block(vec![
+                BlockItem::Decl(Declaration::FunDecl(FunctionDeclaration::new(
+                    "foo".into(),
+                    vec![("x".into(), CType::Int), ("y".into(), CType::Int)],
+                    None,
+                    None,
+                    CType::Int,
+                ))),
                 BlockItem::Stmt(Statement::Return(Expression::Binary(
                     BinaryOp::Add,
                     Box::new(Expression::FunctionCall {
                         name: "foo".into(),
-                        args: vec![Expression::Constant(1), Expression::Constant(2)],
+                        args: vec![
+                            Expression::Constant(Const::Int(1)),
+                            Expression::Constant(Const::Int(2)),
+                        ],
                     }),
-                    Box::new(Expression::Constant(3)),
+                    Box::new(Expression::Constant(Const::Int(3))),
                 ))),
             ])),
-            params: vec![],
-            storage_class: None,
-        })]);
+            None,
+            CType::Int,
+        ))]);
 
         assert_eq!(ast.unwrap(), expected);
+    }
+
+    #[test]
+    fn parses_long_variable() {
+        // long x;  inside a function
+        let src = r#"
+            int main(void) {
+                long x;
+                return 0;
+            }
+        "#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let ast = Parser::new(&tokens).into_ast();
+        assert!(ast.is_ok());
+        let ast = ast.unwrap();
+        let AST::Program(decls) = &ast;
+        let Declaration::FunDecl(main) = &decls[0] else {
+            panic!()
+        };
+        let Block(items) = main.block.as_ref().unwrap();
+        let BlockItem::Decl(Declaration::VarDecl(vd)) = &items[0] else {
+            panic!()
+        };
+        assert_eq!(vd.vtype, CType::Long);
+        assert_eq!(vd.name, "x");
+    }
+
+    #[test]
+    fn parses_long_int_variable() {
+        // long int and int long both mean CType::Long
+        for src in [
+            "int main(void) { long int x; return 0; }",
+            "int main(void) { int long x; return 0; }",
+        ] {
+            let lexer = crate::lexer::Lexer::lex(src).unwrap();
+            let tokens = lexer.as_syntactic_tokens();
+            let ast = Parser::new(&tokens).into_ast();
+            assert!(ast.is_ok(), "failed for: {src}");
+            let AST::Program(decls) = ast.unwrap() else {
+                panic!()
+            };
+            let Declaration::FunDecl(main) = &decls[0] else {
+                panic!()
+            };
+            let Block(items) = main.block.as_ref().unwrap();
+            let BlockItem::Decl(Declaration::VarDecl(vd)) = &items[0] else {
+                panic!()
+            };
+            assert_eq!(vd.vtype, CType::Long, "wrong type for: {src}");
+        }
+    }
+
+    #[test]
+    fn parses_long_function() {
+        // long foo(long a) { return a; }
+        let src = "long foo(long a) { return a; }";
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let ast = Parser::new(&tokens).into_ast();
+        assert!(ast.is_ok());
+        let AST::Program(decls) = ast.unwrap() else {
+            panic!()
+        };
+        let Declaration::FunDecl(fun) = &decls[0] else {
+            panic!()
+        };
+        assert_eq!(
+            fun.ftype,
+            CType::FunType {
+                params: vec![CType::Long],
+                ret: Box::new(CType::Long),
+            }
+        );
     }
 
     #[test]

@@ -934,18 +934,24 @@ mod tests {
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::Constant(1)),
+                    init: Some(Expression::Constant(Const::Int(1))),
                     storage_class: None,
+                    vtype: crate::parser::CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::Constant(1)),
+                    init: Some(Expression::Constant(Const::Int(1))),
                     storage_class: None,
+                    vtype: crate::parser::CType::Int,
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
             ])),
             params: vec![],
             storage_class: None,
+            ftype: crate::parser::CType::FunType {
+                params: vec![],
+                ret: Box::new(crate::parser::CType::Int),
+            },
         })]);
 
         let actual = resolve(&mut before);
@@ -961,11 +967,16 @@ mod tests {
                     name: "a".into(),
                     init: Some(Expression::Var("c".into())),
                     storage_class: None,
+                    vtype: crate::parser::CType::Int,
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
             ])),
             params: vec![],
             storage_class: None,
+            ftype: crate::parser::CType::FunType {
+                params: vec![],
+                ret: Box::new(crate::parser::CType::Int),
+            },
         })]);
 
         let actual = resolve(&mut before);
@@ -979,18 +990,24 @@ mod tests {
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::Constant(1)),
+                    init: Some(Expression::Constant(Const::Int(1))),
                     storage_class: None,
+                    vtype: crate::parser::CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b".into(),
                     init: Some(Expression::Var("a".into())),
                     storage_class: None,
+                    vtype: crate::parser::CType::Int,
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a".into()))),
             ])),
             params: vec![],
             storage_class: None,
+            ftype: crate::parser::CType::FunType {
+                params: vec![],
+                ret: Box::new(crate::parser::CType::Int),
+            },
         })]);
 
         let actual = resolve(&mut before);
@@ -1000,18 +1017,24 @@ mod tests {
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a.0.decl".into(),
-                    init: Some(Expression::Constant(1)),
+                    init: Some(Expression::Constant(Const::Int(1))),
                     storage_class: None,
+                    vtype: crate::parser::CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b.1.decl".into(),
                     init: Some(Expression::Var("a.0.decl".into())),
                     storage_class: None,
+                    vtype: crate::parser::CType::Int,
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("a.0.decl".into()))),
             ])),
             params: vec![],
             storage_class: None,
+            ftype: crate::parser::CType::FunType {
+                params: vec![],
+                ret: Box::new(crate::parser::CType::Int),
+            },
         })]);
 
         // mutates taken value
@@ -1025,13 +1048,15 @@ mod tests {
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::Constant(1)),
+                    init: Some(Expression::Constant(Const::Int(1))),
                     storage_class: None,
+                    vtype: crate::parser::CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b".into(),
                     init: Some(Expression::Var("a".into())),
                     storage_class: None,
+                    vtype: crate::parser::CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "c".into(),
@@ -1041,11 +1066,16 @@ mod tests {
                         Box::new(Expression::Var("b".into())),
                     )),
                     storage_class: None,
+                    vtype: crate::parser::CType::Int,
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("c".into()))),
             ])),
             params: vec![],
             storage_class: None,
+            ftype: crate::parser::CType::FunType {
+                params: vec![],
+                ret: Box::new(crate::parser::CType::Int),
+            },
         })]);
 
         let actual = resolve(&mut before);
@@ -1055,13 +1085,15 @@ mod tests {
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a.0.decl".into(),
-                    init: Some(Expression::Constant(1)),
+                    init: Some(Expression::Constant(Const::Int(1))),
                     storage_class: None,
+                    vtype: crate::parser::CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b.1.decl".into(),
                     init: Some(Expression::Var("a.0.decl".into())),
                     storage_class: None,
+                    vtype: crate::parser::CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "c.2.decl".into(),
@@ -1071,11 +1103,16 @@ mod tests {
                         Box::new(Expression::Var("b.1.decl".into())),
                     )),
                     storage_class: None,
+                    vtype: crate::parser::CType::Int,
                 })),
                 BlockItem::Stmt(Statement::Return(Expression::Var("c.2.decl".into()))),
             ])),
             params: vec![],
             storage_class: None,
+            ftype: crate::parser::CType::FunType {
+                params: vec![],
+                ret: Box::new(crate::parser::CType::Int),
+            },
         })]);
 
         // mutates taken value
@@ -1173,22 +1210,28 @@ mod tests {
             block: Some(Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "x.0.decl".into(),
-                    init: Some(Expression::Constant(1)),
+                    init: Some(Expression::Constant(Const::Int(1))),
                     storage_class: None,
+                    vtype: crate::parser::CType::Int,
                 })),
                 BlockItem::Stmt(Statement::Compound(Block(vec![BlockItem::Decl(
                     // Declaration is the same name, but has a new renamed variable
                     // since we want to ensure any label is pinned to one value
                     Declaration::VarDecl(VariableDeclaration {
                         name: "x.1.decl".into(),
-                        init: Some(Expression::Constant(2)),
+                        init: Some(Expression::Constant(Const::Int(2))),
                         storage_class: None,
+                        vtype: crate::parser::CType::Int,
                     }),
                 )]))),
                 BlockItem::Stmt(Statement::Return(Expression::Var("x.0.decl".into()))),
             ])),
             params: vec![],
             storage_class: None,
+            ftype: crate::parser::CType::FunType {
+                params: vec![],
+                ret: Box::new(crate::parser::CType::Int),
+            },
         })]);
 
         assert_eq!(ast, expected);
@@ -1223,23 +1266,24 @@ mod tests {
                     name: "a.0.decl".into(),
                     init: None,
                     storage_class: None,
+                    vtype: crate::parser::CType::Int,
                 })),
                 BlockItem::Stmt(Statement::For {
                     init: ForInit::InitExp(Some(Expression::Assignment(
                         Box::new(Expression::Var("a.0.decl".into())),
-                        Box::new(Expression::Constant(1)),
+                        Box::new(Expression::Constant(Const::Int(1))),
                     ))),
                     condition: Some(Expression::Binary(
                         BinaryOp::LessThan,
                         Box::new(Expression::Var("a.0.decl".into())),
-                        Box::new(Expression::Constant(10)),
+                        Box::new(Expression::Constant(Const::Int(10))),
                     )),
                     post: Some(Expression::Assignment(
                         Box::new(Expression::Var("a.0.decl".into())),
                         Box::new(Expression::Binary(
                             BinaryOp::Add,
                             Box::new(Expression::Var("a.0.decl".into())),
-                            Box::new(Expression::Constant(1)),
+                            Box::new(Expression::Constant(Const::Int(1))),
                         )),
                     )),
                     body: Box::new(Statement::Compound(Block(vec![BlockItem::Stmt(
@@ -1254,7 +1298,7 @@ mod tests {
                     condition: Expression::Binary(
                         BinaryOp::LessThan,
                         Box::new(Expression::Var("a.0.decl".into())),
-                        Box::new(Expression::Constant(0)),
+                        Box::new(Expression::Constant(Const::Int(0))),
                     ),
                     label: "do_while_label.2".into(),
                 }),
@@ -1262,7 +1306,7 @@ mod tests {
                     condition: Expression::Binary(
                         BinaryOp::GreaterThan,
                         Box::new(Expression::Var("a.0.decl".into())),
-                        Box::new(Expression::Constant(0)),
+                        Box::new(Expression::Constant(Const::Int(0))),
                     ),
                     body: Box::new(Statement::Break("while_label.3".into())),
                     label: "while_label.3".into(),
@@ -1270,6 +1314,10 @@ mod tests {
             ])),
             params: vec![],
             storage_class: None,
+            ftype: crate::parser::CType::FunType {
+                params: vec![],
+                ret: Box::new(crate::parser::CType::Int),
+            },
         })]);
         assert_eq!(ast, expected);
     }
