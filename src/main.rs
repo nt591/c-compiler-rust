@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 mod asm;
 mod ast;
+mod const_eval;
 mod emitter;
 mod lexer;
 mod parser;
@@ -129,7 +130,7 @@ fn process_file(input: PathBuf, stage: ProcessingStage) -> anyhow::Result<Option
         return Ok(None);
     };
 
-    let symbol_table = semantic_analysis::resolve(&mut ast)?;
+    let (symbol_table, _typed_ast) = semantic_analysis::resolve(&mut ast)?;
     if stage == ProcessingStage::Validate {
         return Ok(None);
     };

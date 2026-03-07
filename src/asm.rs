@@ -1215,7 +1215,7 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let (symbol_table, _) = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let tacky = crate::tacky::Tacky::new(ast);
         let tacky = tacky.into_ast(&symbol_table);
         let Ok(tacky_ast) = tacky else {

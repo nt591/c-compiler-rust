@@ -1,18 +1,34 @@
-use crate::parser::AST;
-use crate::parser::Block;
-use crate::parser::BlockItem;
-use crate::parser::Const;
-use crate::parser::Declaration;
-use crate::parser::ExprKind;
-use crate::parser::Expression;
-use crate::parser::ForInit;
-use crate::parser::FunctionDeclaration;
-use crate::parser::Statement;
-use crate::parser::StorageClass;
-use crate::parser::VariableDeclaration;
+use crate::ast::BinaryOp;
+use crate::ast::Const;
+use crate::ast::StorageClass;
+use crate::ast::UnaryOp;
+use crate::const_eval;
+use crate::types::CType;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use thiserror::Error;
+use thiserror::Error; // todo
+
+pub type AST = crate::ast::AST<()>;
+pub type Declaration = crate::ast::Declaration<()>;
+pub type Statement = crate::ast::Statement<()>;
+pub type ExprKind = crate::ast::ExprKind<()>;
+pub type Expression = crate::ast::Expression<()>;
+pub type FunctionDeclaration = crate::ast::FunctionDeclaration<()>;
+pub type VariableDeclaration = crate::ast::VariableDeclaration<()>;
+pub type ForInit = crate::ast::ForInit<()>;
+pub type BlockItem = crate::ast::BlockItem<()>;
+pub type Block = crate::ast::Block<()>;
+
+pub type TypedAST = crate::ast::AST<CType>;
+pub type TypedDeclaration = crate::ast::Declaration<CType>;
+pub type TypedStatement = crate::ast::Statement<CType>;
+pub type TypedExprKind = crate::ast::ExprKind<CType>;
+pub type TypedExpression = crate::ast::Expression<CType>;
+pub type TypedFunctionDeclaration = crate::ast::FunctionDeclaration<CType>;
+pub type TypedVariableDeclaration = crate::ast::VariableDeclaration<CType>;
+pub type TypedForInit = crate::ast::ForInit<CType>;
+pub type TypedBlockItem = crate::ast::BlockItem<CType>;
+pub type TypedBlock = crate::ast::Block<CType>;
 
 #[derive(Debug, Error, PartialEq)]
 pub enum SemanticAnalysisError {
@@ -64,6 +80,8 @@ pub enum SemanticAnalysisError {
     NonConstInitOnLocalStaticVar,
     #[error("Storage class specifier not allowed in for-loop init declaration")]
     StorageClassInForInit,
+    #[error("Redeclared local var from {0:?} to {1:?}")]
+    VariableDeclaredWithNewType(CType, CType),
 }
 
 #[derive(Debug, Clone)]
@@ -183,17 +201,17 @@ impl Resolver {
 }
 
 /* BEGIN Symbol Table types for typechecking */
-#[derive(PartialEq, Debug)]
-pub enum CType {
-    Int,
-    FunType(usize), // param_count
+#[derive(PartialEq, Debug, Copy, Clone)]
+pub enum StaticInit {
+    IntInit(i32),
+    LongInit(i64),
 }
 
 #[derive(PartialEq, Debug)]
 pub enum InitialValue {
     Tentative,
-    Initial(usize), // for our Int CType
-    NoInitializer,  // extern variable declarations are not tentative
+    Initial(StaticInit),
+    NoInitializer, // extern variable declarations are not tentative
 }
 
 #[derive(Debug, PartialEq)]
@@ -205,42 +223,74 @@ pub enum IdentifierAttrs {
 
 // TODO: harden types so CType::FunType ONLY goes with IdentifierAttrs::FunAttr
 pub type SymbolTable = HashMap<String, (CType, IdentifierAttrs)>;
+
+struct Ctx {
+    symbol_table: SymbolTable,
+    enclosing_func_ret_ty: Option<CType>,
+}
+
+impl Ctx {
+    fn new(symbol_table: SymbolTable) -> Self {
+        Self {
+            symbol_table,
+            enclosing_func_ret_ty: None,
+        }
+    }
+
+    fn save_enclosing_func_ret_ty(&mut self, ctype: CType) {
+        self.enclosing_func_ret_ty = Some(ctype)
+    }
+
+    fn reset_enclosing_func_ret_ty(&mut self) {
+        self.enclosing_func_ret_ty = None;
+    }
+
+    fn take_symbol_table(self) -> SymbolTable {
+        self.symbol_table
+    }
+}
 /* END: Symbol Table types for typechecking */
 
-pub fn resolve(ast: &mut AST) -> Result<SymbolTable, SemanticAnalysisError> {
+pub fn resolve(ast: &mut AST) -> Result<(SymbolTable, TypedAST), SemanticAnalysisError> {
     let mut resolver = Resolver::new();
     resolve_ast(ast, &mut resolver)?;
     label_and_validate_loop_constructs(ast, &mut resolver)?;
     validate_labels(&resolver)?;
-    let mut table = SymbolTable::new();
-    typecheck_ast(ast, &mut table)?;
-    Ok(table)
+    let table = SymbolTable::new();
+    let mut ctx = Ctx::new(table);
+    let typed_ast = typecheck_ast(ast, &mut ctx)?;
+    let table = ctx.take_symbol_table();
+    Ok((table, typed_ast))
 }
 
-fn typecheck_ast(ast: &AST, symbol_table: &mut SymbolTable) -> Result<(), SemanticAnalysisError> {
+fn typecheck_ast(ast: &AST, ctx: &mut Ctx) -> Result<TypedAST, SemanticAnalysisError> {
     let AST::Program(decls) = ast;
-
+    let mut typed_decls = Vec::with_capacity(decls.len());
     for decl in decls {
-        match decl {
+        let d = match decl {
             Declaration::FunDecl(function) => {
-                typecheck_function_declaration(function, symbol_table)?
+                TypedDeclaration::FunDecl(typecheck_function_declaration(function, ctx)?)
             }
             Declaration::VarDecl(var) => {
-                typecheck_file_scope_variable_declaration(var, symbol_table)?
+                TypedDeclaration::VarDecl(typecheck_file_scope_variable_declaration(var, ctx)?)
             }
-        }
+        };
+        typed_decls.push(d)
     }
-    Ok(())
+    Ok(TypedAST::Program(typed_decls))
 }
 
 fn typecheck_function_declaration(
     decl: &FunctionDeclaration,
-    symbol_table: &mut SymbolTable,
-) -> Result<(), SemanticAnalysisError> {
+    ctx: &mut Ctx,
+) -> Result<TypedFunctionDeclaration, SemanticAnalysisError> {
+    let CType::FunType { params, .. } = &decl.ftype else {
+        unreachable!();
+    };
     let has_body = decl.block.is_some();
     let mut already_defined = false;
     let mut global = decl.storage_class != Some(StorageClass::Static);
-    if let Some((old_ctype, attrs)) = symbol_table.get(&decl.name) {
+    if let Some((old_ctype, attrs)) = ctx.symbol_table.get(&decl.name) {
         let IdentifierAttrs::FunAttr {
             defined,
             global: old_global,
@@ -250,11 +300,18 @@ fn typecheck_function_declaration(
                 "Somehow fetched attrs that are not FunType when querying symbol for typechecking function declaration"
             );
         };
+        let CType::FunType {
+            params: old_params, ..
+        } = old_ctype
+        else {
+            return Err(SemanticAnalysisError::IncompatibleFunctionDeclaration);
+        };
+
+        // ensure params of new declaration match old declaration (length, param type)
+        if params != old_params {
+            return Err(SemanticAnalysisError::IncompatibleFunctionDeclaration);
+        };
         let defined = match old_ctype {
-            CType::Int => Err(SemanticAnalysisError::IncompatibleFunctionDeclaration),
-            CType::FunType(count) if *count != decl.params.len() => {
-                Err(SemanticAnalysisError::IncompatibleFunctionDeclaration)
-            }
             _old_decl if *defined && has_body => {
                 Err(SemanticAnalysisError::DuplicateFunction(decl.name.clone()))
             }
@@ -266,29 +323,45 @@ fn typecheck_function_declaration(
         already_defined = defined;
         global = *old_global;
     };
-    symbol_table.insert(
+    ctx.symbol_table.insert(
         decl.name.clone(),
         (
-            CType::FunType(decl.params.len()),
+            decl.ftype.clone(),
             IdentifierAttrs::FunAttr {
                 defined: (already_defined || decl.block.is_some()),
                 global,
             },
         ),
     );
-    if let Some(block) = &decl.block {
-        for param in decl.params.iter() {
-            symbol_table.insert(param.clone(), (CType::Int, IdentifierAttrs::LocalAttr));
+    let typed_block = if let Some(block) = &decl.block {
+        for (param, ty) in decl.params.iter().zip(params) {
+            ctx.symbol_table
+                .insert(param.clone(), (ty.clone(), IdentifierAttrs::LocalAttr));
         }
-        typecheck_block(&block, symbol_table)?;
-    }
-    Ok(())
+        // store the return type of the function so we can use it for return statements.
+        let CType::FunType { ref ret, .. } = decl.ftype else {
+            unreachable!("Somehow got a non-funtype when unpacking a function decl ctype")
+        };
+        ctx.save_enclosing_func_ret_ty(*ret.clone());
+        let b = typecheck_block(block, ctx)?;
+        ctx.reset_enclosing_func_ret_ty();
+        Some(b)
+    } else {
+        None
+    };
+    Ok(TypedFunctionDeclaration {
+        name: decl.name.clone(),
+        params: decl.params.clone(),
+        block: typed_block,
+        storage_class: decl.storage_class.clone(),
+        ftype: decl.ftype.clone(),
+    })
 }
 
 fn typecheck_file_scope_variable_declaration(
     var: &VariableDeclaration,
-    symbol_table: &mut SymbolTable,
-) -> Result<(), SemanticAnalysisError> {
+    ctx: &mut Ctx,
+) -> Result<TypedVariableDeclaration, SemanticAnalysisError> {
     // first, figure out variable initial value if available
     // Can either be a known constant value,
     // Tentative if the storage class is Static or unknown,
@@ -296,8 +369,11 @@ fn typecheck_file_scope_variable_declaration(
     let mut initial_value = match &var.init {
         None if var.storage_class == Some(StorageClass::Extern) => InitialValue::NoInitializer,
         None => InitialValue::Tentative,
-        Some(expr) => match expr.kind.as_ref() {
-            ExprKind::Constant(Const::Int(i)) => InitialValue::Initial((*i).try_into().unwrap()),
+        Some(expr) => match *expr.kind {
+            ExprKind::Constant(c) => {
+                let converted = const_eval::convert_const(c, &var.vtype);
+                InitialValue::Initial(converted)
+            }
             _ => return Err(SemanticAnalysisError::NonConstantInitializer),
         },
     };
@@ -307,9 +383,9 @@ fn typecheck_file_scope_variable_declaration(
     let mut global = var.storage_class != Some(StorageClass::Static);
     // now check previous declarations to make sure it's valid,
     // and to resolve storage classes and linkage.
-    if let Some((old_ctype, old_attrs)) = symbol_table.get(&var.name) {
+    if let Some((old_ctype, old_attrs)) = ctx.symbol_table.get(&var.name) {
         // have we previously defined this as a function?
-        if *old_ctype != CType::Int {
+        if *old_ctype != var.vtype {
             return Err(SemanticAnalysisError::FunctionRedeclaredAsVariable);
         }
         // if we've declared this variable as extern,
@@ -347,50 +423,68 @@ fn typecheck_file_scope_variable_declaration(
             _ => {}
         }
     }
-    symbol_table.insert(
+    let typed_init = match initial_value {
+        _ if var.init.is_none() => None,
+        InitialValue::Initial(StaticInit::IntInit(v)) => Some(TypedExpression {
+            ty: CType::Int,
+            kind: Box::new(TypedExprKind::Constant(Const::Int(v))),
+        }),
+        InitialValue::Initial(StaticInit::LongInit(v)) => Some(TypedExpression {
+            ty: CType::Long,
+            kind: Box::new(TypedExprKind::Constant(Const::Long(v))),
+        }),
+        _ => unreachable!(),
+    };
+    ctx.symbol_table.insert(
         var.name.clone(),
         (
-            CType::Int,
+            var.vtype.clone(),
             IdentifierAttrs::StaticAttr {
                 global,
                 init: initial_value,
             },
         ),
     );
-    Ok(())
+    Ok(TypedVariableDeclaration {
+        name: var.name.clone(),
+        init: typed_init,
+        storage_class: var.storage_class,
+        vtype: var.vtype.clone(),
+    })
 }
 
-fn typecheck_block(
-    decl: &Block,
-    symbol_table: &mut SymbolTable,
-) -> Result<(), SemanticAnalysisError> {
+fn typecheck_block(decl: &Block, ctx: &mut Ctx) -> Result<TypedBlock, SemanticAnalysisError> {
     let crate::ast::Block(body) = decl;
+    let mut typed_body = Vec::with_capacity(body.len());
     for body_item in body.iter() {
-        match body_item {
-            BlockItem::Decl(Declaration::VarDecl(declaration)) => {
-                typecheck_local_var_decl(&declaration, symbol_table)?
+        let block_item = match body_item {
+            BlockItem::Decl(Declaration::VarDecl(declaration)) => TypedBlockItem::Decl(
+                TypedDeclaration::VarDecl(typecheck_local_var_decl(declaration, ctx)?),
+            ),
+            BlockItem::Decl(Declaration::FunDecl(decl)) => TypedBlockItem::Decl(
+                TypedDeclaration::FunDecl(typecheck_function_declaration(decl, ctx)?),
+            ),
+            BlockItem::Stmt(statement) => {
+                TypedBlockItem::Stmt(typecheck_statement(statement, ctx)?)
             }
-            BlockItem::Decl(Declaration::FunDecl(decl)) => {
-                typecheck_function_declaration(&decl, symbol_table)?;
-            }
-            BlockItem::Stmt(statement) => typecheck_statement(&statement, symbol_table)?,
-        }
+        };
+        typed_body.push(block_item);
     }
 
-    Ok(())
+    Ok(crate::ast::Block(typed_body))
 }
 
 fn typecheck_local_var_decl(
     decl: &VariableDeclaration,
-    symbol_table: &mut SymbolTable,
-) -> Result<(), SemanticAnalysisError> {
+    ctx: &mut Ctx,
+) -> Result<TypedVariableDeclaration, SemanticAnalysisError> {
     let VariableDeclaration {
         init,
         name,
         storage_class,
         ..
     } = decl;
-    match storage_class {
+    let typed_var_decl = match storage_class {
         Some(StorageClass::Extern) => {
             // an extern variable cannot be initialized at block scope, so
             // raise an error if we see an expression in the init position.
@@ -398,22 +492,31 @@ fn typecheck_local_var_decl(
                 return Err(SemanticAnalysisError::InitializerOnLocalExternVarDecl);
             }
             // ensure we're not redefining anything
-            if let Some((old_ctype, _old_attrs)) = symbol_table.get(name.as_str()) {
-                if *old_ctype != CType::Int {
-                    return Err(SemanticAnalysisError::FunctionRedeclaredAsVariable);
+            if let Some((old_ctype, _old_attrs)) = ctx.symbol_table.get(name.as_str()) {
+                if *old_ctype != decl.vtype {
+                    return Err(SemanticAnalysisError::VariableDeclaredWithNewType(
+                        old_ctype.clone(),
+                        decl.vtype.clone(),
+                    ));
                 }
             } else {
                 // fair game, add to symbol table.
-                symbol_table.insert(
+                ctx.symbol_table.insert(
                     name.clone(),
                     (
-                        CType::Int,
+                        decl.vtype.clone(),
                         IdentifierAttrs::StaticAttr {
                             init: InitialValue::NoInitializer,
                             global: true,
                         },
                     ),
                 );
+            }
+            TypedVariableDeclaration {
+                name: name.clone(),
+                init: None,
+                storage_class: Some(StorageClass::Extern),
+                vtype: decl.vtype.clone(),
             }
         }
         Some(StorageClass::Static) => {
@@ -422,162 +525,308 @@ fn typecheck_local_var_decl(
             // or default to an initial value of zero if not present.
             // Any non-constant initializer is a type error.
             let new_init = match init {
-                None => InitialValue::Initial(0),
-                Some(expr) => match expr.kind.as_ref() {
-                    ExprKind::Constant(Const::Int(c)) => InitialValue::Initial((*c).try_into().unwrap()),
+                None => {
+                    InitialValue::Initial(const_eval::convert_const(Const::Int(0), &decl.vtype))
+                }
+                Some(expr) => match *expr.kind {
+                    ExprKind::Constant(c) => {
+                        let converted_const = const_eval::convert_const(c, &decl.vtype);
+                        InitialValue::Initial(converted_const)
+                    }
                     _ => return Err(SemanticAnalysisError::NonConstInitOnLocalStaticVar),
                 },
             };
-            symbol_table.insert(
+            // book says to just re-build here instead of typechecking.
+            let typed_init = match new_init {
+                _ if init.is_none() => None,
+                InitialValue::Initial(StaticInit::IntInit(v)) => Some(TypedExpression {
+                    ty: CType::Int,
+                    kind: Box::new(TypedExprKind::Constant(Const::Int(v))),
+                }),
+                InitialValue::Initial(StaticInit::LongInit(v)) => Some(TypedExpression {
+                    ty: CType::Long,
+                    kind: Box::new(TypedExprKind::Constant(Const::Long(v))),
+                }),
+                _ => unreachable!(),
+            };
+            ctx.symbol_table.insert(
                 name.clone(),
                 (
-                    CType::Int,
+                    decl.vtype.clone(),
                     IdentifierAttrs::StaticAttr {
                         init: new_init,
                         global: false,
                     },
                 ),
             );
+            TypedVariableDeclaration {
+                name: name.clone(),
+                init: typed_init,
+                storage_class: Some(StorageClass::Static),
+                vtype: decl.vtype.clone(),
+            }
         }
         None => {
             // automatic variable: block scope, so easy to check
-            symbol_table.insert(name.clone(), (CType::Int, IdentifierAttrs::LocalAttr));
-            if let Some(init) = init {
-                typecheck_expr(init, symbol_table)?;
+            ctx.symbol_table.insert(
+                name.clone(),
+                (decl.vtype.clone(), IdentifierAttrs::LocalAttr),
+            );
+            let typed_init = if let Some(init) = init {
+                let e1 = typecheck_expr(init, ctx)?;
+                Some(convert_to(e1, decl.vtype.clone()))
+            } else {
+                None
             };
+            TypedVariableDeclaration {
+                name: name.clone(),
+                init: typed_init,
+                storage_class: None,
+                vtype: decl.vtype.clone(),
+            }
         }
-    }
-    Ok(())
+    };
+    Ok(typed_var_decl)
 }
 
 fn typecheck_statement(
     statement: &Statement,
-    symbol_table: &mut SymbolTable,
-) -> Result<(), SemanticAnalysisError> {
-    match statement {
-        Statement::Null => (),
-        Statement::Expr(expr) => typecheck_expr(expr, symbol_table)?,
-        Statement::Return(expr) => typecheck_expr(expr, symbol_table)?,
+    ctx: &mut Ctx,
+) -> Result<TypedStatement, SemanticAnalysisError> {
+    let stmt = match statement {
+        Statement::Null => TypedStatement::Null,
+        Statement::Expr(expr) => TypedStatement::Expr(typecheck_expr(expr, ctx)?),
+        Statement::Return(expr) => {
+            let inner_expr = typecheck_expr(expr, ctx)?;
+            let Some(ref ret_ty) = ctx.enclosing_func_ret_ty else {
+                panic!(
+                    "Got a return statement without setting the enclosing function's return type"
+                );
+            };
+            let converted_expr = convert_to(inner_expr, ret_ty.clone());
+            TypedStatement::Return(converted_expr)
+        }
         Statement::If {
             condition,
             then,
             else_,
         } => {
-            typecheck_expr(condition, symbol_table)?;
-            typecheck_statement(then, symbol_table)?;
-            if let Some(expr) = else_ {
-                typecheck_statement(expr, symbol_table)?;
+            let else_stmt = match else_ {
+                Some(stmt) => Some(Box::new(typecheck_statement(stmt, ctx)?)),
+                None => None,
             };
+            TypedStatement::If {
+                condition: typecheck_expr(condition, ctx)?,
+                then: Box::new(typecheck_statement(then, ctx)?),
+                else_: else_stmt,
+            }
         }
-        Statement::Goto(_lbl) => (),
-        Statement::Labelled { statement, .. } => {
-            typecheck_statement(statement, symbol_table)?;
-        }
-        Statement::Compound(block) => {
-            typecheck_block(block, symbol_table)?;
-        }
-        Statement::Break(_lbl) | Statement::Continue(_lbl) => (),
+        Statement::Goto(lbl) => TypedStatement::Goto(lbl.clone()),
+        Statement::Labelled { statement, label } => TypedStatement::Labelled {
+            label: label.clone(),
+            statement: Box::new(typecheck_statement(statement, ctx)?),
+        },
+        Statement::Compound(block) => TypedStatement::Compound(typecheck_block(block, ctx)?),
+        Statement::Break(lbl) => TypedStatement::Break(lbl.clone()),
+        Statement::Continue(lbl) => TypedStatement::Continue(lbl.clone()),
         Statement::DoWhile {
-            condition, body, ..
-        }
-        | Statement::While {
-            body, condition, ..
-        } => {
-            typecheck_expr(condition, symbol_table)?;
-            typecheck_statement(body, symbol_table)?;
-        }
+            condition,
+            body,
+            label,
+        } => TypedStatement::DoWhile {
+            condition: typecheck_expr(condition, ctx)?,
+            body: Box::new(typecheck_statement(body, ctx)?),
+            label: label.clone(),
+        },
+        Statement::While {
+            condition,
+            body,
+            label,
+        } => TypedStatement::While {
+            condition: typecheck_expr(condition, ctx)?,
+            body: Box::new(typecheck_statement(body, ctx)?),
+            label: label.clone(),
+        },
         Statement::For {
             init,
             condition,
             post,
             body,
-            ..
-        } => {
-            typecheck_for_init(init, symbol_table)?;
-            typecheck_optional_expr(condition.as_ref(), symbol_table)?;
-            typecheck_optional_expr(post.as_ref(), symbol_table)?;
-            typecheck_statement(body.as_ref(), symbol_table)?;
-        }
+            label,
+        } => TypedStatement::For {
+            init: typecheck_for_init(init, ctx)?,
+            condition: typecheck_optional_expr(condition.as_ref(), ctx)?,
+            post: typecheck_optional_expr(post.as_ref(), ctx)?,
+            body: Box::new(typecheck_statement(body, ctx)?),
+            label: label.clone(),
+        },
     };
-    Ok(())
+    Ok(stmt)
 }
 
 fn typecheck_for_init(
     init: &ForInit,
-    symbol_table: &mut SymbolTable,
-) -> Result<(), SemanticAnalysisError> {
-    match init {
-        ForInit::InitDecl(decl) => typecheck_local_var_decl(decl, symbol_table),
-        ForInit::InitExp(expr) => typecheck_optional_expr(expr.as_ref(), symbol_table),
-    }
+    ctx: &mut Ctx,
+) -> Result<TypedForInit, SemanticAnalysisError> {
+    let for_init = match init {
+        ForInit::InitDecl(decl) => TypedForInit::InitDecl(typecheck_local_var_decl(decl, ctx)?),
+        ForInit::InitExp(expr) => {
+            TypedForInit::InitExp(typecheck_optional_expr(expr.as_ref(), ctx)?)
+        }
+    };
+    Ok(for_init)
 }
 
 fn typecheck_optional_expr(
     expr: Option<&Expression>,
-    symbol_table: &mut SymbolTable,
-) -> Result<(), SemanticAnalysisError> {
-    if let Some(expression) = expr {
-        typecheck_expr(expression, symbol_table)?;
-    }
-    Ok(())
+    ctx: &mut Ctx,
+) -> Result<Option<TypedExpression>, SemanticAnalysisError> {
+    let inner_expr = if let Some(expression) = expr {
+        Some(typecheck_expr(expression, ctx)?)
+    } else {
+        None
+    };
+    Ok(inner_expr)
 }
 
 fn typecheck_expr(
     expr: &Expression,
-    symbol_table: &mut SymbolTable,
-) -> Result<(), SemanticAnalysisError> {
-    match expr.kind.as_ref() {
-        ExprKind::FunctionCall { name, args } => {
-            let stored_type = symbol_table.get(name); // TODO: Can this be None?
-            let Some((CType::FunType(count), _)) = stored_type else {
-                return Err(SemanticAnalysisError::VariableUsedAsFunctionName(
-                    name.clone(),
-                ));
-            };
-            if args.len() != *count {
-                return Err(SemanticAnalysisError::FunctionCalledWithWrongNumOfArgs);
-            }
-            for arg in args {
-                typecheck_expr(arg, symbol_table)?;
-            }
-            Ok(())
-        }
+    ctx: &mut Ctx,
+) -> Result<TypedExpression, SemanticAnalysisError> {
+    let (expr_kind, expr_type) = match expr.kind.as_ref() {
         ExprKind::Var(name) => {
-            let stored_type = symbol_table.get(name); // TODO: Can this be None?
-            if let Some((CType::FunType(_), IdentifierAttrs::FunAttr { .. })) = stored_type {
+            let stored_type = ctx
+                .symbol_table
+                .get(name)
+                .expect("Didn't have a type for a variable expression");
+            if let (CType::FunType { .. }, IdentifierAttrs::FunAttr { .. }) = stored_type {
                 return Err(SemanticAnalysisError::FunctionUsedAsVariableName(
                     name.clone(),
                 ));
             };
-            Ok(())
+            (TypedExprKind::Var(name.clone()), stored_type.0.clone())
         }
-        ExprKind::Constant(_) => Ok(()),
-        ExprKind::Binary(_op, lhs, rhs) => {
-            typecheck_expr(lhs.as_ref(), symbol_table)?;
-            typecheck_expr(rhs.as_ref(), symbol_table)?;
-            Ok(())
+
+        ExprKind::Constant(c @ Const::Int(_)) => (TypedExprKind::Constant(c.clone()), CType::Int),
+        ExprKind::Constant(c @ Const::Long(_)) => (TypedExprKind::Constant(c.clone()), CType::Long),
+        ExprKind::Unary(op, expr) => {
+            let inner = typecheck_expr(expr, ctx)?;
+            let inner_ty = inner.get_type(); // todo: make sure we only clone when we need
+            let expr = TypedExprKind::Unary(*op, Box::new(inner));
+            let ty = if *op == UnaryOp::Not {
+                CType::Int
+            } else {
+                inner_ty
+            };
+            (expr, ty)
         }
-        ExprKind::Unary(_op, expr) => {
-            typecheck_expr(expr.as_ref(), symbol_table)?;
-            Ok(())
+        ExprKind::Binary(o @ BinaryOp::BinAnd, lhs, rhs)
+        | ExprKind::Binary(o @ BinaryOp::BinOr, lhs, rhs) => {
+            let e1 = typecheck_expr(lhs, ctx)?;
+            let e2 = typecheck_expr(rhs, ctx)?;
+            // AND and OR operations convert to an integer
+            let ty = CType::Int;
+            (TypedExprKind::Binary(*o, Box::new(e1), Box::new(e2)), ty)
+        }
+        ExprKind::Binary(op, lhs, rhs) => {
+            let e1 = typecheck_expr(lhs, ctx)?;
+            let e2 = typecheck_expr(rhs, ctx)?;
+            let t1 = e1.get_type();
+            let t2 = e2.get_type();
+            let common_type = CType::get_common_type(t1, t2);
+            // we now need to see if each expression needs to be potentially
+            // cast to the common type
+            let converted_e1 = convert_to(e1, common_type.clone());
+            let converted_e2 = convert_to(e2, common_type.clone());
+            let bin_expr =
+                TypedExprKind::Binary(*op, Box::new(converted_e1), Box::new(converted_e2));
+            // some binops return an int
+            let t = match op {
+                BinaryOp::Add
+                | BinaryOp::Subtract
+                | BinaryOp::Multiply
+                | BinaryOp::Divide
+                | BinaryOp::Remainder => common_type,
+                _ => CType::Int,
+            };
+            (bin_expr, t)
+        }
+        ExprKind::Assignment(lhs, rhs) => {
+            let e1 = typecheck_expr(lhs, ctx)?;
+            let e2 = typecheck_expr(rhs, ctx)?;
+            let ty = e1.get_type();
+            let converted_rhs = convert_to(e2, ty.clone());
+            (
+                TypedExprKind::Assignment(Box::new(e1), Box::new(converted_rhs)),
+                ty,
+            )
         }
         ExprKind::Conditional {
             condition,
             then,
             else_,
         } => {
-            typecheck_expr(condition.as_ref(), symbol_table)?;
-            typecheck_expr(then.as_ref(), symbol_table)?;
-            typecheck_expr(else_.as_ref(), symbol_table)?;
-            Ok(())
+            let cond = typecheck_expr(condition, ctx)?;
+            let e1 = typecheck_expr(then, ctx)?;
+            let e2 = typecheck_expr(else_, ctx)?;
+            let t1 = e1.get_type();
+            let t2 = e2.get_type();
+            let common_type = CType::get_common_type(t1, t2);
+            // we now need to see if each expression needs to be potentially
+            // cast to the common type
+            let converted_e1 = convert_to(e1, common_type.clone());
+            let converted_e2 = convert_to(e2, common_type.clone());
+            (
+                TypedExprKind::Conditional {
+                    condition: Box::new(cond),
+                    then: Box::new(converted_e1),
+                    else_: Box::new(converted_e2),
+                },
+                common_type,
+            )
         }
-        ExprKind::Assignment(lhs, rhs) => {
-            typecheck_expr(lhs.as_ref(), symbol_table)?;
-            typecheck_expr(rhs.as_ref(), symbol_table)?;
-            Ok(())
+
+        ExprKind::Cast(ty, expr) => {
+            let expr = typecheck_expr(expr, ctx)?;
+            (TypedExprKind::Cast(ty.clone(), Box::new(expr)), ty.clone())
         }
-        ExprKind::Cast(_, expr) => typecheck_expr(expr.as_ref(), symbol_table),
-    }
+        ExprKind::FunctionCall { name, args } => {
+            // stored type return type is our canonical return type.
+            // We'll typecheck each argument and potentially cast to
+            // the param types.
+            let stored_type = {
+                ctx.symbol_table
+                    .get(name)
+                    .expect("Didn't find type for function call name")
+                    .0
+                    .clone()
+            };
+            let CType::FunType { params, ret } = stored_type else {
+                return Err(SemanticAnalysisError::VariableUsedAsFunctionName(
+                    name.clone(),
+                ));
+            };
+            if args.len() != params.len() {
+                return Err(SemanticAnalysisError::FunctionCalledWithWrongNumOfArgs);
+            }
+            let mut converted_args = vec![];
+            for (arg, param_ty) in args.iter().zip(params) {
+                let expr = typecheck_expr(arg, ctx)?;
+                converted_args.push(convert_to(expr, param_ty.clone()));
+            }
+            (
+                TypedExprKind::FunctionCall {
+                    name: name.clone(),
+                    args: converted_args,
+                },
+                ret.as_ref().clone(),
+            )
+        }
+    };
+    Ok(TypedExpression {
+        kind: Box::new(expr_kind),
+        ty: expr_type,
+    })
 }
 
 fn validate_labels(resolver: &Resolver) -> Result<(), SemanticAnalysisError> {
@@ -926,6 +1175,16 @@ fn label_statement(
     }
 }
 
+fn convert_to(e: TypedExpression, t: CType) -> TypedExpression {
+    if e.get_type() == t {
+        return e;
+    }
+    TypedExpression {
+        ty: t.clone(),
+        kind: Box::new(TypedExprKind::Cast(t, Box::new(e))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -954,7 +1213,9 @@ mod tests {
                     storage_class: None,
                     vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("a".into())))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var(
+                    "a".into(),
+                )))),
             ])),
             params: vec![],
             storage_class: None,
@@ -964,7 +1225,7 @@ mod tests {
             },
         })]);
 
-        let actual = resolve(&mut before);
+        let actual = resolve(&mut before).map(|(t, _)| t);
         assert!(actual.is_err());
     }
 
@@ -979,7 +1240,9 @@ mod tests {
                     storage_class: None,
                     vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("a".into())))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var(
+                    "a".into(),
+                )))),
             ])),
             params: vec![],
             storage_class: None,
@@ -989,7 +1252,7 @@ mod tests {
             },
         })]);
 
-        let actual = resolve(&mut before);
+        let actual = resolve(&mut before).map(|(t, _)| t);
         assert!(actual.is_err());
     }
 
@@ -1010,7 +1273,9 @@ mod tests {
                     storage_class: None,
                     vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("a".into())))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var(
+                    "a".into(),
+                )))),
             ])),
             params: vec![],
             storage_class: None,
@@ -1020,7 +1285,7 @@ mod tests {
             },
         })]);
 
-        let actual = resolve(&mut before);
+        let actual = resolve(&mut before).map(|(t, _)| t);
         assert!(actual.is_ok());
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
@@ -1037,7 +1302,9 @@ mod tests {
                     storage_class: None,
                     vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("a.0.decl".into())))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var(
+                    "a.0.decl".into(),
+                )))),
             ])),
             params: vec![],
             storage_class: None,
@@ -1078,7 +1345,9 @@ mod tests {
                     storage_class: None,
                     vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("c".into())))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var(
+                    "c".into(),
+                )))),
             ])),
             params: vec![],
             storage_class: None,
@@ -1088,7 +1357,7 @@ mod tests {
             },
         })]);
 
-        let actual = resolve(&mut before);
+        let actual = resolve(&mut before).map(|(t, _)| t);
         assert!(actual.is_ok());
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
             name: "main".into(),
@@ -1115,7 +1384,9 @@ mod tests {
                     storage_class: None,
                     vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("c.2.decl".into())))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var(
+                    "c.2.decl".into(),
+                )))),
             ])),
             params: vec![],
             storage_class: None,
@@ -1144,7 +1415,7 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let analysis = resolve(&mut ast);
+        let analysis = resolve(&mut ast).map(|(t, _)| t);
         assert!(analysis.is_err());
         assert_eq!(
             analysis,
@@ -1166,7 +1437,7 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let analysis = resolve(&mut ast);
+        let analysis = resolve(&mut ast).map(|(t, _)| t);
         assert!(analysis.is_err());
         assert_eq!(
             analysis,
@@ -1189,7 +1460,7 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let analysis = resolve(&mut ast);
+        let analysis = resolve(&mut ast).map(|(t, _)| t);
         assert!(analysis.is_err());
         assert_eq!(
             analysis,
@@ -1212,7 +1483,7 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let analysis = resolve(&mut ast);
+        let analysis = resolve(&mut ast).map(|(t, _)| t);
         assert!(analysis.is_ok());
 
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
@@ -1224,17 +1495,21 @@ mod tests {
                     storage_class: None,
                     vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Compound(crate::ast::Block(vec![BlockItem::Decl(
-                    // Declaration is the same name, but has a new renamed variable
-                    // since we want to ensure any label is pinned to one value
-                    Declaration::VarDecl(VariableDeclaration {
-                        name: "x.1.decl".into(),
-                        init: Some(Expression::new(ExprKind::Constant(Const::Int(2)))),
-                        storage_class: None,
-                        vtype: CType::Int,
-                    }),
-                )]))),
-                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("x.0.decl".into())))),
+                BlockItem::Stmt(Statement::Compound(crate::ast::Block(vec![
+                    BlockItem::Decl(
+                        // Declaration is the same name, but has a new renamed variable
+                        // since we want to ensure any label is pinned to one value
+                        Declaration::VarDecl(VariableDeclaration {
+                            name: "x.1.decl".into(),
+                            init: Some(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                            storage_class: None,
+                            vtype: CType::Int,
+                        }),
+                    ),
+                ]))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var(
+                    "x.0.decl".into(),
+                )))),
             ])),
             params: vec![],
             storage_class: None,
@@ -1266,7 +1541,7 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let analysis = resolve(&mut ast);
+        let analysis = resolve(&mut ast).map(|(t, _)| t);
         assert!(analysis.is_ok());
 
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
@@ -1296,15 +1571,15 @@ mod tests {
                             Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
                         ))),
                     ))),
-                    body: Box::new(Statement::Compound(crate::ast::Block(vec![BlockItem::Stmt(
-                        Statement::Continue("for_label.1".into()),
-                    )]))),
+                    body: Box::new(Statement::Compound(crate::ast::Block(vec![
+                        BlockItem::Stmt(Statement::Continue("for_label.1".into())),
+                    ]))),
                     label: "for_label.1".into(),
                 }),
                 BlockItem::Stmt(Statement::DoWhile {
-                    body: Box::new(Statement::Compound(crate::ast::Block(vec![BlockItem::Stmt(
-                        Statement::Continue("do_while_label.2".into()),
-                    )]))),
+                    body: Box::new(Statement::Compound(crate::ast::Block(vec![
+                        BlockItem::Stmt(Statement::Continue("do_while_label.2".into())),
+                    ]))),
                     condition: Expression::new(ExprKind::Binary(
                         BinaryOp::LessThan,
                         Box::new(Expression::new(ExprKind::Var("a.0.decl".into()))),
@@ -1332,6 +1607,88 @@ mod tests {
         assert_eq!(ast, expected);
     }
 
+    fn resolve_src(src: &str) -> Result<(SymbolTable, TypedAST), SemanticAnalysisError> {
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = crate::parser::Parser::new(&tokens);
+        let mut ast = parse.into_ast().unwrap();
+        resolve(&mut ast)
+    }
+
+    #[test]
+    fn incompatible_function_redeclaration_different_param_types() {
+        let src = r#"
+            int foo(int a);
+            int foo(long a);
+            int main(void) { return 0; }
+        "#;
+        assert_eq!(
+            resolve_src(src),
+            Err(SemanticAnalysisError::IncompatibleFunctionDeclaration)
+        );
+    }
+
+    #[test]
+    fn non_constant_initializer_on_local_static() {
+        let src = r#"
+            int main(void) {
+                int a = 1;
+                static int x = a + 1;
+                return x;
+            }
+        "#;
+        assert_eq!(
+            resolve_src(src),
+            Err(SemanticAnalysisError::NonConstInitOnLocalStaticVar)
+        );
+    }
+
+    #[test]
+    fn extern_variable_with_initializer_at_block_scope() {
+        let src = r#"
+            int main(void) {
+                extern int x = 5;
+                return x;
+            }
+        "#;
+        assert_eq!(
+            resolve_src(src),
+            Err(SemanticAnalysisError::InitializerOnLocalExternVarDecl)
+        );
+    }
+
+    #[test]
+    fn variable_used_as_function_name() {
+        let src = r#"
+            int main(void) {
+                int foo;
+                return foo();
+            }
+        "#;
+        assert_eq!(
+            resolve_src(src),
+            Err(SemanticAnalysisError::VariableUsedAsFunctionName(
+                "foo.0.decl".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn function_used_as_variable_name() {
+        let src = r#"
+            int foo(int a);
+            int main(void) {
+                return foo + 1;
+            }
+        "#;
+        assert_eq!(
+            resolve_src(src),
+            Err(SemanticAnalysisError::FunctionUsedAsVariableName(
+                "foo".into()
+            ))
+        );
+    }
+
     #[test]
     fn break_and_continue_must_be_in_loops() {
         let src = r#"
@@ -1343,7 +1700,7 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let analysis = resolve(&mut ast);
+        let analysis = resolve(&mut ast).map(|(t, _)| t);
         assert!(analysis.is_err());
 
         let src = r#"
@@ -1356,7 +1713,7 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let analysis = resolve(&mut ast);
+        let analysis = resolve(&mut ast).map(|(t, _)| t);
         assert!(analysis.is_err());
     }
 }

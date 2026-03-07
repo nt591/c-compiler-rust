@@ -1,7 +1,7 @@
+pub use crate::ast::{BinaryOp, Const, StorageClass, UnaryOp};
 use crate::lexer::Token;
 use crate::types::CType;
 use std::iter::Peekable;
-pub use crate::ast::{Const, StorageClass, BinaryOp, UnaryOp};
 use thiserror::Error;
 
 pub type AST = crate::ast::AST<()>;
@@ -489,7 +489,11 @@ impl<'a> Parser<'a> {
                     }
                     let operator = self.parse_binop()?;
                     let right = self.parse_expression(new_prec + 1)?;
-                    left = Expression::new(ExprKind::Binary(operator, Box::new(left), Box::new(right)));
+                    left = Expression::new(ExprKind::Binary(
+                        operator,
+                        Box::new(left),
+                        Box::new(right),
+                    ));
                 }
                 Some(t @ Token::PlusEqual)
                 | Some(t @ Token::HyphenEqual)
@@ -507,7 +511,11 @@ impl<'a> Parser<'a> {
                     }
                     let operator = self.parse_binop()?;
                     let right = self.parse_expression(new_prec)?;
-                    left = Expression::new(ExprKind::Binary(operator, Box::new(left), Box::new(right)));
+                    left = Expression::new(ExprKind::Binary(
+                        operator,
+                        Box::new(left),
+                        Box::new(right),
+                    ));
                 }
                 Some(t @ Token::Equal) => {
                     // consume the equality, but since we're left associative
@@ -577,15 +585,24 @@ impl<'a> Parser<'a> {
             }
             Some(Token::Hyphen) => {
                 let inner_exp = self.parse_factor()?;
-                Ok(Expression::new(ExprKind::Unary(UnaryOp::Negate, Box::new(inner_exp))))
+                Ok(Expression::new(ExprKind::Unary(
+                    UnaryOp::Negate,
+                    Box::new(inner_exp),
+                )))
             }
             Some(Token::Tilde) => {
                 let inner_exp = self.parse_factor()?;
-                Ok(Expression::new(ExprKind::Unary(UnaryOp::Complement, Box::new(inner_exp))))
+                Ok(Expression::new(ExprKind::Unary(
+                    UnaryOp::Complement,
+                    Box::new(inner_exp),
+                )))
             }
             Some(Token::Bang) => {
                 let inner_exp = self.parse_factor()?;
-                Ok(Expression::new(ExprKind::Unary(UnaryOp::Not, Box::new(inner_exp))))
+                Ok(Expression::new(ExprKind::Unary(
+                    UnaryOp::Not,
+                    Box::new(inner_exp),
+                )))
             }
             Some(Token::LeftParen) => {
                 // if the inside is a valid type specifier, we'll scoop up
@@ -1323,7 +1340,9 @@ mod tests {
                     storage_class: None,
                     vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("a".into())))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var(
+                    "a".into(),
+                )))),
             ])),
             None,
             CType::Int,
@@ -1425,7 +1444,9 @@ mod tests {
                     Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
                     Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
                 )))),
-                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Constant(Const::Int(0))))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Constant(
+                    Const::Int(0),
+                )))),
             ])),
             None,
             CType::Int,
@@ -1523,7 +1544,9 @@ mod tests {
                     Box::new(Expression::new(ExprKind::Var("a".into()))),
                     Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
                 )))),
-                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("a".into())))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var(
+                    "a".into(),
+                )))),
             ])),
             None,
             CType::Int,
@@ -1616,7 +1639,9 @@ mod tests {
                         ))),
                     ))),
                 )))),
-                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("a".into())))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var(
+                    "a".into(),
+                )))),
             ])),
             None,
             CType::Int,
@@ -1714,12 +1739,16 @@ mod tests {
                         Box::new(Expression::new(ExprKind::Var("a".into()))),
                         Box::new(Expression::new(ExprKind::Constant(Const::Int(10)))),
                     )),
-                    then: Box::new(Statement::Return(Expression::new(ExprKind::Var("a".into())))),
-                    else_: Some(Box::new(Statement::Return(Expression::new(ExprKind::Binary(
-                        BinaryOp::Subtract,
-                        Box::new(Expression::new(ExprKind::Constant(Const::Int(10)))),
-                        Box::new(Expression::new(ExprKind::Var("a".into()))),
-                    ))))),
+                    then: Box::new(Statement::Return(Expression::new(ExprKind::Var(
+                        "a".into(),
+                    )))),
+                    else_: Some(Box::new(Statement::Return(Expression::new(
+                        ExprKind::Binary(
+                            BinaryOp::Subtract,
+                            Box::new(Expression::new(ExprKind::Constant(Const::Int(10)))),
+                            Box::new(Expression::new(ExprKind::Var("a".into()))),
+                        ),
+                    )))),
                 }),
                 else_: None,
             })])),
@@ -1751,9 +1780,9 @@ mod tests {
             vec![],
             Some(crate::ast::Block(vec![
                 // first example:  we nest inner expression
-                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Conditional{
+                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Conditional {
                     condition: Box::new(Expression::new(ExprKind::Var("a".into()))),
-                    then: Box::new(Expression::new(ExprKind::Conditional{
+                    then: Box::new(Expression::new(ExprKind::Conditional {
                         condition: Box::new(Expression::new(ExprKind::Var("b".into()))),
                         then: Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
                         else_: Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
@@ -1761,17 +1790,17 @@ mod tests {
                     else_: Box::new(Expression::new(ExprKind::Constant(Const::Int(3)))),
                 }))),
                 // second example: else statement is nested parse
-                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Conditional{
+                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Conditional {
                     condition: Box::new(Expression::new(ExprKind::Var("a".into()))),
                     then: Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
-                    else_: Box::new(Expression::new(ExprKind::Conditional{
+                    else_: Box::new(Expression::new(ExprKind::Conditional {
                         condition: Box::new(Expression::new(ExprKind::Var("b".into()))),
                         then: Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
                         else_: Box::new(Expression::new(ExprKind::Constant(Const::Int(3)))),
                     })),
                 }))),
                 // third example: the conditional is a short-circuit expr
-                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Conditional{
+                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Conditional {
                     condition: Box::new(Expression::new(ExprKind::Binary(
                         BinaryOp::BinOr,
                         Box::new(Expression::new(ExprKind::Var("a".into()))),
@@ -1781,7 +1810,7 @@ mod tests {
                     else_: Box::new(Expression::new(ExprKind::Constant(Const::Int(3)))),
                 }))),
                 // fourth example: then should be an assignment
-                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Conditional{
+                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Conditional {
                     condition: Box::new(Expression::new(ExprKind::Var("x".into()))),
                     then: Box::new(Expression::new(ExprKind::Assignment(
                         Box::new(Expression::new(ExprKind::Var("x".into()))),
@@ -1866,7 +1895,9 @@ mod tests {
                             storage_class: None,
                             vtype: CType::Int,
                         })),
-                        BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("x".into())))),
+                        BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var(
+                            "x".into(),
+                        )))),
                     ]))),
                     else_: None,
                 }),
@@ -1943,15 +1974,15 @@ mod tests {
                             Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
                         ))),
                     ))),
-                    body: Box::new(Statement::Compound(crate::ast::Block(vec![BlockItem::Stmt(
-                        Statement::Continue("".into()),
-                    )]))),
+                    body: Box::new(Statement::Compound(crate::ast::Block(vec![
+                        BlockItem::Stmt(Statement::Continue("".into())),
+                    ]))),
                     label: "".into(),
                 }),
                 BlockItem::Stmt(Statement::DoWhile {
-                    body: Box::new(Statement::Compound(crate::ast::Block(vec![BlockItem::Stmt(
-                        Statement::Continue("".into()),
-                    )]))),
+                    body: Box::new(Statement::Compound(crate::ast::Block(vec![
+                        BlockItem::Stmt(Statement::Continue("".into())),
+                    ]))),
                     condition: Expression::new(ExprKind::Binary(
                         BinaryOp::LessThan,
                         Box::new(Expression::new(ExprKind::Var("a".into()))),
@@ -2028,7 +2059,7 @@ mod tests {
                 Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
                     Expression::new(ExprKind::Binary(
                         BinaryOp::Add,
-                        Box::new(Expression::new(ExprKind::FunctionCall{
+                        Box::new(Expression::new(ExprKind::FunctionCall {
                             name: "foo".into(),
                             args: vec![
                                 Expression::new(ExprKind::Constant(Const::Int(1))),
@@ -2079,7 +2110,7 @@ mod tests {
                 ))),
                 BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Binary(
                     BinaryOp::Add,
-                    Box::new(Expression::new(ExprKind::FunctionCall{
+                    Box::new(Expression::new(ExprKind::FunctionCall {
                         name: "foo".into(),
                         args: vec![
                             Expression::new(ExprKind::Constant(Const::Int(1))),

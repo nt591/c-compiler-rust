@@ -1,17 +1,17 @@
 use crate::types::CType;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum AST<T> {
     Program(Vec<Declaration<T>>),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Declaration<T> {
     VarDecl(VariableDeclaration<T>),
     FunDecl(FunctionDeclaration<T>),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct FunctionDeclaration<T> {
     pub name: String,
     pub params: Vec<String>, // should this be owned?
@@ -43,7 +43,7 @@ impl<T> FunctionDeclaration<T> {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct VariableDeclaration<T> {
     pub name: String,
     pub init: Option<Expression<T>>,
@@ -51,19 +51,19 @@ pub struct VariableDeclaration<T> {
     pub vtype: CType,
 }
 
-#[derive(Debug, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum StorageClass {
     Static,
     Extern,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum ForInit<T> {
     InitDecl(VariableDeclaration<T>),
     InitExp(Option<Expression<T>>),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Statement<T> {
     Goto(String),
     Labelled {
@@ -100,16 +100,16 @@ pub enum Statement<T> {
     Null,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum BlockItem<T> {
     Stmt(Statement<T>),
     Decl(Declaration<T>),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Block<T>(pub Vec<BlockItem<T>>);
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Expression<T> {
     pub ty: T,
     pub kind: Box<ExprKind<T>>,
@@ -117,11 +117,19 @@ pub struct Expression<T> {
 
 impl Expression<()> {
     pub fn new(kind: ExprKind<()>) -> Self {
-        Expression { kind: Box::new(kind), ty: () }
+        Expression {
+            kind: Box::new(kind),
+            ty: (),
+        }
+    }
+}
+impl<T: Clone> Expression<T> {
+    pub fn get_type(&self) -> T {
+        self.ty.clone()
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum ExprKind<T> {
     Constant(Const),
     Var(String), // identifier for variable
@@ -140,20 +148,20 @@ pub enum ExprKind<T> {
     Cast(CType, Box<Expression<T>>),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum Const {
     Int(i32),
     Long(i64),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum UnaryOp {
     Negate,
     Complement,
     Not,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum BinaryOp {
     Add,
     Subtract,

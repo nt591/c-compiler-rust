@@ -15,7 +15,9 @@ use crate::parser::Statement;
 use crate::parser::UnaryOp as ParserUnaryOp;
 use crate::parser::VariableDeclaration;
 use crate::semantic_analysis;
+use crate::semantic_analysis::StaticInit;
 use crate::semantic_analysis::SymbolTable;
+use crate::types::CType;
 use thiserror::Error;
 
 #[derive(Debug, PartialEq, Error)]
@@ -173,11 +175,20 @@ impl<'a> Tacky {
         for (name, entry) in symbol_table {
             if let (_, IdentifierAttrs::StaticAttr { init, global }) = entry {
                 match init {
-                    InitialValue::Initial(i) => defs.push(TopLevel::StaticVariable {
-                        identifier: name.clone(),
-                        global: *global,
-                        init: *i,
-                    }),
+                    InitialValue::Initial(StaticInit::IntInit(i)) => {
+                        defs.push(TopLevel::StaticVariable {
+                            identifier: name.clone(),
+                            global: *global,
+                            init: (*i).try_into().unwrap(),
+                        })
+                    }
+                    InitialValue::Initial(StaticInit::LongInit(i)) => {
+                        defs.push(TopLevel::StaticVariable {
+                            identifier: name.clone(),
+                            global: *global,
+                            init: (*i).try_into().unwrap(),
+                        })
+                    }
                     InitialValue::Tentative => defs.push(TopLevel::StaticVariable {
                         identifier: name.clone(),
                         global: *global,
@@ -205,12 +216,15 @@ impl<'a> Tacky {
             panic!("Somehow got a None block in parse_function")
         };
         let instructions = self.parse_instructions(block)?;
-        let Some((
-            semantic_analysis::CType::FunType(_),
-            semantic_analysis::IdentifierAttrs::FunAttr { global, .. },
-        )) = symbol_table.get(name)
+        let (CType::FunType { .. }, semantic_analysis::IdentifierAttrs::FunAttr { global, .. }) =
+            symbol_table
+                .get(name)
+                .expect("Expected to find a function named {name} in symbol table")
         else {
-            panic!("Expected to find a function named {name} in symbol table");
+            panic!(
+                "Unexpected types in symbol table, got {:?}",
+                symbol_table.get(name)
+            );
         };
         Ok(TopLevel::Function {
             name: name.into(),
@@ -914,7 +928,10 @@ mod tests {
         table.insert(
             "main".into(),
             (
-                semantic_analysis::CType::FunType(0),
+                CType::FunType {
+                    params: vec![],
+                    ret: Box::new(CType::Int),
+                },
                 semantic_analysis::IdentifierAttrs::FunAttr {
                     defined: true,
                     global: true,
@@ -1552,7 +1569,9 @@ mod tests {
                     storage_class: None,
                     vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("c.2.decl".into())))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var(
+                    "c.2.decl".into(),
+                )))),
             ])),
             params: vec![],
             storage_class: None,
@@ -1632,7 +1651,9 @@ mod tests {
                     Box::new(Expression::new(ExprKind::Var("a".into()))),
                     Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
                 )))),
-                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var("a".into())))),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var(
+                    "a".into(),
+                )))),
             ])),
             params: vec![],
             storage_class: None,
@@ -1765,7 +1786,7 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let (symbol_table, _) = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
         let assembly = asm.into_ast(&symbol_table);
         let Ok(actual) = assembly else {
@@ -1827,7 +1848,7 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let (symbol_table, _) = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
         let assembly = asm.into_ast(&symbol_table);
         let Ok(actual) = assembly else {
@@ -1880,7 +1901,7 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let (symbol_table, _) = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
         let assembly = asm.into_ast(&symbol_table);
         let Ok(actual) = assembly else {
@@ -1925,7 +1946,7 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let (symbol_table, _) = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
         let assembly = asm.into_ast(&symbol_table);
         let Ok(actual) = assembly else {
@@ -1979,7 +2000,7 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let (symbol_table, _) = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
         let assembly = asm.into_ast(&symbol_table);
         let Ok(actual) = assembly else {
@@ -2079,7 +2100,7 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let (symbol_table, _) = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
         let assembly = asm.into_ast(&symbol_table);
         let Ok(actual) = assembly else {
@@ -2150,7 +2171,7 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let (symbol_table, _) = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
         let assembly = asm.into_ast(&symbol_table);
         let Ok(actual) = assembly else {
@@ -2208,7 +2229,7 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let (symbol_table, _) = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
         let actual = asm.into_ast(&symbol_table).unwrap();
 
@@ -2238,7 +2259,7 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let symbol_table = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let (symbol_table, _) = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
         let actual = asm.into_ast(&symbol_table).unwrap();
 
