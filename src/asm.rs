@@ -2,6 +2,7 @@
 // and converting to an assembly AST
 use crate::semantic_analysis;
 use crate::tacky;
+use crate::types::StaticInit;
 use std::collections::HashMap;
 
 #[derive(Debug, PartialEq)]
@@ -135,14 +136,20 @@ impl Asm {
             identifier,
             global,
             init,
+            ..
         } = sv
         else {
             panic!();
         };
+        // TODO!
+        let init = match init {
+            StaticInit::IntInit(i) => *i as usize,
+            StaticInit::LongInit(i) => *i as usize,
+        };
         TopLevel::StaticVariable {
             identifier: identifier.clone(),
             global: *global,
-            init: *init,
+            init: init,
         }
     }
 
@@ -304,6 +311,7 @@ impl Asm {
                 TIns::Copy { src, dst } => vec![Mov(src.into(), dst.into())],
                 TIns::Jump(ident) => vec![Jmp(ident.clone())],
                 TIns::FunCall { name, args, dst } => Self::parse_function_call(name, args, dst),
+                TIns::SignExtend { .. } | TIns::Truncate { .. } => todo!(),
             })
             .collect::<Vec<_>>()
     }
@@ -591,6 +599,7 @@ impl Asm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::Const;
     use crate::semantic_analysis;
     use crate::tacky;
     use crate::tacky::UnaryOp as TUOp;
@@ -600,7 +609,9 @@ mod tests {
             name: "main".into(),
             params: vec![],
             global: true,
-            instructions: vec![tacky::Instruction::Ret(tacky::Val::Constant(100))],
+            instructions: vec![tacky::Instruction::Ret(tacky::Val::Constant(Const::Int(
+                100,
+            )))],
         }]);
 
         let expected = Asm::Program(vec![TopLevel::Func(Function {
@@ -626,7 +637,7 @@ mod tests {
             instructions: vec![
                 tacky::Instruction::Unary {
                     op: tacky::UnaryOp::Negate,
-                    src: tacky::Val::Constant(100),
+                    src: tacky::Val::Constant(Const::Int(100)),
                     dst: tacky::Val::Var("tmp.0".into()),
                 },
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.0".into())),
@@ -658,7 +669,7 @@ mod tests {
             instructions: vec![
                 tacky::Instruction::Unary {
                     op: tacky::UnaryOp::Negate,
-                    src: tacky::Val::Constant(100),
+                    src: tacky::Val::Constant(Const::Int(100)),
                     dst: tacky::Val::Var("tmp.0".into()),
                 },
                 tacky::Instruction::Unary {
@@ -706,19 +717,19 @@ mod tests {
             instructions: vec![
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Multiply,
-                    src1: tacky::Val::Constant(1),
-                    src2: tacky::Val::Constant(2),
+                    src1: tacky::Val::Constant(Const::Int(1)),
+                    src2: tacky::Val::Constant(Const::Int(2)),
                     dst: tacky::Val::Var("tmp.0".into()),
                 },
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Add,
-                    src1: tacky::Val::Constant(4),
-                    src2: tacky::Val::Constant(5),
+                    src1: tacky::Val::Constant(Const::Int(4)),
+                    src2: tacky::Val::Constant(Const::Int(5)),
                     dst: tacky::Val::Var("tmp.1".into()),
                 },
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Remainder,
-                    src1: tacky::Val::Constant(3),
+                    src1: tacky::Val::Constant(Const::Int(3)),
                     src2: tacky::Val::Var("tmp.1".into()),
                     dst: tacky::Val::Var("tmp.2".into()),
                 },
@@ -773,25 +784,25 @@ mod tests {
             instructions: vec![
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Multiply,
-                    src1: tacky::Val::Constant(5),
-                    src2: tacky::Val::Constant(4),
+                    src1: tacky::Val::Constant(Const::Int(5)),
+                    src2: tacky::Val::Constant(Const::Int(4)),
                     dst: tacky::Val::Var("tmp.0".into()),
                 },
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Divide,
                     src1: tacky::Val::Var("tmp.0".into()),
-                    src2: tacky::Val::Constant(2),
+                    src2: tacky::Val::Constant(Const::Int(2)),
                     dst: tacky::Val::Var("tmp.1".into()),
                 },
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Add,
-                    src1: tacky::Val::Constant(2),
-                    src2: tacky::Val::Constant(1),
+                    src1: tacky::Val::Constant(Const::Int(2)),
+                    src2: tacky::Val::Constant(Const::Int(1)),
                     dst: tacky::Val::Var("tmp.2".into()),
                 },
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Remainder,
-                    src1: tacky::Val::Constant(3),
+                    src1: tacky::Val::Constant(Const::Int(3)),
                     src2: tacky::Val::Var("tmp.2".into()),
                     dst: tacky::Val::Var("tmp.3".into()),
                 },
@@ -857,20 +868,20 @@ mod tests {
             instructions: vec![
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Multiply,
-                    src1: tacky::Val::Constant(5),
-                    src2: tacky::Val::Constant(4),
+                    src1: tacky::Val::Constant(Const::Int(5)),
+                    src2: tacky::Val::Constant(Const::Int(4)),
                     dst: tacky::Val::Var("tmp.0".into()),
                 },
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Subtract,
-                    src1: tacky::Val::Constant(4),
-                    src2: tacky::Val::Constant(5),
+                    src1: tacky::Val::Constant(Const::Int(4)),
+                    src2: tacky::Val::Constant(Const::Int(5)),
                     dst: tacky::Val::Var("tmp.1".into()),
                 },
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::BitwiseAnd,
                     src1: tacky::Val::Var("tmp.1".into()),
-                    src2: tacky::Val::Constant(6),
+                    src2: tacky::Val::Constant(Const::Int(6)),
                     dst: tacky::Val::Var("tmp.2".into()),
                 },
                 tacky::Instruction::Binary {
@@ -926,14 +937,14 @@ mod tests {
             instructions: vec![
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Multiply,
-                    src1: tacky::Val::Constant(5),
-                    src2: tacky::Val::Constant(4),
+                    src1: tacky::Val::Constant(Const::Int(5)),
+                    src2: tacky::Val::Constant(Const::Int(4)),
                     dst: tacky::Val::Var("tmp.0".into()),
                 },
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::ShiftLeft,
                     src1: tacky::Val::Var("tmp.0".into()),
-                    src2: tacky::Val::Constant(2),
+                    src2: tacky::Val::Constant(Const::Int(2)),
                     dst: tacky::Val::Var("tmp.1".into()),
                 },
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.1".into())),
@@ -973,13 +984,13 @@ mod tests {
             instructions: vec![
                 tacky::Instruction::Unary {
                     op: tacky::UnaryOp::Negate,
-                    src: tacky::Val::Constant(5),
+                    src: tacky::Val::Constant(Const::Int(5)),
                     dst: tacky::Val::Var("tmp.0".into()),
                 },
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::ShiftRight,
                     src1: tacky::Val::Var("tmp.0".into()),
-                    src2: tacky::Val::Constant(30),
+                    src2: tacky::Val::Constant(Const::Int(30)),
                     dst: tacky::Val::Var("tmp.1".into()),
                 },
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.1".into())),
@@ -1019,13 +1030,13 @@ mod tests {
             instructions: vec![
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Add,
-                    src1: tacky::Val::Constant(1),
-                    src2: tacky::Val::Constant(2),
+                    src1: tacky::Val::Constant(Const::Int(1)),
+                    src2: tacky::Val::Constant(Const::Int(2)),
                     dst: tacky::Val::Var("tmp.0".into()),
                 },
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::ShiftLeft,
-                    src1: tacky::Val::Constant(5),
+                    src1: tacky::Val::Constant(Const::Int(5)),
                     src2: tacky::Val::Var("tmp.0".into()),
                     dst: tacky::Val::Var("tmp.1".into()),
                 },
@@ -1066,7 +1077,7 @@ mod tests {
             instructions: vec![
                 tacky::Instruction::Unary {
                     op: TUOp::Not,
-                    src: tacky::Val::Constant(1),
+                    src: tacky::Val::Constant(Const::Int(1)),
                     dst: tacky::Val::Var("tmp.0".into()),
                 },
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.0".into())),
@@ -1104,7 +1115,7 @@ mod tests {
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::GreaterOrEqual,
                     src1: tacky::Val::Var("tmp.0".into()),
-                    src2: tacky::Val::Constant(2),
+                    src2: tacky::Val::Constant(Const::Int(2)),
                     dst: tacky::Val::Var("tmp.1".into()),
                 },
                 tacky::Instruction::Ret(tacky::Val::Var("tmp.1".into())),
@@ -1134,7 +1145,7 @@ mod tests {
             global: true,
             instructions: vec![
                 tacky::Instruction::Copy {
-                    src: tacky::Val::Constant(5),
+                    src: tacky::Val::Constant(Const::Int(5)),
                     dst: tacky::Val::Var("tmp.0".into()),
                 },
                 tacky::Instruction::JumpIfZero {
@@ -1143,8 +1154,8 @@ mod tests {
                 },
                 tacky::Instruction::Binary {
                     op: tacky::BinaryOp::Add,
-                    src1: tacky::Val::Constant(1),
-                    src2: tacky::Val::Constant(2),
+                    src1: tacky::Val::Constant(Const::Int(1)),
+                    src2: tacky::Val::Constant(Const::Int(2)),
                     dst: tacky::Val::Var("tmp.1".into()),
                 },
                 tacky::Instruction::Copy {
@@ -1156,13 +1167,13 @@ mod tests {
                     target: "and_expr_false.0".into(),
                 },
                 tacky::Instruction::Copy {
-                    src: tacky::Val::Constant(1),
+                    src: tacky::Val::Constant(Const::Int(1)),
                     dst: tacky::Val::Var("tmp.3".into()),
                 },
                 tacky::Instruction::Jump("and_expr_end.1".into()),
                 tacky::Instruction::Label("and_expr_false.0".into()),
                 tacky::Instruction::Copy {
-                    src: tacky::Val::Constant(0),
+                    src: tacky::Val::Constant(Const::Int(0)),
                     dst: tacky::Val::Var("tmp.3".into()),
                 },
                 tacky::Instruction::Label("and_expr_end.1".into()),
@@ -1215,9 +1226,9 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let (symbol_table, _) = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let (mut symbol_table, ast) = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let tacky = crate::tacky::Tacky::new(ast);
-        let tacky = tacky.into_ast(&symbol_table);
+        let tacky = tacky.into_ast(&mut symbol_table);
         let Ok(tacky_ast) = tacky else {
             panic!();
         };
@@ -1301,8 +1312,16 @@ impl From<tacky::UnaryOp> for UnaryOp {
 
 impl From<tacky::Val> for Operand {
     fn from(v: tacky::Val) -> Self {
+        use crate::parser::Const;
         match v {
-            tacky::Val::Constant(imm) => Operand::Imm(imm),
+            tacky::Val::Constant(imm) => {
+                // TODO!
+                let imm = match imm {
+                    Const::Int(i) => i as usize,
+                    Const::Long(i) => i as usize,
+                };
+                Operand::Imm(imm)
+            }
             tacky::Val::Var(ident) => Operand::Pseudo(ident),
         }
     }
@@ -1320,8 +1339,16 @@ impl From<&tacky::UnaryOp> for UnaryOp {
 
 impl From<&tacky::Val> for Operand {
     fn from(v: &tacky::Val) -> Self {
+        use crate::parser::Const;
         match v {
-            tacky::Val::Constant(imm) => Operand::Imm(*imm),
+            tacky::Val::Constant(imm) => {
+                // TODO!
+                let imm = match imm {
+                    Const::Int(i) => *i as usize,
+                    Const::Long(i) => *i as usize,
+                };
+                Operand::Imm(imm)
+            }
             tacky::Val::Var(ident) => Operand::Pseudo(ident.clone()),
         }
     }

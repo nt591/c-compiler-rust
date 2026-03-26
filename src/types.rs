@@ -9,6 +9,12 @@ pub enum CType {
     },
 }
 
+#[derive(PartialEq, Debug, Copy, Clone)]
+pub enum StaticInit {
+    IntInit(i32),
+    LongInit(i64),
+}
+
 impl CType {
     pub fn get_common_type(t1: CType, t2: CType) -> CType {
         if t1 == t2 { t1 } else { CType::Long }

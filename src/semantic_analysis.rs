@@ -4,6 +4,7 @@ use crate::ast::StorageClass;
 use crate::ast::UnaryOp;
 use crate::const_eval;
 use crate::types::CType;
+use crate::types::StaticInit;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use thiserror::Error; // todo
@@ -201,12 +202,6 @@ impl Resolver {
 }
 
 /* BEGIN Symbol Table types for typechecking */
-#[derive(PartialEq, Debug, Copy, Clone)]
-pub enum StaticInit {
-    IntInit(i32),
-    LongInit(i64),
-}
-
 #[derive(PartialEq, Debug)]
 pub enum InitialValue {
     Tentative,

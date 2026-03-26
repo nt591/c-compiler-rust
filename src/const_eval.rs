@@ -1,7 +1,7 @@
 // used for constant folding and various type conversions
 use crate::ast::Const;
-use crate::semantic_analysis::StaticInit;
 use crate::types::CType;
+use crate::types::StaticInit;
 
 pub fn convert_const(c: Const, target: &CType) -> StaticInit {
     match (c, target) {

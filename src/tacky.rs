@@ -1,23 +1,24 @@
-// implements a Parser AST -> TACKY AST for the IR
+// implements a AST -> TACKY AST for the IR
 // Mostly copied from asm.rs
 
-use crate::parser;
-use crate::parser::AST as ParserAST;
 use crate::parser::BinaryOp as ParserBinaryOp;
-use crate::parser::Block;
 use crate::parser::Const;
-use crate::parser::Declaration;
-use crate::parser::ExprKind;
-use crate::parser::Expression;
-use crate::parser::ForInit;
-use crate::parser::FunctionDeclaration;
-use crate::parser::Statement;
 use crate::parser::UnaryOp as ParserUnaryOp;
-use crate::parser::VariableDeclaration;
 use crate::semantic_analysis;
-use crate::semantic_analysis::StaticInit;
+use crate::semantic_analysis::IdentifierAttrs;
 use crate::semantic_analysis::SymbolTable;
+use crate::semantic_analysis::TypedAST;
+use crate::semantic_analysis::TypedBlock;
+use crate::semantic_analysis::TypedBlockItem;
+use crate::semantic_analysis::TypedDeclaration;
+use crate::semantic_analysis::TypedExprKind;
+use crate::semantic_analysis::TypedExpression;
+use crate::semantic_analysis::TypedForInit;
+use crate::semantic_analysis::TypedFunctionDeclaration;
+use crate::semantic_analysis::TypedStatement;
+use crate::semantic_analysis::TypedVariableDeclaration;
 use crate::types::CType;
+use crate::types::StaticInit;
 use thiserror::Error;
 
 #[derive(Debug, PartialEq, Error)]
@@ -42,7 +43,8 @@ pub enum TopLevel {
     StaticVariable {
         identifier: String,
         global: bool,
-        init: usize,
+        t: CType,
+        init: StaticInit,
     },
 }
 
@@ -79,11 +81,20 @@ pub enum Instruction {
         args: Vec<Val>,
         dst: Val,
     },
+    // conversions
+    SignExtend {
+        src: Val,
+        dst: Val,
+    },
+    Truncate {
+        src: Val,
+        dst: Val,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Val {
-    Constant(usize),
+    Constant(Const),
     Var(String), // temporary variable name
 }
 
@@ -117,15 +128,37 @@ pub enum BinaryOp {
     GreaterOrEqual,
 }
 
+struct TackyCtx<'a> {
+    symbol_table: &'a mut SymbolTable,
+    instructions: Vec<Instruction>,
+}
+
+impl<'a> TackyCtx<'a> {
+    fn new(symbol_table: &'a mut SymbolTable) -> Self {
+        Self {
+            symbol_table,
+            instructions: vec![],
+        }
+    }
+
+    fn push(&mut self, instr: Instruction) {
+        self.instructions.push(instr);
+    }
+
+    fn take_instructions(&mut self) -> Vec<Instruction> {
+        std::mem::take(&mut self.instructions)
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Tacky {
-    parser: ParserAST,
+    parser: TypedAST,
     dst_counter: u16,
     label_counter: u16,
 }
 
 impl<'a> Tacky {
-    pub fn new(parser: ParserAST) -> Self {
+    pub fn new(parser: TypedAST) -> Self {
         Self {
             parser,
             dst_counter: 0,
@@ -135,10 +168,10 @@ impl<'a> Tacky {
 
     pub fn into_ast(
         mut self,
-        symbol_table: &semantic_analysis::SymbolTable,
+        symbol_table: &mut semantic_analysis::SymbolTable,
     ) -> Result<AST, TackyError> {
-        let parser = std::mem::replace(&mut self.parser, ParserAST::Program(vec![]));
-        let mut ast = self.parse_program(parser, &symbol_table)?;
+        let parser = std::mem::replace(&mut self.parser, TypedAST::Program(vec![]));
+        let mut ast = self.parse_program(parser, symbol_table)?;
         let defs = Self::convert_symbols_to_tacky_defs(symbol_table);
         let AST::Program(ref mut ins) = ast;
         ins.extend(defs);
@@ -147,18 +180,18 @@ impl<'a> Tacky {
 
     fn parse_program(
         &mut self,
-        parser: ParserAST,
-        symbol_table: &SymbolTable,
+        parser: TypedAST,
+        symbol_table: &mut SymbolTable,
     ) -> Result<AST, TackyError> {
-        let ParserAST::Program(decls) = parser;
+        let TypedAST::Program(decls) = parser;
         let funcs = decls
             .iter()
             .filter(|decl| match decl {
-                Declaration::FunDecl(fun) => fun.block.is_some(),
-                Declaration::VarDecl(_) => false,
+                TypedDeclaration::FunDecl(fun) => fun.block.is_some(),
+                TypedDeclaration::VarDecl(_) => false,
             })
             .map(|decl| {
-                let Declaration::FunDecl(fun) = decl else {
+                let TypedDeclaration::FunDecl(fun) = decl else {
                     panic!();
                 };
                 self.parse_function(fun, symbol_table)
@@ -167,33 +200,33 @@ impl<'a> Tacky {
         Ok(AST::Program(funcs))
     }
 
-    fn convert_symbols_to_tacky_defs(
-        symbol_table: &semantic_analysis::SymbolTable,
-    ) -> Vec<TopLevel> {
+    fn convert_symbols_to_tacky_defs(symbol_table: &SymbolTable) -> Vec<TopLevel> {
         use crate::semantic_analysis::{IdentifierAttrs, InitialValue};
         let mut defs = vec![];
         for (name, entry) in symbol_table {
-            if let (_, IdentifierAttrs::StaticAttr { init, global }) = entry {
+            if let (ctype, IdentifierAttrs::StaticAttr { init, global }) = entry {
                 match init {
-                    InitialValue::Initial(StaticInit::IntInit(i)) => {
-                        defs.push(TopLevel::StaticVariable {
-                            identifier: name.clone(),
-                            global: *global,
-                            init: (*i).try_into().unwrap(),
-                        })
-                    }
-                    InitialValue::Initial(StaticInit::LongInit(i)) => {
-                        defs.push(TopLevel::StaticVariable {
-                            identifier: name.clone(),
-                            global: *global,
-                            init: (*i).try_into().unwrap(),
-                        })
-                    }
-                    InitialValue::Tentative => defs.push(TopLevel::StaticVariable {
+                    InitialValue::Initial(i) => defs.push(TopLevel::StaticVariable {
                         identifier: name.clone(),
                         global: *global,
-                        init: 0,
+                        init: *i,
+                        t: ctype.clone(),
                     }),
+                    InitialValue::Tentative => {
+                        let init = match ctype {
+                            CType::FunType { .. } => {
+                                unreachable!("Cannot have a static variable of fun type ctype")
+                            }
+                            CType::Int => StaticInit::IntInit(0),
+                            CType::Long => StaticInit::LongInit(0),
+                        };
+                        defs.push(TopLevel::StaticVariable {
+                            identifier: name.clone(),
+                            global: *global,
+                            init,
+                            t: ctype.clone(),
+                        });
+                    }
                     _ => {}
                 }
             }
@@ -203,10 +236,10 @@ impl<'a> Tacky {
 
     fn parse_function(
         &mut self,
-        function: &FunctionDeclaration,
-        symbol_table: &SymbolTable,
+        function: &TypedFunctionDeclaration,
+        symbol_table: &mut SymbolTable,
     ) -> Result<TopLevel, TackyError> {
-        let FunctionDeclaration {
+        let TypedFunctionDeclaration {
             name,
             block,
             params,
@@ -215,15 +248,17 @@ impl<'a> Tacky {
         let Some(block) = block else {
             panic!("Somehow got a None block in parse_function")
         };
-        let instructions = self.parse_instructions(block)?;
+        let mut ctx = TackyCtx::new(symbol_table);
+        self.parse_instructions(block, &mut ctx)?;
+        let instructions = ctx.take_instructions();
         let (CType::FunType { .. }, semantic_analysis::IdentifierAttrs::FunAttr { global, .. }) =
-            symbol_table
+            ctx.symbol_table
                 .get(name)
                 .expect("Expected to find a function named {name} in symbol table")
         else {
             panic!(
                 "Unexpected types in symbol table, got {:?}",
-                symbol_table.get(name)
+                ctx.symbol_table.get(name)
             );
         };
         Ok(TopLevel::Function {
@@ -236,145 +271,159 @@ impl<'a> Tacky {
 
     fn parse_expression(
         &mut self,
-        expr: &Expression,
-        instructions: &mut Vec<Instruction>,
+        expr: &TypedExpression,
+        ctx: &mut TackyCtx,
     ) -> Result<Val, TackyError> {
+        let ty = expr.get_type();
         match expr.kind.as_ref() {
-            ExprKind::Constant(Const::Int(imm)) => Ok(Val::Constant((*imm).try_into().unwrap())),
-            ExprKind::Constant(Const::Long(_)) => todo!(),
-            ExprKind::Unary(op, exp) => {
-                let src = self.parse_expression(exp, instructions)?;
-                let dst_name = self.make_temporary();
-                let dst = Val::Var(dst_name);
+            TypedExprKind::Constant(c) => Ok(Val::Constant(*c)),
+            TypedExprKind::Unary(op, exp) => {
+                let src = self.parse_expression(exp, ctx)?;
+                let dst = self.make_tacky_variable(ctx, exp.get_type())?;
                 let unary_op = match op {
                     ParserUnaryOp::Negate => UnaryOp::Negate,
                     ParserUnaryOp::Complement => UnaryOp::Complement,
                     ParserUnaryOp::Not => UnaryOp::Not,
                 };
-                instructions.push(Instruction::Unary {
+                ctx.push(Instruction::Unary {
                     op: unary_op,
                     src,
                     dst: dst.clone(),
                 });
                 Ok(dst)
             }
-            ExprKind::Binary(op @ ParserBinaryOp::BinAnd, left, right)
-            | ExprKind::Binary(op @ ParserBinaryOp::BinOr, left, right) => {
-                self.parse_short_circuit_expression(op, left, right, instructions)
+            TypedExprKind::Binary(op @ ParserBinaryOp::BinAnd, left, right)
+            | TypedExprKind::Binary(op @ ParserBinaryOp::BinOr, left, right) => {
+                self.parse_short_circuit_expression(op, left, right, ctx)
             }
-            ExprKind::Binary(op @ ParserBinaryOp::AddAssign, left, right)
-            | ExprKind::Binary(op @ ParserBinaryOp::MinusAssign, left, right)
-            | ExprKind::Binary(op @ ParserBinaryOp::MultiplyAssign, left, right)
-            | ExprKind::Binary(op @ ParserBinaryOp::DivideAssign, left, right)
-            | ExprKind::Binary(op @ ParserBinaryOp::RemainderAssign, left, right)
-            | ExprKind::Binary(op @ ParserBinaryOp::BitwiseAndAssign, left, right)
-            | ExprKind::Binary(op @ ParserBinaryOp::BitwiseOrAssign, left, right)
-            | ExprKind::Binary(op @ ParserBinaryOp::XorAssign, left, right)
-            | ExprKind::Binary(op @ ParserBinaryOp::ShiftLeftAssign, left, right)
-            | ExprKind::Binary(op @ ParserBinaryOp::ShiftRightAssign, left, right) => {
-                self.parse_eager_compound_binary_expression(op, left, right, instructions)
+            TypedExprKind::Binary(op @ ParserBinaryOp::AddAssign, left, right)
+            | TypedExprKind::Binary(op @ ParserBinaryOp::MinusAssign, left, right)
+            | TypedExprKind::Binary(op @ ParserBinaryOp::MultiplyAssign, left, right)
+            | TypedExprKind::Binary(op @ ParserBinaryOp::DivideAssign, left, right)
+            | TypedExprKind::Binary(op @ ParserBinaryOp::RemainderAssign, left, right)
+            | TypedExprKind::Binary(op @ ParserBinaryOp::BitwiseAndAssign, left, right)
+            | TypedExprKind::Binary(op @ ParserBinaryOp::BitwiseOrAssign, left, right)
+            | TypedExprKind::Binary(op @ ParserBinaryOp::XorAssign, left, right)
+            | TypedExprKind::Binary(op @ ParserBinaryOp::ShiftLeftAssign, left, right)
+            | TypedExprKind::Binary(op @ ParserBinaryOp::ShiftRightAssign, left, right) => {
+                self.parse_eager_compound_binary_expression(op, left, right, ctx)
             }
-            ExprKind::Binary(op, left, right) => {
-                self.parse_eager_binary_expression(op, left, right, instructions)
+            TypedExprKind::Binary(op, left, right) => {
+                // passing ty in here since the outer ty COULD be Int
+                // if we're in relational ops, so its just clumsy
+                self.parse_eager_binary_expression(op, left, right, ctx, ty)
             }
-            ExprKind::Var(ident) => Ok(Val::Var(ident.clone())),
-            ExprKind::Assignment(lhs, rhs) => {
-                let ExprKind::Var(ref ident) = *lhs.kind else {
+            TypedExprKind::Var(ident) => Ok(Val::Var(ident.clone())),
+            TypedExprKind::Assignment(lhs, rhs) => {
+                let TypedExprKind::Var(ref ident) = *lhs.kind else {
                     return Err(TackyError::InvalidLhsOfAssignment);
                 };
                 // emit instructions for rhs, then copy into lhs
-                let result = self.parse_expression(rhs, instructions)?;
-                instructions.push(Instruction::Copy {
+                let result = self.parse_expression(rhs, ctx)?;
+                ctx.push(Instruction::Copy {
                     src: result,
                     dst: Val::Var(ident.clone()),
                 });
                 Ok(Val::Var(ident.clone()))
             }
-            ExprKind::Conditional {
+            TypedExprKind::Conditional {
                 condition,
                 then,
                 else_,
-            } => self.parse_conditional(condition, then, else_, instructions),
-            ExprKind::FunctionCall { name, args } => {
+            } => self.parse_conditional(condition, then, else_, ctx),
+            TypedExprKind::FunctionCall { name, args } => {
                 let args = args
                     .iter()
-                    .map(|arg| self.parse_expression(arg, instructions))
+                    .map(|arg| self.parse_expression(arg, ctx))
                     .collect::<Result<Vec<_>, _>>()?;
-                let dst_name = self.make_temporary();
-                let dst = Val::Var(dst_name);
+                let dst = self.make_tacky_variable(ctx, ty)?;
 
-                instructions.push(Instruction::FunCall {
+                ctx.push(Instruction::FunCall {
                     name: name.clone(),
                     args,
                     dst: dst.clone(),
                 });
                 Ok(dst)
             }
-            ExprKind::Cast(_, _expr) => todo!(),
+            TypedExprKind::Cast(t, expr) => {
+                let result = self.parse_expression(expr, ctx)?;
+                // if we're casting to the same type, no need to emit extra instructions
+                if *t == expr.get_type() {
+                    return Ok(result);
+                };
+                let dst = self.make_tacky_variable(ctx, t.clone())?;
+                let extension_instruction = match t {
+                    CType::Long => Instruction::SignExtend {
+                        src: result,
+                        dst: dst.clone(),
+                    },
+                    CType::Int => Instruction::Truncate {
+                        src: result,
+                        dst: dst.clone(),
+                    },
+                    _ => unreachable!("Tried to extend a type that isn't int or long"),
+                };
+                ctx.push(extension_instruction);
+                Ok(dst)
+            }
         }
     }
 
     fn parse_short_circuit_expression(
         &mut self,
         op: &ParserBinaryOp,
-        left: &Expression,
-        right: &Expression,
-        instructions: &mut Vec<Instruction>,
+        left: &TypedExpression,
+        right: &TypedExpression,
+        ctx: &mut TackyCtx,
     ) -> Result<Val, TackyError> {
         use ParserBinaryOp as PBO;
         match op {
-            PBO::BinAnd => {
-                self.parse_short_circuit_and_expression(BinaryOp::And, left, right, instructions)
-            }
-            PBO::BinOr => {
-                self.parse_short_circuit_or_expression(BinaryOp::Or, left, right, instructions)
-            }
+            PBO::BinAnd => self.parse_short_circuit_and_expression(BinaryOp::And, left, right, ctx),
+            PBO::BinOr => self.parse_short_circuit_or_expression(BinaryOp::Or, left, right, ctx),
             _ => unreachable!(),
         }
     }
 
     fn parse_conditional(
         &mut self,
-        condition: &Expression,
-        then: &Expression,
-        else_: &Expression,
-        instructions: &mut Vec<Instruction>,
+        condition: &TypedExpression,
+        then: &TypedExpression,
+        else_: &TypedExpression,
+        ctx: &mut TackyCtx,
     ) -> Result<Val, TackyError> {
         let else_label = self.make_label("else_label");
         let end_label = self.make_label("end_label");
-        let cond = self.parse_expression(condition, instructions)?;
+        let cond = self.parse_expression(condition, ctx)?;
         // move cond into a tmp
-        let dst1_name = self.make_temporary();
-        let dst1 = Val::Var(dst1_name);
+        let dst1 = self.make_tacky_variable(ctx, condition.get_type())?;
 
-        instructions.push(Instruction::Copy {
+        ctx.push(Instruction::Copy {
             src: cond,
             dst: dst1.clone(),
         });
-        instructions.push(Instruction::JumpIfZero {
+        ctx.push(Instruction::JumpIfZero {
             cond: dst1.clone(),
             target: else_label.clone(),
         });
         // temporary for result: We'll copy the then/else logic into it and return
         // result at the end
-        let res_name = self.make_temporary();
-        let result = Val::Var(res_name);
+        let result = self.make_tacky_variable(ctx, then.get_type())?;
 
-        let v1 = self.parse_expression(then, instructions)?;
-        instructions.push(Instruction::Copy {
+        let v1 = self.parse_expression(then, ctx)?;
+        ctx.push(Instruction::Copy {
             src: v1,
             dst: result.clone(),
         });
 
-        instructions.push(Instruction::Jump(end_label.clone()));
-        instructions.push(Instruction::Label(else_label));
-        let v2 = self.parse_expression(else_, instructions)?;
-        instructions.push(Instruction::Copy {
+        ctx.push(Instruction::Jump(end_label.clone()));
+        ctx.push(Instruction::Label(else_label));
+        let v2 = self.parse_expression(else_, ctx)?;
+        ctx.push(Instruction::Copy {
             src: v2,
             dst: result.clone(),
         });
 
-        instructions.push(Instruction::Label(end_label));
+        ctx.push(Instruction::Label(end_label));
 
         Ok(result)
     }
@@ -392,9 +441,9 @@ impl<'a> Tacky {
     fn parse_short_circuit_and_expression(
         &mut self,
         op: BinaryOp,
-        left: &Expression,
-        right: &Expression,
-        instructions: &mut Vec<Instruction>,
+        left: &TypedExpression,
+        right: &TypedExpression,
+        ctx: &mut TackyCtx,
     ) -> Result<Val, TackyError> {
         assert_eq!(
             op,
@@ -403,27 +452,25 @@ impl<'a> Tacky {
         );
         let jump_label = self.make_label("and_expr_false");
         let end_label = self.make_label("and_expr_end");
-        let src1 = self.parse_expression(left, instructions)?;
+        let src1 = self.parse_expression(left, ctx)?;
         // move src1 into a tmp
-        let dst1_name = self.make_temporary();
-        let dst1 = Val::Var(dst1_name);
-        instructions.push(Instruction::Copy {
+        let dst1 = self.make_tacky_variable(ctx, CType::Int)?;
+        ctx.push(Instruction::Copy {
             src: src1,
             dst: dst1.clone(),
         });
-        instructions.push(Instruction::JumpIfZero {
+        ctx.push(Instruction::JumpIfZero {
             cond: dst1,
             target: jump_label.clone(),
         });
-        let src2 = self.parse_expression(right, instructions)?;
+        let src2 = self.parse_expression(right, ctx)?;
         // move src2 into a tmp
-        let dst2_name = self.make_temporary();
-        let dst2 = Val::Var(dst2_name);
-        instructions.push(Instruction::Copy {
+        let dst2 = self.make_tacky_variable(ctx, CType::Int)?;
+        ctx.push(Instruction::Copy {
             src: src2,
             dst: dst2.clone(),
         });
-        instructions.push(Instruction::JumpIfZero {
+        ctx.push(Instruction::JumpIfZero {
             cond: dst2,
             target: jump_label.clone(),
         });
@@ -431,23 +478,22 @@ impl<'a> Tacky {
         // at this point, neither arm are false so we
         // define our destination location, set it to true
         // and jump to the end label
-        let result_name = self.make_temporary();
-        let result = Val::Var(result_name);
-        instructions.push(Instruction::Copy {
-            src: Val::Constant(1),
+        let result = self.make_tacky_variable(ctx, CType::Int)?;
+        ctx.push(Instruction::Copy {
+            src: Val::Constant(Const::Int(1)),
             dst: result.clone(),
         });
-        instructions.push(Instruction::Jump(end_label.clone()));
+        ctx.push(Instruction::Jump(end_label.clone()));
         // here we create our labels:
         // Create our jump_label label to reach
         // copy False into our result
         // create our end label
-        instructions.push(Instruction::Label(jump_label));
-        instructions.push(Instruction::Copy {
-            src: Val::Constant(0),
+        ctx.push(Instruction::Label(jump_label));
+        ctx.push(Instruction::Copy {
+            src: Val::Constant(Const::Int(0)),
             dst: result.clone(),
         });
-        instructions.push(Instruction::Label(end_label));
+        ctx.push(Instruction::Label(end_label));
         Ok(result)
     }
 
@@ -464,9 +510,9 @@ impl<'a> Tacky {
     fn parse_short_circuit_or_expression(
         &mut self,
         op: BinaryOp,
-        left: &Expression,
-        right: &Expression,
-        instructions: &mut Vec<Instruction>,
+        left: &TypedExpression,
+        right: &TypedExpression,
+        ctx: &mut TackyCtx,
     ) -> Result<Val, TackyError> {
         assert_eq!(
             op,
@@ -475,27 +521,26 @@ impl<'a> Tacky {
         );
         let jump_label = self.make_label("or_expr_true");
         let end_label = self.make_label("or_expr_end");
-        let src1 = self.parse_expression(left, instructions)?;
+        let src1 = self.parse_expression(left, ctx)?;
         // move src1 into a tmp
-        let dst1_name = self.make_temporary();
-        let dst1 = Val::Var(dst1_name);
-        instructions.push(Instruction::Copy {
+        let dst1 = self.make_tacky_variable(ctx, CType::Int)?;
+        ctx.push(Instruction::Copy {
             src: src1,
             dst: dst1.clone(),
         });
-        instructions.push(Instruction::JumpIfNotZero {
+        ctx.push(Instruction::JumpIfNotZero {
             cond: dst1,
             target: jump_label.clone(),
         });
-        let src2 = self.parse_expression(right, instructions)?;
+        let src2 = self.parse_expression(right, ctx)?;
         // move src2 into a tmp
-        let dst2_name = self.make_temporary();
-        let dst2 = Val::Var(dst2_name);
-        instructions.push(Instruction::Copy {
+        let dst2 = self.make_tacky_variable(ctx, CType::Int)?;
+
+        ctx.push(Instruction::Copy {
             src: src2,
             dst: dst2.clone(),
         });
-        instructions.push(Instruction::JumpIfNotZero {
+        ctx.push(Instruction::JumpIfNotZero {
             cond: dst2,
             target: jump_label.clone(),
         });
@@ -503,47 +548,45 @@ impl<'a> Tacky {
         // at this point, neither arm are true so we
         // define our destination location, set it to false
         // and jump to the end label
-        let result_name = self.make_temporary();
-        let result = Val::Var(result_name);
-        instructions.push(Instruction::Copy {
-            src: Val::Constant(0),
+        let result = self.make_tacky_variable(ctx, CType::Int)?;
+        ctx.push(Instruction::Copy {
+            src: Val::Constant(Const::Int(0)),
             dst: result.clone(),
         });
-        instructions.push(Instruction::Jump(end_label.clone()));
+        ctx.push(Instruction::Jump(end_label.clone()));
         // here we create our labels:
         // Create our jump_label label to reach
         // copy true into our result
         // create our end label
-        instructions.push(Instruction::Label(jump_label));
-        instructions.push(Instruction::Copy {
-            src: Val::Constant(1),
+        ctx.push(Instruction::Label(jump_label));
+        ctx.push(Instruction::Copy {
+            src: Val::Constant(Const::Int(1)),
             dst: result.clone(),
         });
-        instructions.push(Instruction::Label(end_label));
+        ctx.push(Instruction::Label(end_label));
         Ok(result)
     }
 
     fn parse_if_then(
         &mut self,
-        condition: &Expression,
-        then: &Statement,
-        instructions: &mut Vec<Instruction>,
+        condition: &TypedExpression,
+        then: &TypedStatement,
+        ctx: &mut TackyCtx,
     ) -> Result<(), TackyError> {
         let label = self.make_label("end_label");
-        let cond = self.parse_expression(condition, instructions)?;
+        let cond = self.parse_expression(condition, ctx)?;
         // move cond into a tmp
-        let dst1_name = self.make_temporary();
-        let dst1 = Val::Var(dst1_name);
-        instructions.push(Instruction::Copy {
+        let dst1 = self.make_tacky_variable(ctx, condition.get_type())?;
+        ctx.push(Instruction::Copy {
             src: cond,
             dst: dst1.clone(),
         });
-        instructions.push(Instruction::JumpIfZero {
+        ctx.push(Instruction::JumpIfZero {
             cond: dst1.clone(),
             target: label.clone(),
         });
-        self.parse_statement(&then, instructions)?;
-        instructions.push(Instruction::Label(label));
+        self.parse_statement(&then, ctx)?;
+        ctx.push(Instruction::Label(label));
         Ok(())
     }
 
@@ -558,30 +601,29 @@ impl<'a> Tacky {
      */
     fn parse_if_then_else(
         &mut self,
-        condition: &Expression,
-        then: &Statement,
-        else_: &Statement,
-        instructions: &mut Vec<Instruction>,
+        condition: &TypedExpression,
+        then: &TypedStatement,
+        else_: &TypedStatement,
+        ctx: &mut TackyCtx,
     ) -> Result<(), TackyError> {
         let else_label = self.make_label("else_label");
         let end_label = self.make_label("end_label");
-        let cond = self.parse_expression(condition, instructions)?;
+        let cond = self.parse_expression(condition, ctx)?;
         // move cond into a tmp
-        let dst1_name = self.make_temporary();
-        let dst1 = Val::Var(dst1_name);
-        instructions.push(Instruction::Copy {
+        let dst1 = self.make_tacky_variable(ctx, condition.get_type())?;
+        ctx.push(Instruction::Copy {
             src: cond,
             dst: dst1.clone(),
         });
-        instructions.push(Instruction::JumpIfZero {
+        ctx.push(Instruction::JumpIfZero {
             cond: dst1.clone(),
             target: else_label.clone(),
         });
-        self.parse_statement(&then, instructions)?;
-        instructions.push(Instruction::Jump(end_label.clone()));
-        instructions.push(Instruction::Label(else_label));
-        self.parse_statement(&else_, instructions)?;
-        instructions.push(Instruction::Label(end_label));
+        self.parse_statement(&then, ctx)?;
+        ctx.push(Instruction::Jump(end_label.clone()));
+        ctx.push(Instruction::Label(else_label));
+        self.parse_statement(&else_, ctx)?;
+        ctx.push(Instruction::Label(end_label));
 
         Ok(())
     }
@@ -589,12 +631,12 @@ impl<'a> Tacky {
     fn parse_eager_compound_binary_expression(
         &mut self,
         op: &ParserBinaryOp,
-        left: &Expression,
-        right: &Expression,
-        instructions: &mut Vec<Instruction>,
+        left: &TypedExpression,
+        right: &TypedExpression,
+        ctx: &mut TackyCtx,
     ) -> Result<Val, TackyError> {
         use ParserBinaryOp as PBO;
-        let src1 = self.parse_expression(left, instructions)?;
+        let src1 = self.parse_expression(left, ctx)?;
         // if src1 is a temporary, it's an invalid lvalue.
         // We should only allow variables. To do so, we check if we've emitted
         // the identifier as a temporary.
@@ -605,9 +647,8 @@ impl<'a> Tacky {
             return Err(TackyError::InvalidLhsOfAssignment);
         };
 
-        let src2 = self.parse_expression(right, instructions)?;
-        let dst_name = self.make_temporary();
-        let dst = Val::Var(dst_name);
+        let src2 = self.parse_expression(right, ctx)?;
+        let dst = self.make_tacky_variable(ctx, left.get_type())?;
         let binop = match op {
             PBO::AddAssign => BinaryOp::Add,
             PBO::MinusAssign => BinaryOp::Subtract,
@@ -622,13 +663,13 @@ impl<'a> Tacky {
             _ => unreachable!("Unexpected compound binary operator"),
         };
 
-        instructions.push(Instruction::Binary {
+        ctx.push(Instruction::Binary {
             op: binop,
             src1: src1.clone(),
             src2,
             dst: dst.clone(),
         });
-        instructions.push(Instruction::Copy {
+        ctx.push(Instruction::Copy {
             src: dst.clone(),
             dst: src1.clone(),
         });
@@ -638,15 +679,15 @@ impl<'a> Tacky {
     fn parse_eager_binary_expression(
         &mut self,
         op: &ParserBinaryOp,
-        left: &Expression,
-        right: &Expression,
-        instructions: &mut Vec<Instruction>,
+        left: &TypedExpression,
+        right: &TypedExpression,
+        ctx: &mut TackyCtx,
+        ty: CType,
     ) -> Result<Val, TackyError> {
         use ParserBinaryOp as PBO;
-        let src1 = self.parse_expression(left, instructions)?;
-        let src2 = self.parse_expression(right, instructions)?;
-        let dst_name = self.make_temporary();
-        let dst = Val::Var(dst_name);
+        let src1 = self.parse_expression(left, ctx)?;
+        let src2 = self.parse_expression(right, ctx)?;
+        let dst = self.make_tacky_variable(ctx, ty)?;
         let binop = match op {
             PBO::Add => BinaryOp::Add,
             PBO::Subtract => BinaryOp::Subtract,
@@ -682,7 +723,7 @@ impl<'a> Tacky {
                 )
             }
         };
-        instructions.push(Instruction::Binary {
+        ctx.push(Instruction::Binary {
             op: binop,
             src1,
             src2,
@@ -693,49 +734,49 @@ impl<'a> Tacky {
 
     fn parse_statement(
         &mut self,
-        statement: &Statement,
-        instructions: &mut Vec<Instruction>,
+        statement: &TypedStatement,
+        ctx: &mut TackyCtx,
     ) -> Result<(), TackyError> {
         match statement {
-            Statement::Return(body) => {
-                let val = self.parse_expression(body, instructions)?;
-                instructions.push(Instruction::Ret(val.clone()));
+            TypedStatement::Return(body) => {
+                let val = self.parse_expression(body, ctx)?;
+                ctx.push(Instruction::Ret(val.clone()));
                 Ok(())
             }
-            Statement::Null => Ok(()),
-            Statement::Expr(expr) => {
-                self.parse_expression(expr, instructions)?;
+            TypedStatement::Null => Ok(()),
+            TypedStatement::Expr(expr) => {
+                self.parse_expression(expr, ctx)?;
                 Ok(())
             }
-            Statement::If {
+            TypedStatement::If {
                 condition,
                 then,
                 else_: None,
-            } => self.parse_if_then(condition, then.as_ref(), instructions),
-            Statement::If {
+            } => self.parse_if_then(condition, then.as_ref(), ctx),
+            TypedStatement::If {
                 condition,
                 then,
                 else_: Some(else_),
-            } => self.parse_if_then_else(condition, then.as_ref(), else_.as_ref(), instructions),
-            Statement::Goto(lbl) => {
-                instructions.push(Instruction::Jump(lbl.into()));
+            } => self.parse_if_then_else(condition, then.as_ref(), else_.as_ref(), ctx),
+            TypedStatement::Goto(lbl) => {
+                ctx.push(Instruction::Jump(lbl.into()));
                 Ok(())
             }
-            Statement::Labelled { label, statement } => {
-                instructions.push(Instruction::Label(label.into()));
-                self.parse_statement(statement, instructions)?;
+            TypedStatement::Labelled { label, statement } => {
+                ctx.push(Instruction::Label(label.into()));
+                self.parse_statement(statement, ctx)?;
                 Ok(())
             }
-            Statement::Compound(block) => self.parse_block(block, instructions),
-            Statement::Break(label) => {
-                instructions.push(Instruction::Jump(create_break_label(&label)));
+            TypedStatement::Compound(block) => self.parse_block(block, ctx),
+            TypedStatement::Break(label) => {
+                ctx.push(Instruction::Jump(create_break_label(&label)));
                 Ok(())
             }
-            Statement::Continue(label) => {
-                instructions.push(Instruction::Jump(create_continue_label(&label)));
+            TypedStatement::Continue(label) => {
+                ctx.push(Instruction::Jump(create_continue_label(&label)));
                 Ok(())
             }
-            Statement::DoWhile {
+            TypedStatement::DoWhile {
                 label,
                 body,
                 condition,
@@ -746,18 +787,18 @@ impl<'a> Tacky {
                 // Then we check our condition, and JumpIfNotZero to the start.
                 // Then, we write out the label for the Break, so if our
                 // body saw a break, we drop out of the do-while construct
-                instructions.push(Instruction::Label(label.into()));
-                self.parse_statement(body.as_ref(), instructions)?;
-                instructions.push(Instruction::Label(create_continue_label(&label)));
-                let v = self.parse_expression(condition, instructions)?;
-                instructions.push(Instruction::JumpIfNotZero {
+                ctx.push(Instruction::Label(label.into()));
+                self.parse_statement(body.as_ref(), ctx)?;
+                ctx.push(Instruction::Label(create_continue_label(&label)));
+                let v = self.parse_expression(condition, ctx)?;
+                ctx.push(Instruction::JumpIfNotZero {
                     cond: v,
                     target: label.into(),
                 });
-                instructions.push(Instruction::Label(create_break_label(&label)));
+                ctx.push(Instruction::Label(create_break_label(&label)));
                 Ok(())
             }
-            Statement::While {
+            TypedStatement::While {
                 label,
                 body,
                 condition,
@@ -771,18 +812,18 @@ impl<'a> Tacky {
                 // then emit our break label at the end.
                 let cont_label = create_continue_label(&label);
                 let break_label = create_break_label(&label);
-                instructions.push(Instruction::Label(cont_label.clone()));
-                let v = self.parse_expression(condition, instructions)?;
-                instructions.push(Instruction::JumpIfZero {
+                ctx.push(Instruction::Label(cont_label.clone()));
+                let v = self.parse_expression(condition, ctx)?;
+                ctx.push(Instruction::JumpIfZero {
                     cond: v,
                     target: break_label.clone(),
                 });
-                self.parse_statement(body, instructions)?;
-                instructions.push(Instruction::Jump(cont_label));
-                instructions.push(Instruction::Label(break_label));
+                self.parse_statement(body, ctx)?;
+                ctx.push(Instruction::Jump(cont_label));
+                ctx.push(Instruction::Label(break_label));
                 Ok(())
             }
-            Statement::For {
+            TypedStatement::For {
                 init,
                 condition,
                 post,
@@ -799,60 +840,58 @@ impl<'a> Tacky {
                 // Since we have so many optionals in our For construct, we
                 // will occasionally just omit some instructions in the None case.
                 match init {
-                    ForInit::InitDecl(declaration) => {
-                        self.emit_declaration(declaration, instructions)?;
+                    TypedForInit::InitDecl(declaration) => {
+                        self.emit_declaration(declaration, ctx)?;
                     }
-                    ForInit::InitExp(Some(expr)) => {
-                        self.parse_expression(expr, instructions)?;
+                    TypedForInit::InitExp(Some(expr)) => {
+                        self.parse_expression(expr, ctx)?;
                     }
-                    ForInit::InitExp(None) => (),
+                    TypedForInit::InitExp(None) => (),
                 };
-                instructions.push(Instruction::Label(label.clone()));
+                ctx.push(Instruction::Label(label.clone()));
                 if let Some(expr) = condition {
-                    let v = self.parse_expression(expr, instructions)?;
-                    instructions.push(Instruction::JumpIfZero {
+                    let v = self.parse_expression(expr, ctx)?;
+                    ctx.push(Instruction::JumpIfZero {
                         cond: v,
                         target: create_break_label(&label),
                     });
                 };
-                self.parse_statement(body.as_ref(), instructions)?;
-                instructions.push(Instruction::Label(create_continue_label(&label)));
+                self.parse_statement(body.as_ref(), ctx)?;
+                ctx.push(Instruction::Label(create_continue_label(&label)));
                 if let Some(expr) = post {
-                    self.parse_expression(expr, instructions)?;
+                    self.parse_expression(expr, ctx)?;
                 };
-                instructions.push(Instruction::Jump(label.clone()));
-                instructions.push(Instruction::Label(create_break_label(&label)));
+                ctx.push(Instruction::Jump(label.clone()));
+                ctx.push(Instruction::Label(create_break_label(&label)));
                 Ok(())
             }
         }
     }
 
-    fn parse_instructions(&mut self, block: &Block) -> Result<Vec<Instruction>, TackyError> {
-        let mut instructions = vec![];
-        self.parse_block(block, &mut instructions)?;
+    fn parse_instructions(
+        &mut self,
+        block: &TypedBlock,
+        ctx: &mut TackyCtx,
+    ) -> Result<(), TackyError> {
+        self.parse_block(block, ctx)?;
         // temporary hack: always add a Return(Constant(0)) Instruction
         // to handle functions that don't end with a return. If we already
         // have a return, it doesn't run.
-        instructions.push(Instruction::Ret(Val::Constant(0)));
-        Ok(instructions)
+        ctx.push(Instruction::Ret(Val::Constant(Const::Int(0))));
+        Ok(())
     }
 
-    fn parse_block(
-        &mut self,
-        block: &Block,
-        instructions: &mut Vec<Instruction>,
-    ) -> Result<(), TackyError> {
-        use parser::BlockItem;
+    fn parse_block(&mut self, block: &TypedBlock, ctx: &mut TackyCtx) -> Result<(), TackyError> {
         let crate::ast::Block(body) = block;
         for body_item in body {
             match body_item {
-                BlockItem::Stmt(stmt) => {
-                    self.parse_statement(&stmt, instructions)?;
+                TypedBlockItem::Stmt(stmt) => {
+                    self.parse_statement(&stmt, ctx)?;
                 }
-                BlockItem::Decl(Declaration::VarDecl(declaration)) => {
-                    self.emit_declaration(&declaration, instructions)?;
+                TypedBlockItem::Decl(TypedDeclaration::VarDecl(declaration)) => {
+                    self.emit_declaration(&declaration, ctx)?;
                 }
-                BlockItem::Decl(Declaration::FunDecl(_decl)) => (),
+                TypedBlockItem::Decl(TypedDeclaration::FunDecl(_decl)) => (),
             }
         }
         Ok(())
@@ -860,10 +899,10 @@ impl<'a> Tacky {
 
     fn emit_declaration(
         &mut self,
-        decl: &VariableDeclaration,
-        instructions: &mut Vec<Instruction>,
+        decl: &TypedVariableDeclaration,
+        ctx: &mut TackyCtx,
     ) -> Result<(), TackyError> {
-        if let VariableDeclaration {
+        if let TypedVariableDeclaration {
             name,
             init: Some(init),
             // file-scope or local-scope with Static or Extern storage is
@@ -873,8 +912,8 @@ impl<'a> Tacky {
         } = decl
         {
             // emit instructions for rhs, then copy into lhs
-            let result = self.parse_expression(init, instructions)?;
-            instructions.push(Instruction::Copy {
+            let result = self.parse_expression(init, ctx)?;
+            ctx.push(Instruction::Copy {
                 src: result,
                 dst: Val::Var(name.clone()),
             });
@@ -887,6 +926,13 @@ impl<'a> Tacky {
         let s = format!("tmp.{c}");
         self.dst_counter = c + 1;
         s
+    }
+
+    fn make_tacky_variable(&mut self, ctx: &mut TackyCtx, ty: CType) -> Result<Val, TackyError> {
+        let var_name = self.make_temporary();
+        ctx.symbol_table
+            .insert(var_name.clone(), (ty, IdentifierAttrs::LocalAttr));
+        Ok(Val::Var(var_name))
     }
 
     fn created_label(&self, label: &str) -> bool {
@@ -913,15 +959,21 @@ fn create_continue_label(lbl: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::AST as ParserAST;
-    use crate::parser::BinaryOp as ParserBinaryOp;
-    use crate::parser::BlockItem;
-    use crate::parser::Declaration;
-    use crate::parser::FunctionDeclaration;
-    use crate::parser::Statement;
-    use crate::parser::UnaryOp as ParserUnaryOp;
-    use crate::semantic_analysis;
-    use crate::types::CType;
+
+    fn typed_int(kind: TypedExprKind) -> TypedExpression {
+        TypedExpression {
+            ty: CType::Int,
+            kind: Box::new(kind),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn typed_long(kind: TypedExprKind) -> TypedExpression {
+        TypedExpression {
+            ty: CType::Long,
+            kind: Box::new(kind),
+        }
+    }
 
     fn main_symbol_table() -> semantic_analysis::SymbolTable {
         let mut table = semantic_analysis::SymbolTable::new();
@@ -943,11 +995,11 @@ mod tests {
 
     #[test]
     fn basic_parse() {
-        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
+        let ast = TypedAST::Program(vec![TypedDeclaration::FunDecl(TypedFunctionDeclaration {
             name: "main".into(),
-            block: Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::new(ExprKind::Constant(Const::Int(100))),
-            ))])),
+            block: Some(crate::ast::Block(vec![TypedBlockItem::Stmt(
+                TypedStatement::Return(typed_int(TypedExprKind::Constant(Const::Int(100)))),
+            )])),
             params: vec![],
             storage_class: None,
             ftype: CType::FunType {
@@ -961,13 +1013,13 @@ mod tests {
             params: vec![],
             global: true,
             instructions: vec![
-                Instruction::Ret(Val::Constant(100)),
-                Instruction::Ret(Val::Constant(0)),
+                Instruction::Ret(Val::Constant(Const::Int(100))),
+                Instruction::Ret(Val::Constant(Const::Int(0))),
             ],
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&main_symbol_table());
+        let assembly = tacky.into_ast(&mut &mut main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -975,14 +1027,14 @@ mod tests {
 
     #[test]
     fn unary_op_parse() {
-        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
+        let ast = TypedAST::Program(vec![TypedDeclaration::FunDecl(TypedFunctionDeclaration {
             name: "main".into(),
-            block: Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::new(ExprKind::Unary(
+            block: Some(crate::ast::Block(vec![TypedBlockItem::Stmt(
+                TypedStatement::Return(typed_int(TypedExprKind::Unary(
                     ParserUnaryOp::Negate,
-                    Box::new(Expression::new(ExprKind::Constant(Const::Int(100)))),
-                )),
-            ))])),
+                    Box::new(typed_int(TypedExprKind::Constant(Const::Int(100)))),
+                ))),
+            )])),
             params: vec![],
             storage_class: None,
             ftype: CType::FunType {
@@ -998,16 +1050,16 @@ mod tests {
             instructions: vec![
                 Instruction::Unary {
                     op: UnaryOp::Negate,
-                    src: Val::Constant(100),
+                    src: Val::Constant(Const::Int(100)),
                     dst: Val::Var("tmp.0".into()),
                 },
                 Instruction::Ret(Val::Var("tmp.0".into())),
-                Instruction::Ret(Val::Constant(0)),
+                Instruction::Ret(Val::Constant(Const::Int(0))),
             ],
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&main_symbol_table());
+        let assembly = tacky.into_ast(&mut main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1015,20 +1067,20 @@ mod tests {
 
     #[test]
     fn complex_unary_parse() {
-        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
+        let ast = TypedAST::Program(vec![TypedDeclaration::FunDecl(TypedFunctionDeclaration {
             name: "main".into(),
-            block: Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::new(ExprKind::Unary(
+            block: Some(crate::ast::Block(vec![TypedBlockItem::Stmt(
+                TypedStatement::Return(typed_int(TypedExprKind::Unary(
                     ParserUnaryOp::Negate,
-                    Box::new(Expression::new(ExprKind::Unary(
+                    Box::new(typed_int(TypedExprKind::Unary(
                         ParserUnaryOp::Complement,
-                        Box::new(Expression::new(ExprKind::Unary(
+                        Box::new(typed_int(TypedExprKind::Unary(
                             ParserUnaryOp::Negate,
-                            Box::new(Expression::new(ExprKind::Constant(Const::Int(100)))),
+                            Box::new(typed_int(TypedExprKind::Constant(Const::Int(100)))),
                         ))),
                     ))),
-                )),
-            ))])),
+                ))),
+            )])),
             params: vec![],
             storage_class: None,
             ftype: CType::FunType {
@@ -1044,7 +1096,7 @@ mod tests {
             instructions: vec![
                 Instruction::Unary {
                     op: UnaryOp::Negate,
-                    src: Val::Constant(100),
+                    src: Val::Constant(Const::Int(100)),
                     dst: Val::Var("tmp.0".into()),
                 },
                 Instruction::Unary {
@@ -1058,12 +1110,12 @@ mod tests {
                     dst: Val::Var("tmp.2".into()),
                 },
                 Instruction::Ret(Val::Var("tmp.2".into())),
-                Instruction::Ret(Val::Constant(0)),
+                Instruction::Ret(Val::Constant(Const::Int(0))),
             ],
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&main_symbol_table());
+        let assembly = tacky.into_ast(&mut main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1071,27 +1123,27 @@ mod tests {
 
     #[test]
     fn complex_binary_parse() {
-        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
+        let ast = TypedAST::Program(vec![TypedDeclaration::FunDecl(TypedFunctionDeclaration {
             name: "main".into(),
-            block: Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::new(ExprKind::Binary(
+            block: Some(crate::ast::Block(vec![TypedBlockItem::Stmt(
+                TypedStatement::Return(typed_int(TypedExprKind::Binary(
                     ParserBinaryOp::Subtract,
-                    Box::new(Expression::new(ExprKind::Binary(
+                    Box::new(typed_int(TypedExprKind::Binary(
                         ParserBinaryOp::Multiply,
-                        Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
-                        Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                        Box::new(typed_int(TypedExprKind::Constant(Const::Int(1)))),
+                        Box::new(typed_int(TypedExprKind::Constant(Const::Int(2)))),
                     ))),
-                    Box::new(Expression::new(ExprKind::Binary(
+                    Box::new(typed_int(TypedExprKind::Binary(
                         ParserBinaryOp::Multiply,
-                        Box::new(Expression::new(ExprKind::Constant(Const::Int(3)))),
-                        Box::new(Expression::new(ExprKind::Binary(
+                        Box::new(typed_int(TypedExprKind::Constant(Const::Int(3)))),
+                        Box::new(typed_int(TypedExprKind::Binary(
                             ParserBinaryOp::Add,
-                            Box::new(Expression::new(ExprKind::Constant(Const::Int(4)))),
-                            Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
+                            Box::new(typed_int(TypedExprKind::Constant(Const::Int(4)))),
+                            Box::new(typed_int(TypedExprKind::Constant(Const::Int(5)))),
                         ))),
                     ))),
-                )),
-            ))])),
+                ))),
+            )])),
             params: vec![],
             storage_class: None,
             ftype: CType::FunType {
@@ -1106,19 +1158,19 @@ mod tests {
             instructions: vec![
                 Instruction::Binary {
                     op: BinaryOp::Multiply,
-                    src1: Val::Constant(1),
-                    src2: Val::Constant(2),
+                    src1: Val::Constant(Const::Int(1)),
+                    src2: Val::Constant(Const::Int(2)),
                     dst: Val::Var("tmp.0".into()),
                 },
                 Instruction::Binary {
                     op: BinaryOp::Add,
-                    src1: Val::Constant(4),
-                    src2: Val::Constant(5),
+                    src1: Val::Constant(Const::Int(4)),
+                    src2: Val::Constant(Const::Int(5)),
                     dst: Val::Var("tmp.1".into()),
                 },
                 Instruction::Binary {
                     op: BinaryOp::Multiply,
-                    src1: Val::Constant(3),
+                    src1: Val::Constant(Const::Int(3)),
                     src2: Val::Var("tmp.1".into()),
                     dst: Val::Var("tmp.2".into()),
                 },
@@ -1129,12 +1181,12 @@ mod tests {
                     dst: Val::Var("tmp.3".into()),
                 },
                 Instruction::Ret(Val::Var("tmp.3".into())),
-                Instruction::Ret(Val::Constant(0)),
+                Instruction::Ret(Val::Constant(Const::Int(0))),
             ],
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&main_symbol_table());
+        let assembly = tacky.into_ast(&mut main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1142,31 +1194,31 @@ mod tests {
 
     #[test]
     fn complex_binary_parse2() {
-        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
+        let ast = TypedAST::Program(vec![TypedDeclaration::FunDecl(TypedFunctionDeclaration {
             name: "main".into(),
-            block: Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::new(ExprKind::Binary(
+            block: Some(crate::ast::Block(vec![TypedBlockItem::Stmt(
+                TypedStatement::Return(typed_int(TypedExprKind::Binary(
                     ParserBinaryOp::Subtract,
-                    Box::new(Expression::new(ExprKind::Binary(
+                    Box::new(typed_int(TypedExprKind::Binary(
                         ParserBinaryOp::Divide,
-                        Box::new(Expression::new(ExprKind::Binary(
+                        Box::new(typed_int(TypedExprKind::Binary(
                             ParserBinaryOp::Multiply,
-                            Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
-                            Box::new(Expression::new(ExprKind::Constant(Const::Int(4)))),
+                            Box::new(typed_int(TypedExprKind::Constant(Const::Int(5)))),
+                            Box::new(typed_int(TypedExprKind::Constant(Const::Int(4)))),
                         ))),
-                        Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                        Box::new(typed_int(TypedExprKind::Constant(Const::Int(2)))),
                     ))),
-                    Box::new(Expression::new(ExprKind::Binary(
+                    Box::new(typed_int(TypedExprKind::Binary(
                         ParserBinaryOp::Remainder,
-                        Box::new(Expression::new(ExprKind::Constant(Const::Int(3)))),
-                        Box::new(Expression::new(ExprKind::Binary(
+                        Box::new(typed_int(TypedExprKind::Constant(Const::Int(3)))),
+                        Box::new(typed_int(TypedExprKind::Binary(
                             ParserBinaryOp::Add,
-                            Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
-                            Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                            Box::new(typed_int(TypedExprKind::Constant(Const::Int(2)))),
+                            Box::new(typed_int(TypedExprKind::Constant(Const::Int(1)))),
                         ))),
                     ))),
-                )),
-            ))])),
+                ))),
+            )])),
             params: vec![],
             storage_class: None,
             ftype: CType::FunType {
@@ -1182,25 +1234,25 @@ mod tests {
             instructions: vec![
                 Instruction::Binary {
                     op: BinaryOp::Multiply,
-                    src1: Val::Constant(5),
-                    src2: Val::Constant(4),
+                    src1: Val::Constant(Const::Int(5)),
+                    src2: Val::Constant(Const::Int(4)),
                     dst: Val::Var("tmp.0".into()),
                 },
                 Instruction::Binary {
                     op: BinaryOp::Divide,
                     src1: Val::Var("tmp.0".into()),
-                    src2: Val::Constant(2),
+                    src2: Val::Constant(Const::Int(2)),
                     dst: Val::Var("tmp.1".into()),
                 },
                 Instruction::Binary {
                     op: BinaryOp::Add,
-                    src1: Val::Constant(2),
-                    src2: Val::Constant(1),
+                    src1: Val::Constant(Const::Int(2)),
+                    src2: Val::Constant(Const::Int(1)),
                     dst: Val::Var("tmp.2".into()),
                 },
                 Instruction::Binary {
                     op: BinaryOp::Remainder,
-                    src1: Val::Constant(3),
+                    src1: Val::Constant(Const::Int(3)),
                     src2: Val::Var("tmp.2".into()),
                     dst: Val::Var("tmp.3".into()),
                 },
@@ -1211,12 +1263,12 @@ mod tests {
                     dst: Val::Var("tmp.4".into()),
                 },
                 Instruction::Ret(Val::Var("tmp.4".into())),
-                Instruction::Ret(Val::Constant(0)),
+                Instruction::Ret(Val::Constant(Const::Int(0))),
             ],
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&main_symbol_table());
+        let assembly = tacky.into_ast(&mut main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1224,27 +1276,27 @@ mod tests {
 
     #[test]
     fn simple_bitwise() {
-        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
+        let ast = TypedAST::Program(vec![TypedDeclaration::FunDecl(TypedFunctionDeclaration {
             name: "main".into(),
-            block: Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::new(ExprKind::Binary(
+            block: Some(crate::ast::Block(vec![TypedBlockItem::Stmt(
+                TypedStatement::Return(typed_int(TypedExprKind::Binary(
                     ParserBinaryOp::BitwiseOr,
-                    Box::new(Expression::new(ExprKind::Binary(
+                    Box::new(typed_int(TypedExprKind::Binary(
                         ParserBinaryOp::Multiply,
-                        Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
-                        Box::new(Expression::new(ExprKind::Constant(Const::Int(4)))),
+                        Box::new(typed_int(TypedExprKind::Constant(Const::Int(5)))),
+                        Box::new(typed_int(TypedExprKind::Constant(Const::Int(4)))),
                     ))),
-                    Box::new(Expression::new(ExprKind::Binary(
+                    Box::new(typed_int(TypedExprKind::Binary(
                         ParserBinaryOp::BitwiseAnd,
-                        Box::new(Expression::new(ExprKind::Binary(
+                        Box::new(typed_int(TypedExprKind::Binary(
                             ParserBinaryOp::Subtract,
-                            Box::new(Expression::new(ExprKind::Constant(Const::Int(4)))),
-                            Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
+                            Box::new(typed_int(TypedExprKind::Constant(Const::Int(4)))),
+                            Box::new(typed_int(TypedExprKind::Constant(Const::Int(5)))),
                         ))),
-                        Box::new(Expression::new(ExprKind::Constant(Const::Int(6)))),
+                        Box::new(typed_int(TypedExprKind::Constant(Const::Int(6)))),
                     ))),
-                )),
-            ))])),
+                ))),
+            )])),
             params: vec![],
             storage_class: None,
             ftype: CType::FunType {
@@ -1260,20 +1312,20 @@ mod tests {
             instructions: vec![
                 Instruction::Binary {
                     op: BinaryOp::Multiply,
-                    src1: Val::Constant(5),
-                    src2: Val::Constant(4),
+                    src1: Val::Constant(Const::Int(5)),
+                    src2: Val::Constant(Const::Int(4)),
                     dst: Val::Var("tmp.0".into()),
                 },
                 Instruction::Binary {
                     op: BinaryOp::Subtract,
-                    src1: Val::Constant(4),
-                    src2: Val::Constant(5),
+                    src1: Val::Constant(Const::Int(4)),
+                    src2: Val::Constant(Const::Int(5)),
                     dst: Val::Var("tmp.1".into()),
                 },
                 Instruction::Binary {
                     op: BinaryOp::BitwiseAnd,
                     src1: Val::Var("tmp.1".into()),
-                    src2: Val::Constant(6),
+                    src2: Val::Constant(Const::Int(6)),
                     dst: Val::Var("tmp.2".into()),
                 },
                 Instruction::Binary {
@@ -1283,12 +1335,12 @@ mod tests {
                     dst: Val::Var("tmp.3".into()),
                 },
                 Instruction::Ret(Val::Var("tmp.3".into())),
-                Instruction::Ret(Val::Constant(0)),
+                Instruction::Ret(Val::Constant(Const::Int(0))),
             ],
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&main_symbol_table());
+        let assembly = tacky.into_ast(&mut main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1296,19 +1348,19 @@ mod tests {
 
     #[test]
     fn shiftleft() {
-        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
+        let ast = TypedAST::Program(vec![TypedDeclaration::FunDecl(TypedFunctionDeclaration {
             name: "main".into(),
-            block: Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::new(ExprKind::Binary(
+            block: Some(crate::ast::Block(vec![TypedBlockItem::Stmt(
+                TypedStatement::Return(typed_int(TypedExprKind::Binary(
                     ParserBinaryOp::ShiftLeft,
-                    Box::new(Expression::new(ExprKind::Binary(
+                    Box::new(typed_int(TypedExprKind::Binary(
                         ParserBinaryOp::Multiply,
-                        Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
-                        Box::new(Expression::new(ExprKind::Constant(Const::Int(4)))),
+                        Box::new(typed_int(TypedExprKind::Constant(Const::Int(5)))),
+                        Box::new(typed_int(TypedExprKind::Constant(Const::Int(4)))),
                     ))),
-                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
-                )),
-            ))])),
+                    Box::new(typed_int(TypedExprKind::Constant(Const::Int(2)))),
+                ))),
+            )])),
             params: vec![],
             storage_class: None,
             ftype: CType::FunType {
@@ -1323,23 +1375,23 @@ mod tests {
             instructions: vec![
                 Instruction::Binary {
                     op: BinaryOp::Multiply,
-                    src1: Val::Constant(5),
-                    src2: Val::Constant(4),
+                    src1: Val::Constant(Const::Int(5)),
+                    src2: Val::Constant(Const::Int(4)),
                     dst: Val::Var("tmp.0".into()),
                 },
                 Instruction::Binary {
                     op: BinaryOp::ShiftLeft,
                     src1: Val::Var("tmp.0".into()),
-                    src2: Val::Constant(2),
+                    src2: Val::Constant(Const::Int(2)),
                     dst: Val::Var("tmp.1".into()),
                 },
                 Instruction::Ret(Val::Var("tmp.1".into())),
-                Instruction::Ret(Val::Constant(0)),
+                Instruction::Ret(Val::Constant(Const::Int(0))),
             ],
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&main_symbol_table());
+        let assembly = tacky.into_ast(&mut main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1347,19 +1399,19 @@ mod tests {
 
     #[test]
     fn shiftleft_rhs_is_expr() {
-        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
+        let ast = TypedAST::Program(vec![TypedDeclaration::FunDecl(TypedFunctionDeclaration {
             name: "main".into(),
-            block: Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::new(ExprKind::Binary(
+            block: Some(crate::ast::Block(vec![TypedBlockItem::Stmt(
+                TypedStatement::Return(typed_int(TypedExprKind::Binary(
                     ParserBinaryOp::ShiftLeft,
-                    Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
-                    Box::new(Expression::new(ExprKind::Binary(
+                    Box::new(typed_int(TypedExprKind::Constant(Const::Int(5)))),
+                    Box::new(typed_int(TypedExprKind::Binary(
                         ParserBinaryOp::Add,
-                        Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
-                        Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                        Box::new(typed_int(TypedExprKind::Constant(Const::Int(1)))),
+                        Box::new(typed_int(TypedExprKind::Constant(Const::Int(2)))),
                     ))),
-                )),
-            ))])),
+                ))),
+            )])),
             params: vec![],
             storage_class: None,
             ftype: CType::FunType {
@@ -1374,23 +1426,23 @@ mod tests {
             instructions: vec![
                 Instruction::Binary {
                     op: BinaryOp::Add,
-                    src1: Val::Constant(1),
-                    src2: Val::Constant(2),
+                    src1: Val::Constant(Const::Int(1)),
+                    src2: Val::Constant(Const::Int(2)),
                     dst: Val::Var("tmp.0".into()),
                 },
                 Instruction::Binary {
                     op: BinaryOp::ShiftLeft,
-                    src1: Val::Constant(5),
+                    src1: Val::Constant(Const::Int(5)),
                     src2: Val::Var("tmp.0".into()),
                     dst: Val::Var("tmp.1".into()),
                 },
                 Instruction::Ret(Val::Var("tmp.1".into())),
-                Instruction::Ret(Val::Constant(0)),
+                Instruction::Ret(Val::Constant(Const::Int(0))),
             ],
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&main_symbol_table());
+        let assembly = tacky.into_ast(&mut main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1398,19 +1450,19 @@ mod tests {
 
     #[test]
     fn test_short_circuit_and() {
-        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
+        let ast = TypedAST::Program(vec![TypedDeclaration::FunDecl(TypedFunctionDeclaration {
             name: "main".into(),
-            block: Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::new(ExprKind::Binary(
+            block: Some(crate::ast::Block(vec![TypedBlockItem::Stmt(
+                TypedStatement::Return(typed_int(TypedExprKind::Binary(
                     ParserBinaryOp::BinAnd,
-                    Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
-                    Box::new(Expression::new(ExprKind::Binary(
+                    Box::new(typed_int(TypedExprKind::Constant(Const::Int(5)))),
+                    Box::new(typed_int(TypedExprKind::Binary(
                         ParserBinaryOp::Add,
-                        Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
-                        Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                        Box::new(typed_int(TypedExprKind::Constant(Const::Int(1)))),
+                        Box::new(typed_int(TypedExprKind::Constant(Const::Int(2)))),
                     ))),
-                )),
-            ))])),
+                ))),
+            )])),
             params: vec![],
             storage_class: None,
             ftype: CType::FunType {
@@ -1425,7 +1477,7 @@ mod tests {
             global: true,
             instructions: vec![
                 Instruction::Copy {
-                    src: Val::Constant(5),
+                    src: Val::Constant(Const::Int(5)),
                     dst: Val::Var("tmp.0".into()),
                 },
                 Instruction::JumpIfZero {
@@ -1434,8 +1486,8 @@ mod tests {
                 },
                 Instruction::Binary {
                     op: BinaryOp::Add,
-                    src1: Val::Constant(1),
-                    src2: Val::Constant(2),
+                    src1: Val::Constant(Const::Int(1)),
+                    src2: Val::Constant(Const::Int(2)),
                     dst: Val::Var("tmp.1".into()),
                 },
                 Instruction::Copy {
@@ -1447,23 +1499,23 @@ mod tests {
                     target: "and_expr_false.0".into(),
                 },
                 Instruction::Copy {
-                    src: Val::Constant(1),
+                    src: Val::Constant(Const::Int(1)),
                     dst: Val::Var("tmp.3".into()),
                 },
                 Instruction::Jump("and_expr_end.1".into()),
                 Instruction::Label("and_expr_false.0".into()),
                 Instruction::Copy {
-                    src: Val::Constant(0),
+                    src: Val::Constant(Const::Int(0)),
                     dst: Val::Var("tmp.3".into()),
                 },
                 Instruction::Label("and_expr_end.1".into()),
                 Instruction::Ret(Val::Var("tmp.3".into())),
-                Instruction::Ret(Val::Constant(0)),
+                Instruction::Ret(Val::Constant(Const::Int(0))),
             ],
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&main_symbol_table());
+        let assembly = tacky.into_ast(&mut main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1471,19 +1523,19 @@ mod tests {
 
     #[test]
     fn test_short_circuit_or() {
-        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
+        let ast = TypedAST::Program(vec![TypedDeclaration::FunDecl(TypedFunctionDeclaration {
             name: "main".into(),
-            block: Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
-                Expression::new(ExprKind::Binary(
+            block: Some(crate::ast::Block(vec![TypedBlockItem::Stmt(
+                TypedStatement::Return(typed_int(TypedExprKind::Binary(
                     ParserBinaryOp::BinOr,
-                    Box::new(Expression::new(ExprKind::Constant(Const::Int(5)))),
-                    Box::new(Expression::new(ExprKind::Binary(
+                    Box::new(typed_int(TypedExprKind::Constant(Const::Int(5)))),
+                    Box::new(typed_int(TypedExprKind::Binary(
                         ParserBinaryOp::Add,
-                        Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
-                        Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                        Box::new(typed_int(TypedExprKind::Constant(Const::Int(1)))),
+                        Box::new(typed_int(TypedExprKind::Constant(Const::Int(2)))),
                     ))),
-                )),
-            ))])),
+                ))),
+            )])),
             params: vec![],
             storage_class: None,
             ftype: CType::FunType {
@@ -1498,7 +1550,7 @@ mod tests {
             global: true,
             instructions: vec![
                 Instruction::Copy {
-                    src: Val::Constant(5),
+                    src: Val::Constant(Const::Int(5)),
                     dst: Val::Var("tmp.0".into()),
                 },
                 Instruction::JumpIfNotZero {
@@ -1507,8 +1559,8 @@ mod tests {
                 },
                 Instruction::Binary {
                     op: BinaryOp::Add,
-                    src1: Val::Constant(1),
-                    src2: Val::Constant(2),
+                    src1: Val::Constant(Const::Int(1)),
+                    src2: Val::Constant(Const::Int(2)),
                     dst: Val::Var("tmp.1".into()),
                 },
                 Instruction::Copy {
@@ -1520,23 +1572,23 @@ mod tests {
                     target: "or_expr_true.0".into(),
                 },
                 Instruction::Copy {
-                    src: Val::Constant(0),
+                    src: Val::Constant(Const::Int(0)),
                     dst: Val::Var("tmp.3".into()),
                 },
                 Instruction::Jump("or_expr_end.1".into()),
                 Instruction::Label("or_expr_true.0".into()),
                 Instruction::Copy {
-                    src: Val::Constant(1),
+                    src: Val::Constant(Const::Int(1)),
                     dst: Val::Var("tmp.3".into()),
                 },
                 Instruction::Label("or_expr_end.1".into()),
                 Instruction::Ret(Val::Var("tmp.3".into())),
-                Instruction::Ret(Val::Constant(0)),
+                Instruction::Ret(Val::Constant(Const::Int(0))),
             ],
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&main_symbol_table());
+        let assembly = tacky.into_ast(&mut main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1544,32 +1596,32 @@ mod tests {
 
     #[test]
     fn basic_declarations() {
-        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
+        let ast = TypedAST::Program(vec![TypedDeclaration::FunDecl(TypedFunctionDeclaration {
             name: "main".into(),
             block: Some(crate::ast::Block(vec![
-                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
+                TypedBlockItem::Decl(TypedDeclaration::VarDecl(TypedVariableDeclaration {
                     name: "a.0.decl".into(),
-                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                    init: Some(typed_int(TypedExprKind::Constant(Const::Int(1)))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
-                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
+                TypedBlockItem::Decl(TypedDeclaration::VarDecl(TypedVariableDeclaration {
                     name: "b.1.decl".into(),
-                    init: Some(Expression::new(ExprKind::Var("a.0.decl".into()))),
+                    init: Some(typed_int(TypedExprKind::Var("a.0.decl".into()))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
-                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
+                TypedBlockItem::Decl(TypedDeclaration::VarDecl(TypedVariableDeclaration {
                     name: "c.2.decl".into(),
-                    init: Some(Expression::new(ExprKind::Binary(
+                    init: Some(typed_int(TypedExprKind::Binary(
                         ParserBinaryOp::Add,
-                        Box::new(Expression::new(ExprKind::Var("a.0.decl".into()))),
-                        Box::new(Expression::new(ExprKind::Var("b.1.decl".into()))),
+                        Box::new(typed_int(TypedExprKind::Var("a.0.decl".into()))),
+                        Box::new(typed_int(TypedExprKind::Var("b.1.decl".into()))),
                     ))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var(
+                TypedBlockItem::Stmt(TypedStatement::Return(typed_int(TypedExprKind::Var(
                     "c.2.decl".into(),
                 )))),
             ])),
@@ -1586,7 +1638,7 @@ mod tests {
             global: true,
             instructions: vec![
                 Instruction::Copy {
-                    src: Val::Constant(1),
+                    src: Val::Constant(Const::Int(1)),
                     dst: Val::Var("a.0.decl".into()),
                 },
                 Instruction::Copy {
@@ -1604,12 +1656,12 @@ mod tests {
                     dst: Val::Var("c.2.decl".into()),
                 },
                 Instruction::Ret(Val::Var("c.2.decl".into())),
-                Instruction::Ret(Val::Constant(0)),
+                Instruction::Ret(Val::Constant(Const::Int(0))),
             ],
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&main_symbol_table());
+        let assembly = tacky.into_ast(&mut main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1617,41 +1669,41 @@ mod tests {
 
     #[test]
     fn test_compound_assignment() {
-        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
+        let ast = TypedAST::Program(vec![TypedDeclaration::FunDecl(TypedFunctionDeclaration {
             name: "main".into(),
             block: Some(crate::ast::Block(vec![
-                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
+                TypedBlockItem::Decl(TypedDeclaration::VarDecl(TypedVariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                    init: Some(typed_int(TypedExprKind::Constant(Const::Int(1)))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Binary(
+                TypedBlockItem::Stmt(TypedStatement::Expr(typed_int(TypedExprKind::Binary(
                     ParserBinaryOp::AddAssign,
-                    Box::new(Expression::new(ExprKind::Var("a".into()))),
-                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                    Box::new(typed_int(TypedExprKind::Var("a".into()))),
+                    Box::new(typed_int(TypedExprKind::Constant(Const::Int(2)))),
                 )))),
-                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Binary(
+                TypedBlockItem::Stmt(TypedStatement::Expr(typed_int(TypedExprKind::Binary(
                     ParserBinaryOp::MinusAssign,
-                    Box::new(Expression::new(ExprKind::Var("a".into()))),
-                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                    Box::new(typed_int(TypedExprKind::Var("a".into()))),
+                    Box::new(typed_int(TypedExprKind::Constant(Const::Int(2)))),
                 )))),
-                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Binary(
+                TypedBlockItem::Stmt(TypedStatement::Expr(typed_int(TypedExprKind::Binary(
                     ParserBinaryOp::MultiplyAssign,
-                    Box::new(Expression::new(ExprKind::Var("a".into()))),
-                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                    Box::new(typed_int(TypedExprKind::Var("a".into()))),
+                    Box::new(typed_int(TypedExprKind::Constant(Const::Int(2)))),
                 )))),
-                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Binary(
+                TypedBlockItem::Stmt(TypedStatement::Expr(typed_int(TypedExprKind::Binary(
                     ParserBinaryOp::DivideAssign,
-                    Box::new(Expression::new(ExprKind::Var("a".into()))),
-                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                    Box::new(typed_int(TypedExprKind::Var("a".into()))),
+                    Box::new(typed_int(TypedExprKind::Constant(Const::Int(2)))),
                 )))),
-                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Binary(
+                TypedBlockItem::Stmt(TypedStatement::Expr(typed_int(TypedExprKind::Binary(
                     ParserBinaryOp::RemainderAssign,
-                    Box::new(Expression::new(ExprKind::Var("a".into()))),
-                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                    Box::new(typed_int(TypedExprKind::Var("a".into()))),
+                    Box::new(typed_int(TypedExprKind::Constant(Const::Int(2)))),
                 )))),
-                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Var(
+                TypedBlockItem::Stmt(TypedStatement::Return(typed_int(TypedExprKind::Var(
                     "a".into(),
                 )))),
             ])),
@@ -1669,13 +1721,13 @@ mod tests {
             global: true,
             instructions: vec![
                 Instruction::Copy {
-                    src: Val::Constant(1),
+                    src: Val::Constant(Const::Int(1)),
                     dst: Val::Var("a".into()),
                 },
                 Instruction::Binary {
                     op: BinaryOp::Add,
                     src1: Val::Var("a".into()),
-                    src2: Val::Constant(2),
+                    src2: Val::Constant(Const::Int(2)),
                     dst: Val::Var("tmp.0".into()),
                 },
                 Instruction::Copy {
@@ -1685,7 +1737,7 @@ mod tests {
                 Instruction::Binary {
                     op: BinaryOp::Subtract,
                     src1: Val::Var("a".into()),
-                    src2: Val::Constant(2),
+                    src2: Val::Constant(Const::Int(2)),
                     dst: Val::Var("tmp.1".into()),
                 },
                 Instruction::Copy {
@@ -1695,7 +1747,7 @@ mod tests {
                 Instruction::Binary {
                     op: BinaryOp::Multiply,
                     src1: Val::Var("a".into()),
-                    src2: Val::Constant(2),
+                    src2: Val::Constant(Const::Int(2)),
                     dst: Val::Var("tmp.2".into()),
                 },
                 Instruction::Copy {
@@ -1705,7 +1757,7 @@ mod tests {
                 Instruction::Binary {
                     op: BinaryOp::Divide,
                     src1: Val::Var("a".into()),
-                    src2: Val::Constant(2),
+                    src2: Val::Constant(Const::Int(2)),
                     dst: Val::Var("tmp.3".into()),
                 },
                 Instruction::Copy {
@@ -1715,7 +1767,7 @@ mod tests {
                 Instruction::Binary {
                     op: BinaryOp::Remainder,
                     src1: Val::Var("a".into()),
-                    src2: Val::Constant(2),
+                    src2: Val::Constant(Const::Int(2)),
                     dst: Val::Var("tmp.4".into()),
                 },
                 Instruction::Copy {
@@ -1723,12 +1775,12 @@ mod tests {
                     dst: Val::Var("a".into()),
                 },
                 Instruction::Ret(Val::Var("a".into())),
-                Instruction::Ret(Val::Constant(0)),
+                Instruction::Ret(Val::Constant(Const::Int(0))),
             ],
         }]);
 
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&main_symbol_table());
+        let assembly = tacky.into_ast(&mut main_symbol_table());
         assert!(assembly.is_ok());
         let assembly = assembly.unwrap();
         assert_eq!(assembly, expected);
@@ -1736,23 +1788,23 @@ mod tests {
 
     #[test]
     fn test_invalid_lhs_compound_assignment() {
-        let ast = ParserAST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
+        let ast = TypedAST::Program(vec![TypedDeclaration::FunDecl(TypedFunctionDeclaration {
             name: "main".into(),
             block: Some(crate::ast::Block(vec![
-                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
+                TypedBlockItem::Decl(TypedDeclaration::VarDecl(TypedVariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::new(ExprKind::Constant(Const::Int(10)))),
+                    init: Some(typed_int(TypedExprKind::Constant(Const::Int(10)))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
-                BlockItem::Stmt(Statement::Expr(Expression::new(ExprKind::Binary(
+                TypedBlockItem::Stmt(TypedStatement::Expr(typed_int(TypedExprKind::Binary(
                     ParserBinaryOp::MinusAssign,
-                    Box::new(Expression::new(ExprKind::Binary(
+                    Box::new(typed_int(TypedExprKind::Binary(
                         ParserBinaryOp::AddAssign,
-                        Box::new(Expression::new(ExprKind::Var("a".into()))),
-                        Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                        Box::new(typed_int(TypedExprKind::Var("a".into()))),
+                        Box::new(typed_int(TypedExprKind::Constant(Const::Int(1)))),
                     ))),
-                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                    Box::new(typed_int(TypedExprKind::Constant(Const::Int(2)))),
                 )))),
             ])),
             params: vec![],
@@ -1763,7 +1815,7 @@ mod tests {
             },
         })]);
         let tacky = Tacky::new(ast);
-        let assembly = tacky.into_ast(&main_symbol_table());
+        let assembly = tacky.into_ast(&mut main_symbol_table());
         assert!(assembly.is_err());
     }
 
@@ -1786,9 +1838,9 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let (symbol_table, _) = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let (mut symbol_table, ast) = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let assembly = asm.into_ast(&symbol_table);
+        let assembly = asm.into_ast(&mut symbol_table);
         let Ok(actual) = assembly else {
             panic!();
         };
@@ -1799,11 +1851,11 @@ mod tests {
             instructions: vec![
                 // first one: if/then
                 Instruction::Copy {
-                    src: Val::Constant(1),
+                    src: Val::Constant(Const::Int(1)),
                     dst: Val::Var("a.0.decl".into()),
                 },
                 Instruction::Copy {
-                    src: Val::Constant(0),
+                    src: Val::Constant(Const::Int(0)),
                     dst: Val::Var("b.1.decl".into()),
                 },
                 Instruction::Copy {
@@ -1814,7 +1866,7 @@ mod tests {
                     cond: Val::Var("tmp.0".into()),
                     target: "end_label.0".into(),
                 },
-                Instruction::Ret(Val::Constant(1)),
+                Instruction::Ret(Val::Constant(Const::Int(1))),
                 Instruction::Label("end_label.0".into()),
                 // second if/then/else
                 Instruction::Copy {
@@ -1825,12 +1877,12 @@ mod tests {
                     cond: Val::Var("tmp.1".into()),
                     target: "else_label.1".into(),
                 },
-                Instruction::Ret(Val::Constant(2)),
+                Instruction::Ret(Val::Constant(Const::Int(2))),
                 Instruction::Jump("end_label.2".into()),
                 Instruction::Label("else_label.1".into()),
-                Instruction::Ret(Val::Constant(3)),
+                Instruction::Ret(Val::Constant(Const::Int(3))),
                 Instruction::Label("end_label.2".into()),
-                Instruction::Ret(Val::Constant(0)),
+                Instruction::Ret(Val::Constant(Const::Int(0))),
             ],
         }]);
         assert_eq!(expected, actual);
@@ -1848,9 +1900,9 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let (symbol_table, _) = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let (mut symbol_table, ast) = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let assembly = asm.into_ast(&symbol_table);
+        let assembly = asm.into_ast(&mut symbol_table);
         let Ok(actual) = assembly else {
             panic!();
         };
@@ -1860,7 +1912,7 @@ mod tests {
             global: true,
             instructions: vec![
                 Instruction::Copy {
-                    src: Val::Constant(1),
+                    src: Val::Constant(Const::Int(1)),
                     dst: Val::Var("a.0.decl".into()),
                 },
                 Instruction::Copy {
@@ -1872,17 +1924,17 @@ mod tests {
                     target: "else_label.0".into(),
                 },
                 Instruction::Copy {
-                    src: Val::Constant(1),
+                    src: Val::Constant(Const::Int(1)),
                     dst: Val::Var("tmp.1".into()),
                 },
                 Instruction::Jump("end_label.1".into()),
                 Instruction::Label("else_label.0".into()),
                 Instruction::Copy {
-                    src: Val::Constant(2),
+                    src: Val::Constant(Const::Int(2)),
                     dst: Val::Var("tmp.1".into()),
                 },
                 Instruction::Label("end_label.1".into()),
-                Instruction::Ret(Val::Constant(0)),
+                Instruction::Ret(Val::Constant(Const::Int(0))),
             ],
         }]);
         assert_eq!(expected, actual);
@@ -1901,9 +1953,9 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let (symbol_table, _) = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let (mut symbol_table, ast) = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let assembly = asm.into_ast(&symbol_table);
+        let assembly = asm.into_ast(&mut symbol_table);
         let Ok(actual) = assembly else {
             panic!();
         };
@@ -1916,12 +1968,12 @@ mod tests {
                 Instruction::Label("foo.0.label".into()),
                 Instruction::Binary {
                     op: BinaryOp::Add,
-                    src1: Val::Constant(1),
-                    src2: Val::Constant(2),
+                    src1: Val::Constant(Const::Int(1)),
+                    src2: Val::Constant(Const::Int(2)),
                     dst: Val::Var("tmp.0".into()),
                 },
                 Instruction::Ret(Val::Var("tmp.0".into())),
-                Instruction::Ret(Val::Constant(0)),
+                Instruction::Ret(Val::Constant(Const::Int(0))),
             ],
         }]);
         assert_eq!(expected, actual);
@@ -1946,9 +1998,9 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let (symbol_table, _) = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let (mut symbol_table, ast) = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let assembly = asm.into_ast(&symbol_table);
+        let assembly = asm.into_ast(&mut symbol_table);
         let Ok(actual) = assembly else {
             panic!();
         };
@@ -1958,24 +2010,24 @@ mod tests {
             global: true,
             instructions: vec![
                 Instruction::Copy {
-                    src: Val::Constant(1),
+                    src: Val::Constant(Const::Int(1)),
                     dst: Val::Var("tmp.0".into()),
                 },
                 Instruction::JumpIfZero {
                     cond: Val::Var("tmp.0".into()),
                     target: "else_label.0".into(),
                 },
-                Instruction::Ret(Val::Constant(1)),
+                Instruction::Ret(Val::Constant(Const::Int(1))),
                 Instruction::Jump("end_label.1".into()),
                 Instruction::Label("else_label.0".into()),
-                Instruction::Ret(Val::Constant(2)),
+                Instruction::Ret(Val::Constant(Const::Int(2))),
                 Instruction::Label("end_label.1".into()),
                 Instruction::Copy {
-                    src: Val::Constant(3),
+                    src: Val::Constant(Const::Int(3)),
                     dst: Val::Var("x.0.decl".into()),
                 },
                 Instruction::Ret(Val::Var("x.0.decl".into())),
-                Instruction::Ret(Val::Constant(0)),
+                Instruction::Ret(Val::Constant(Const::Int(0))),
             ],
         }]);
         assert_eq!(expected, actual);
@@ -2000,9 +2052,9 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let (symbol_table, _) = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let (mut symbol_table, ast) = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let assembly = asm.into_ast(&symbol_table);
+        let assembly = asm.into_ast(&mut symbol_table);
         let Ok(actual) = assembly else {
             panic!();
         };
@@ -2016,14 +2068,14 @@ mod tests {
                  * write out post-condition, jump to start, then write break label
                  */
                 Instruction::Copy {
-                    src: Val::Constant(1),
+                    src: Val::Constant(Const::Int(1)),
                     dst: Val::Var("a.0.decl".into()),
                 },
                 Instruction::Label("for_label.1".into()),
                 Instruction::Binary {
                     op: BinaryOp::LessThan,
                     src1: Val::Var("a.0.decl".into()),
-                    src2: Val::Constant(10),
+                    src2: Val::Constant(Const::Int(10)),
                     dst: Val::Var("tmp.0".into()),
                 },
                 Instruction::JumpIfZero {
@@ -2035,7 +2087,7 @@ mod tests {
                 Instruction::Binary {
                     op: BinaryOp::Add,
                     src1: Val::Var("a.0.decl".into()),
-                    src2: Val::Constant(1),
+                    src2: Val::Constant(Const::Int(1)),
                     dst: Val::Var("tmp.1".into()),
                 },
                 Instruction::Copy {
@@ -2054,7 +2106,7 @@ mod tests {
                 Instruction::Binary {
                     op: BinaryOp::LessThan,
                     src1: Val::Var("a.0.decl".into()),
-                    src2: Val::Constant(0),
+                    src2: Val::Constant(Const::Int(0)),
                     dst: Val::Var("tmp.2".into()),
                 },
                 Instruction::JumpIfNotZero {
@@ -2070,7 +2122,7 @@ mod tests {
                 Instruction::Binary {
                     op: BinaryOp::GreaterThan,
                     src1: Val::Var("a.0.decl".into()),
-                    src2: Val::Constant(0),
+                    src2: Val::Constant(Const::Int(0)),
                     dst: Val::Var("tmp.3".into()),
                 },
                 Instruction::JumpIfZero {
@@ -2081,7 +2133,7 @@ mod tests {
                 Instruction::Jump("continue_while_label.3".into()),
                 Instruction::Label("break_while_label.3".into()),
                 // placeholder
-                Instruction::Ret(Val::Constant(0)),
+                Instruction::Ret(Val::Constant(Const::Int(0))),
             ],
         }]);
         assert_eq!(expected, actual);
@@ -2100,9 +2152,9 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let (symbol_table, _) = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let (mut symbol_table, ast) = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let assembly = asm.into_ast(&symbol_table);
+        let assembly = asm.into_ast(&mut symbol_table);
         let Ok(actual) = assembly else {
             panic!();
         };
@@ -2116,14 +2168,14 @@ mod tests {
                  * write out post-condition, jump to start, then write break label
                  */
                 Instruction::Copy {
-                    src: Val::Constant(400),
+                    src: Val::Constant(Const::Int(400)),
                     dst: Val::Var("i.0.decl".into()),
                 },
                 Instruction::Label("for_label.1".into()),
                 Instruction::Binary {
                     op: BinaryOp::Equal,
                     src1: Val::Var("i.0.decl".into()),
-                    src2: Val::Constant(100),
+                    src2: Val::Constant(Const::Int(100)),
                     dst: Val::Var("tmp.0".into()),
                 },
                 Instruction::Copy {
@@ -2134,13 +2186,13 @@ mod tests {
                     cond: Val::Var("tmp.1".into()),
                     target: "end_label.0".into(),
                 },
-                Instruction::Ret(Val::Constant(0)),
+                Instruction::Ret(Val::Constant(Const::Int(0))),
                 Instruction::Label("end_label.0".into()),
                 Instruction::Label("continue_for_label.1".into()),
                 Instruction::Binary {
                     op: BinaryOp::Subtract,
                     src1: Val::Var("i.0.decl".into()),
-                    src2: Val::Constant(100),
+                    src2: Val::Constant(Const::Int(100)),
                     dst: Val::Var("tmp.2".into()),
                 },
                 Instruction::Copy {
@@ -2150,7 +2202,7 @@ mod tests {
                 Instruction::Jump("for_label.1".into()),
                 Instruction::Label("break_for_label.1".into()),
                 // placeholder
-                Instruction::Ret(Val::Constant(0)),
+                Instruction::Ret(Val::Constant(Const::Int(0))),
             ],
         }]);
         assert_eq!(expected, actual);
@@ -2171,9 +2223,9 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let (symbol_table, _) = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let (mut symbol_table, ast) = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let assembly = asm.into_ast(&symbol_table);
+        let assembly = asm.into_ast(&mut symbol_table);
         let Ok(actual) = assembly else {
             panic!();
         };
@@ -2190,7 +2242,7 @@ mod tests {
                         dst: Val::Var("tmp.0".into()),
                     },
                     Instruction::Ret(Val::Var("tmp.0".into())),
-                    Instruction::Ret(Val::Constant(0)),
+                    Instruction::Ret(Val::Constant(Const::Int(0))),
                 ],
             },
             TopLevel::Function {
@@ -2200,17 +2252,17 @@ mod tests {
                 instructions: vec![
                     Instruction::FunCall {
                         name: "foo".into(),
-                        args: vec![Val::Constant(1), Val::Constant(2)],
+                        args: vec![Val::Constant(Const::Int(1)), Val::Constant(Const::Int(2))],
                         dst: Val::Var("tmp.1".into()),
                     },
                     Instruction::Binary {
                         op: BinaryOp::Add,
                         src1: Val::Var("tmp.1".into()),
-                        src2: Val::Constant(3),
+                        src2: Val::Constant(Const::Int(3)),
                         dst: Val::Var("tmp.2".into()),
                     },
                     Instruction::Ret(Val::Var("tmp.2".into())),
-                    Instruction::Ret(Val::Constant(0)),
+                    Instruction::Ret(Val::Constant(Const::Int(0))),
                 ],
             },
         ]);
@@ -2229,9 +2281,9 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let (symbol_table, _) = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let (mut symbol_table, ast) = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let actual = asm.into_ast(&symbol_table).unwrap();
+        let actual = asm.into_ast(&mut symbol_table).unwrap();
 
         let AST::Program(top_levels) = actual;
         let mut iter = top_levels.into_iter();
@@ -2245,7 +2297,7 @@ mod tests {
         // Second: static variable x with global: false, init: 5
         let static_var = iter.next().unwrap();
         assert!(
-            matches!(static_var, TopLevel::StaticVariable { ref identifier, global: false, init: 5 } if identifier == "x")
+            matches!(static_var, TopLevel::StaticVariable { ref identifier, global: false, init: StaticInit::IntInit(5), t: CType::Int } if identifier == "x")
         );
     }
 
@@ -2259,9 +2311,9 @@ mod tests {
         let tokens = lexer.as_syntactic_tokens();
         let parse = crate::parser::Parser::new(&tokens);
         let mut ast = parse.into_ast().unwrap();
-        let (symbol_table, _) = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let (mut symbol_table, ast) = crate::semantic_analysis::resolve(&mut ast).unwrap();
         let asm = Tacky::new(ast);
-        let actual = asm.into_ast(&symbol_table).unwrap();
+        let actual = asm.into_ast(&mut symbol_table).unwrap();
 
         let AST::Program(top_levels) = actual;
         let mut iter = top_levels.into_iter();
@@ -2276,6 +2328,94 @@ mod tests {
         let main_fn = iter.next().unwrap();
         assert!(
             matches!(main_fn, TopLevel::Function { ref name, global: true, .. } if name == "main")
+        );
+    }
+
+    fn tacky_instructions_for(src: &str) -> Vec<Instruction> {
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parse = crate::parser::Parser::new(&tokens);
+        let mut ast = parse.into_ast().unwrap();
+        let (mut symbol_table, typed_ast) = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let tacky = Tacky::new(typed_ast);
+        let AST::Program(mut top_levels) = tacky.into_ast(&mut symbol_table).unwrap();
+        let TopLevel::Function { instructions, .. } = top_levels.remove(0) else {
+            panic!("Expected a function");
+        };
+        instructions
+    }
+
+    #[test]
+    fn return_int_from_long_function_truncates() {
+        // returning int from a long function should emit Truncate
+        let src = r#"
+            long main(void) {
+                int x = 1;
+                return x;
+            }
+        "#;
+        let instrs = tacky_instructions_for(src);
+        assert!(
+            instrs
+                .iter()
+                .any(|i| matches!(i, Instruction::SignExtend { .. })),
+            "Expected a SignExtend instruction, got: {instrs:?}"
+        );
+    }
+
+    #[test]
+    fn return_long_from_int_function_truncates() {
+        // returning long from an int function should emit Truncate
+        let src = r#"
+            int main(void) {
+                long x = 1L;
+                return x;
+            }
+        "#;
+        let instrs = tacky_instructions_for(src);
+        assert!(
+            instrs
+                .iter()
+                .any(|i| matches!(i, Instruction::Truncate { .. })),
+            "Expected a Truncate instruction, got: {instrs:?}"
+        );
+    }
+
+    #[test]
+    fn int_plus_long_sign_extends_int() {
+        // int + long should sign-extend the int operand
+        let src = r#"
+            long main(void) {
+                int a = 1;
+                long b = 2L;
+                return a + b;
+            }
+        "#;
+        let instrs = tacky_instructions_for(src);
+        assert!(
+            instrs
+                .iter()
+                .any(|i| matches!(i, Instruction::SignExtend { .. })),
+            "Expected a SignExtend instruction for int operand, got: {instrs:?}"
+        );
+    }
+
+    #[test]
+    fn function_call_with_mixed_args_emits_cast() {
+        // calling foo(long) with an int arg should sign-extend
+        let src = r#"
+            long foo(long x);
+            int main(void) {
+                int a = 1;
+                return foo(a);
+            }
+        "#;
+        let instrs = tacky_instructions_for(src);
+        assert!(
+            instrs
+                .iter()
+                .any(|i| matches!(i, Instruction::SignExtend { .. })),
+            "Expected a SignExtend for int->long arg conversion, got: {instrs:?}"
         );
     }
 }
