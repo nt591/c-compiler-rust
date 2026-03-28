@@ -20,3 +20,16 @@ impl CType {
         if t1 == t2 { t1 } else { CType::Long }
     }
 }
+
+pub fn static_init_as_usize(si: &StaticInit) -> usize {
+    match si {
+        StaticInit::IntInit(i) => *i as usize,
+        StaticInit::LongInit(i) => *i as usize,
+    }
+}
+
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub enum AssemblyType {
+    Longword,
+    Quadword,
+}

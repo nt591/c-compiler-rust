@@ -12,6 +12,7 @@ mod emitter;
 mod lexer;
 mod parser;
 mod semantic_analysis;
+mod symbol_table;
 mod tacky;
 mod types;
 use asm::Asm;
@@ -140,7 +141,7 @@ fn process_file(input: PathBuf, stage: ProcessingStage) -> anyhow::Result<Option
     if stage == ProcessingStage::Tacky {
         return Ok(None);
     }
-    let asm = Asm::from_tacky(tacky_ast, &symbol_table);
+    let asm = Asm::from_tacky(tacky_ast, symbol_table);
     if stage == ProcessingStage::Codegen {
         return Ok(None);
     };

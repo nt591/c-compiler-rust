@@ -3,6 +3,9 @@ use crate::ast::Const;
 use crate::ast::StorageClass;
 use crate::ast::UnaryOp;
 use crate::const_eval;
+pub use crate::symbol_table::IdentifierAttrs;
+pub use crate::symbol_table::InitialValue;
+pub use crate::symbol_table::SymbolTable;
 use crate::types::CType;
 use crate::types::StaticInit;
 use std::collections::HashMap;
@@ -202,23 +205,6 @@ impl Resolver {
 }
 
 /* BEGIN Symbol Table types for typechecking */
-#[derive(PartialEq, Debug)]
-pub enum InitialValue {
-    Tentative,
-    Initial(StaticInit),
-    NoInitializer, // extern variable declarations are not tentative
-}
-
-#[derive(Debug, PartialEq)]
-pub enum IdentifierAttrs {
-    FunAttr { defined: bool, global: bool },
-    StaticAttr { init: InitialValue, global: bool },
-    LocalAttr,
-}
-
-// TODO: harden types so CType::FunType ONLY goes with IdentifierAttrs::FunAttr
-pub type SymbolTable = HashMap<String, (CType, IdentifierAttrs)>;
-
 struct Ctx {
     symbol_table: SymbolTable,
     enclosing_func_ret_ty: Option<CType>,

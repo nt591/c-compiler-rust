@@ -3,6 +3,8 @@
 
 use crate::Asm;
 use crate::asm;
+use crate::types;
+use crate::types::StaticInit;
 use std::io::Write;
 
 pub struct Emitter(Asm);
@@ -32,6 +34,7 @@ impl Emitter {
                     identifier,
                     global,
                     init,
+                    ..
                 } => Self::emit_static_variable(identifier, *global, *init, output)?,
             }
         }
@@ -65,12 +68,13 @@ impl Emitter {
     fn emit_static_variable<W: Write>(
         identifier: &str,
         global: bool,
-        init: usize,
+        init: StaticInit,
         output: &mut W,
     ) -> std::io::Result<()> {
         if global {
             writeln!(output, "  .globl _{}", identifier)?;
         }
+        let init = types::static_init_as_usize(&init);
         if init == 0 {
             writeln!(output, "  .bss")?;
         } else {
@@ -97,22 +101,22 @@ impl Emitter {
                 writeln!(output, "  popq   %rbp")?;
                 writeln!(output, "  ret")?;
             }
-            asm::Instruction::Mov(src, dst) => {
+            asm::Instruction::Mov(_, src, dst) => {
                 write!(output, "  movl   ")?;
                 Self::emit_op(src, RegisterSize::FourByte, output)?;
                 write!(output, ", ")?;
                 Self::emit_op(dst, RegisterSize::FourByte, output)?;
                 write!(output, "\n")?;
             }
-            asm::Instruction::Unary(unary, operand) => {
+            asm::Instruction::Unary(unary, _, operand) => {
                 write!(output, "  ")?;
                 Self::emit_unary(unary, output)?;
                 write!(output, "   ")?;
                 Self::emit_op(operand, RegisterSize::FourByte, output)?;
                 write!(output, "\n")?;
             }
-            asm::Instruction::Binary(binop @ asm::BinaryOp::ShiftLeft, src, dst)
-            | asm::Instruction::Binary(binop @ asm::BinaryOp::ShiftRight, src, dst) => {
+            asm::Instruction::Binary(binop @ asm::BinaryOp::ShiftLeft, _, src, dst)
+            | asm::Instruction::Binary(binop @ asm::BinaryOp::ShiftRight, _, src, dst) => {
                 // shift left and right use the lower 8 bits of ECX to read
                 write!(output, "  ")?;
                 Self::emit_binary(binop, output)?;
@@ -122,7 +126,7 @@ impl Emitter {
                 Self::emit_op(dst, RegisterSize::FourByte, output)?;
                 write!(output, "\n")?;
             }
-            asm::Instruction::Binary(binop, src, dst) => {
+            asm::Instruction::Binary(binop, _, src, dst) => {
                 write!(output, "  ")?;
                 Self::emit_binary(binop, output)?;
                 // assume emit_binary handles proper space formatting!
@@ -131,18 +135,15 @@ impl Emitter {
                 Self::emit_op(dst, RegisterSize::FourByte, output)?;
                 write!(output, "\n")?;
             }
-            asm::Instruction::AllocateStack(n) => {
-                writeln!(output, "  subq   ${}, %rsp", n)?;
-            }
-            asm::Instruction::Cdq => {
+            asm::Instruction::Cdq(_) => {
                 writeln!(output, "  cdq")?;
             }
-            asm::Instruction::Idiv(operand) => {
+            asm::Instruction::Idiv(_, operand) => {
                 write!(output, "  idivl  ")?;
                 Self::emit_op(operand, RegisterSize::FourByte, output)?;
                 write!(output, "\n")?;
             }
-            asm::Instruction::Cmp(op1, op2) => {
+            asm::Instruction::Cmp(_, op1, op2) => {
                 write!(output, "  cmpl   ")?;
                 Self::emit_op(op1, RegisterSize::FourByte, output)?;
                 write!(output, ", ")?;
@@ -170,9 +171,6 @@ impl Emitter {
                 Self::emit_op(operand, RegisterSize::OneByte, output)?;
                 write!(output, "\n")?;
             }
-            asm::Instruction::DeallocateStack(n) => {
-                writeln!(output, "  addq   ${}, %rsp", n)?;
-            }
             asm::Instruction::Push(op) => {
                 write!(output, "  pushq  ")?;
                 Self::emit_op(op, RegisterSize::EightByte, output)?;
@@ -181,6 +179,7 @@ impl Emitter {
             asm::Instruction::Call(lbl) => {
                 writeln!(output, "  call   _{}", lbl)?;
             }
+            asm::Instruction::Movsx(_, _) => todo!(),
         }
         Ok(())
     }
@@ -245,6 +244,7 @@ impl Emitter {
             Register::R9 => write!(output, "{}", "%r9d"),
             Register::R10 => write!(output, "{}", "%r10d"),
             Register::R11 => write!(output, "{}", "%r11d"),
+            Register::SP => write!(output, "{}", "%rsp"),
         }
     }
 
@@ -263,6 +263,7 @@ impl Emitter {
             Register::R9 => write!(output, "{}", "%r9b"),
             Register::R10 => write!(output, "{}", "%r10b"),
             Register::R11 => write!(output, "{}", "%r11b"),
+            Register::SP => write!(output, "{}", "%rsp"),
         }
     }
 
@@ -281,6 +282,7 @@ impl Emitter {
             Register::R9 => write!(output, "{}", "%r9"),
             Register::R10 => write!(output, "{}", "%r10"),
             Register::R11 => write!(output, "{}", "%r11"),
+            Register::SP => write!(output, "{}", "%rsp"),
         }
     }
 
@@ -319,6 +321,7 @@ impl Emitter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::AssemblyType;
     use asm::*;
 
     #[test]
@@ -327,7 +330,11 @@ mod tests {
             name: "main".into(),
             global: true,
             instructions: vec![
-                asm::Instruction::Mov(asm::Operand::Imm(100), asm::Operand::Reg(asm::Register::AX)),
+                asm::Instruction::Mov(
+                    AssemblyType::Longword,
+                    asm::Operand::Imm(100),
+                    asm::Operand::Reg(asm::Register::AX),
+                ),
                 asm::Instruction::Ret,
             ],
         })]);
@@ -360,28 +367,54 @@ _main:
             name: "main".into(),
             global: true,
             instructions: vec![
-                asm::Instruction::AllocateStack(12),
-                asm::Instruction::Mov(asm::Operand::Imm(100), asm::Operand::Stack(-4)),
-                asm::Instruction::Unary(asm::UnaryOp::Neg, asm::Operand::Stack(-4)),
+                asm::Instruction::Binary(
+                    asm::BinaryOp::Sub,
+                    AssemblyType::Quadword,
+                    asm::Operand::Imm(12),
+                    asm::Operand::Reg(asm::Register::SP),
+                ),
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
+                    asm::Operand::Imm(100),
+                    asm::Operand::Stack(-4),
+                ),
+                asm::Instruction::Unary(
+                    asm::UnaryOp::Neg,
+                    AssemblyType::Longword,
+                    asm::Operand::Stack(-4),
+                ),
+                asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Stack(-4),
                     asm::Operand::Reg(asm::Register::R10),
                 ),
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Reg(asm::Register::R10),
                     asm::Operand::Stack(-8),
                 ),
-                asm::Instruction::Unary(asm::UnaryOp::Not, asm::Operand::Stack(-8)),
+                asm::Instruction::Unary(
+                    asm::UnaryOp::Not,
+                    AssemblyType::Longword,
+                    asm::Operand::Stack(-8),
+                ),
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Stack(-8),
                     asm::Operand::Reg(asm::Register::R10),
                 ),
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Reg(asm::Register::R10),
                     asm::Operand::Stack(-12),
                 ),
-                asm::Instruction::Unary(asm::UnaryOp::Neg, asm::Operand::Stack(-12)),
+                asm::Instruction::Unary(
+                    asm::UnaryOp::Neg,
+                    AssemblyType::Longword,
+                    asm::Operand::Stack(-12),
+                ),
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Stack(-12),
                     asm::Operand::Reg(asm::Register::AX),
                 ),
@@ -423,50 +456,75 @@ _main:
             name: "main".into(),
             global: true,
             instructions: vec![
-                asm::Instruction::AllocateStack(16),
+                asm::Instruction::Binary(
+                    asm::BinaryOp::Sub,
+                    AssemblyType::Quadword,
+                    asm::Operand::Imm(16),
+                    asm::Operand::Reg(asm::Register::SP),
+                ),
                 // tmp0 = 1 * 2
-                asm::Instruction::Mov(asm::Operand::Imm(1), asm::Operand::Stack(-4)),
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
+                    asm::Operand::Imm(1),
+                    asm::Operand::Stack(-4),
+                ),
+                asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Stack(-4),
                     asm::Operand::Reg(asm::Register::R11),
                 ),
                 asm::Instruction::Binary(
                     asm::BinaryOp::Mult,
+                    AssemblyType::Longword,
                     asm::Operand::Imm(2),
                     asm::Operand::Reg(asm::Register::R11),
                 ),
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Reg(asm::Register::R11),
                     asm::Operand::Stack(-4),
                 ),
                 // tmp1 = 4 + 5
-                asm::Instruction::Mov(asm::Operand::Imm(4), asm::Operand::Stack(-8)),
+                asm::Instruction::Mov(
+                    AssemblyType::Longword,
+                    asm::Operand::Imm(4),
+                    asm::Operand::Stack(-8),
+                ),
                 asm::Instruction::Binary(
                     asm::BinaryOp::Add,
+                    AssemblyType::Longword,
                     asm::Operand::Imm(5),
                     asm::Operand::Stack(-8),
                 ),
                 // tmp2 = 3 % tmp1
-                asm::Instruction::Mov(asm::Operand::Imm(3), asm::Operand::Reg(asm::Register::DX)),
-                asm::Instruction::Cdq,
-                asm::Instruction::Idiv(asm::Operand::Stack(-8)),
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
+                    asm::Operand::Imm(3),
+                    asm::Operand::Reg(asm::Register::DX),
+                ),
+                asm::Instruction::Cdq(AssemblyType::Longword),
+                asm::Instruction::Idiv(AssemblyType::Longword, asm::Operand::Stack(-8)),
+                asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Reg(asm::Register::DX),
                     asm::Operand::Stack(-12),
                 ),
                 // tmp3 = tmp0 / tmp2
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Stack(-4),
                     asm::Operand::Reg(asm::Register::AX),
                 ),
-                asm::Instruction::Cdq,
-                asm::Instruction::Idiv(asm::Operand::Stack(-12)),
+                asm::Instruction::Cdq(AssemblyType::Longword),
+                asm::Instruction::Idiv(AssemblyType::Longword, asm::Operand::Stack(-12)),
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Reg(asm::Register::AX),
                     asm::Operand::Stack(-16),
                 ),
                 // return
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Stack(-16),
                     asm::Operand::Reg(asm::Register::AX),
                 ),
@@ -515,63 +573,88 @@ _main:
             name: "main".into(),
             global: true,
             instructions: vec![
-                asm::Instruction::AllocateStack(16),
+                asm::Instruction::Binary(
+                    asm::BinaryOp::Sub,
+                    AssemblyType::Quadword,
+                    asm::Operand::Imm(16),
+                    asm::Operand::Reg(asm::Register::SP),
+                ),
                 // tmp0 = 5 * 4
-                asm::Instruction::Mov(asm::Operand::Imm(5), asm::Operand::Stack(-4)),
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
+                    asm::Operand::Imm(5),
+                    asm::Operand::Stack(-4),
+                ),
+                asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Stack(-4),
                     asm::Operand::Reg(asm::Register::R11),
                 ),
                 asm::Instruction::Binary(
                     asm::BinaryOp::Mult,
+                    AssemblyType::Longword,
                     asm::Operand::Imm(4),
                     asm::Operand::Reg(asm::Register::R11),
                 ),
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Reg(asm::Register::R11),
                     asm::Operand::Stack(-4),
                 ),
                 // tmp1 = 4 - 5
-                asm::Instruction::Mov(asm::Operand::Imm(4), asm::Operand::Stack(-8)),
+                asm::Instruction::Mov(
+                    AssemblyType::Longword,
+                    asm::Operand::Imm(4),
+                    asm::Operand::Stack(-8),
+                ),
                 asm::Instruction::Binary(
                     asm::BinaryOp::Sub,
+                    AssemblyType::Longword,
                     asm::Operand::Imm(5),
                     asm::Operand::Stack(-8),
                 ),
                 // tmp2 = tmp1 & 6
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Stack(-8),
                     asm::Operand::Reg(asm::Register::R10),
                 ),
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Reg(asm::Register::R10),
                     asm::Operand::Stack(-12),
                 ),
                 asm::Instruction::Binary(
                     asm::BinaryOp::BitwiseAnd,
+                    AssemblyType::Longword,
                     asm::Operand::Imm(6),
                     asm::Operand::Stack(-12),
                 ),
                 // tmp3 = tmp0 | tmp2
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Stack(-4),
                     asm::Operand::Reg(asm::Register::R10),
                 ),
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Reg(asm::Register::R10),
                     asm::Operand::Stack(-16),
                 ),
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Stack(-12),
                     asm::Operand::Reg(asm::Register::R10),
                 ),
                 asm::Instruction::Binary(
                     asm::BinaryOp::BitwiseOr,
+                    AssemblyType::Longword,
                     asm::Operand::Reg(asm::Register::R10),
                     asm::Operand::Stack(-16),
                 ),
                 // return
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Stack(-16),
                     asm::Operand::Reg(asm::Register::AX),
                 ),
@@ -619,39 +702,55 @@ _main:
             name: "main".into(),
             global: true,
             instructions: vec![
-                asm::Instruction::AllocateStack(8),
+                asm::Instruction::Binary(
+                    asm::BinaryOp::Sub,
+                    AssemblyType::Quadword,
+                    asm::Operand::Imm(8),
+                    asm::Operand::Reg(asm::Register::SP),
+                ),
                 // tmp0 = 5 * 4
-                asm::Instruction::Mov(asm::Operand::Imm(5), asm::Operand::Stack(-4)),
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
+                    asm::Operand::Imm(5),
+                    asm::Operand::Stack(-4),
+                ),
+                asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Stack(-4),
                     asm::Operand::Reg(asm::Register::R11),
                 ),
                 asm::Instruction::Binary(
                     asm::BinaryOp::Mult,
+                    AssemblyType::Longword,
                     asm::Operand::Imm(4),
                     asm::Operand::Reg(asm::Register::R11),
                 ),
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Reg(asm::Register::R11),
                     asm::Operand::Stack(-4),
                 ),
                 // tmp1 = tmp.0 << 2
                 // moves tmp.8 into tmp.1 via reg10
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Stack(-4),
                     asm::Operand::Reg(asm::Register::R10),
                 ),
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Reg(asm::Register::R10),
                     asm::Operand::Stack(-8),
                 ),
                 asm::Instruction::Binary(
                     asm::BinaryOp::ShiftLeft,
+                    AssemblyType::Longword,
                     asm::Operand::Imm(2),
                     asm::Operand::Stack(-8),
                 ),
                 // return
                 asm::Instruction::Mov(
+                    AssemblyType::Longword,
                     asm::Operand::Stack(-8),
                     asm::Operand::Reg(asm::Register::AX),
                 ),
@@ -691,22 +790,44 @@ _main:
         let ast = Asm::Program(vec![TopLevel::Func(Function {
             name: "main".into(),
             instructions: vec![
-                Instruction::AllocateStack(16),
-                Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),
-                Instruction::Cmp(Operand::Imm(0), Operand::Stack(-4)),
+                Instruction::Binary(
+                    BinaryOp::Sub,
+                    AssemblyType::Quadword,
+                    Operand::Imm(16),
+                    Operand::Reg(Register::SP),
+                ),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(5), Operand::Stack(-4)),
+                Instruction::Cmp(AssemblyType::Longword, Operand::Imm(0), Operand::Stack(-4)),
                 Instruction::JmpCC(CondCode::E, "and_expr_false.0".into()),
-                Instruction::Mov(Operand::Imm(1), Operand::Stack(-8)),
-                Instruction::Binary(BinaryOp::Add, Operand::Imm(2), Operand::Stack(-8)),
-                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::R10)),
-                Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-12)),
-                Instruction::Cmp(Operand::Imm(0), Operand::Stack(-12)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(1), Operand::Stack(-8)),
+                Instruction::Binary(
+                    BinaryOp::Add,
+                    AssemblyType::Longword,
+                    Operand::Imm(2),
+                    Operand::Stack(-8),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-8),
+                    Operand::Reg(Register::R10),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Reg(Register::R10),
+                    Operand::Stack(-12),
+                ),
+                Instruction::Cmp(AssemblyType::Longword, Operand::Imm(0), Operand::Stack(-12)),
                 Instruction::JmpCC(CondCode::E, "and_expr_false.0".into()),
-                Instruction::Mov(Operand::Imm(1), Operand::Stack(-16)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(1), Operand::Stack(-16)),
                 Instruction::Jmp("and_expr_end.1".into()),
                 Instruction::Label("and_expr_false.0".into()),
-                Instruction::Mov(Operand::Imm(0), Operand::Stack(-16)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(0), Operand::Stack(-16)),
                 Instruction::Label("and_expr_end.1".into()),
-                Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::AX)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-16),
+                    Operand::Reg(Register::AX),
+                ),
                 Instruction::Ret,
             ],
             global: true,

@@ -1,9 +1,17 @@
 // Responsible for taking a TACKY AST
 // and converting to an assembly AST
+use crate::ast::Const;
 use crate::semantic_analysis;
+use crate::semantic_analysis::SymbolTable;
+use crate::symbol_table;
+use crate::symbol_table::BackendSymbolTable;
 use crate::tacky;
+use crate::tacky::Val;
+use crate::types::AssemblyType;
+use crate::types::CType;
 use crate::types::StaticInit;
 use std::collections::HashMap;
+use std::i32;
 
 #[derive(Debug, PartialEq)]
 pub enum Asm {
@@ -16,7 +24,8 @@ pub enum TopLevel {
     StaticVariable {
         identifier: String,
         global: bool,
-        init: usize,
+        init: StaticInit,
+        alignment: usize,
     },
 }
 
@@ -57,21 +66,20 @@ pub enum CondCode {
 
 #[derive(Debug, PartialEq)]
 pub enum Instruction {
-    Mov(Operand, Operand),
-    Unary(UnaryOp, Operand),
-    Binary(BinaryOp, Operand, Operand),
-    Idiv(Operand),
-    Cdq,
-    AllocateStack(usize),
+    Mov(AssemblyType, Operand, Operand),
+    Movsx(Operand, Operand), // src, dst
+    Unary(UnaryOp, AssemblyType, Operand),
+    Binary(BinaryOp, AssemblyType, Operand, Operand),
+    Idiv(AssemblyType, Operand),
+    Cdq(AssemblyType),
     Ret,
     // relational operation instructions
-    Cmp(Operand, Operand),
+    Cmp(AssemblyType, Operand, Operand),
     Jmp(String),              //identifier
     JmpCC(CondCode, String),  //conditional jump, eg jmpne to identifier
     SetCC(CondCode, Operand), //conditional set, eg setl
     Label(String),
     // function call instructions
-    DeallocateStack(usize),
     Push(Operand),
     Call(String),
 }
@@ -98,6 +106,7 @@ pub enum Register {
     R9,
     R10,
     R11,
+    SP,
 }
 
 #[derive(Debug, Default)]
@@ -107,22 +116,25 @@ struct AsmGenerator {
 }
 
 impl Asm {
-    pub fn from_tacky(tacky: tacky::AST, symbol_table: &semantic_analysis::SymbolTable) -> Asm {
-        let mut asm = Self::parse_program(&tacky);
+    pub fn from_tacky(tacky: tacky::AST, symbol_table: semantic_analysis::SymbolTable) -> Asm {
+        let mut asm = Self::parse_program(&tacky, &symbol_table);
         let mut generator = AsmGenerator::default();
+        let symbol_table = symbol_table::backend_symbol_table_from_symbol_table(symbol_table);
         Self::fixup(&mut asm, &mut generator, symbol_table);
         asm
     }
 
-    fn parse_program(tacky: &tacky::AST) -> Asm {
+    fn parse_program(tacky: &tacky::AST, symbol_table: &semantic_analysis::SymbolTable) -> Asm {
         match tacky {
             tacky::AST::Program(ins) => {
                 let ins = ins
                     .into_iter()
                     .map(|instruct| match instruct {
-                        func @ tacky::TopLevel::Function { .. } => Self::parse_function(func),
+                        func @ tacky::TopLevel::Function { .. } => {
+                            Self::parse_function(func, symbol_table)
+                        }
                         sv @ tacky::TopLevel::StaticVariable { .. } => {
-                            Self::parse_static_variable(sv)
+                            Self::parse_static_variable(sv, symbol_table)
                         }
                     })
                     .collect::<Vec<_>>();
@@ -131,7 +143,7 @@ impl Asm {
         }
     }
 
-    fn parse_static_variable(sv: &tacky::TopLevel) -> TopLevel {
+    fn parse_static_variable(sv: &tacky::TopLevel, symbol_table: &SymbolTable) -> TopLevel {
         let tacky::TopLevel::StaticVariable {
             identifier,
             global,
@@ -141,19 +153,20 @@ impl Asm {
         else {
             panic!();
         };
-        // TODO!
-        let init = match init {
-            StaticInit::IntInit(i) => *i as usize,
-            StaticInit::LongInit(i) => *i as usize,
-        };
+        let assembly_type = get_assembly_type_from_var_name(identifier, symbol_table);
+        let alignment = alignment_for_assembly_type(&assembly_type);
         TopLevel::StaticVariable {
             identifier: identifier.clone(),
             global: *global,
-            init: init,
+            init: *init,
+            alignment,
         }
     }
 
-    fn parse_function(func: &tacky::TopLevel) -> TopLevel {
+    fn parse_function(
+        func: &tacky::TopLevel,
+        symbol_table: &semantic_analysis::SymbolTable,
+    ) -> TopLevel {
         let tacky::TopLevel::Function {
             name,
             instructions,
@@ -179,7 +192,9 @@ impl Asm {
         for (idx, p) in register_args.enumerate() {
             debug_assert!(idx < 6);
             let reg = registers[idx];
+            let assembly_type = get_assembly_type_from_var_name(p, symbol_table);
             base_insns.push(Instruction::Mov(
+                assembly_type,
                 Operand::Reg(reg),
                 Operand::Pseudo(p.into()),
             ));
@@ -189,13 +204,15 @@ impl Asm {
                 .try_into()
                 .expect("Overflow when mapping function params to stack offsets");
             let offset: i32 = 16 + (8 * idx);
+            let assembly_type = get_assembly_type_from_var_name(p, symbol_table);
             base_insns.push(Instruction::Mov(
+                assembly_type,
                 Operand::Stack(offset),
                 Operand::Pseudo(p.into()),
             ));
         }
 
-        let instructions = Self::parse_instructions(&instructions);
+        let instructions = Self::parse_instructions(&instructions, symbol_table);
         base_insns.extend(instructions);
         TopLevel::Func(Function {
             name: name.into(),
@@ -204,64 +221,91 @@ impl Asm {
         })
     }
 
-    fn parse_instructions(ins: &[tacky::Instruction]) -> Vec<Instruction> {
+    fn parse_instructions(
+        ins: &[tacky::Instruction],
+        symbol_table: &semantic_analysis::SymbolTable,
+    ) -> Vec<Instruction> {
         use Instruction::*;
         use tacky::Instruction as TIns;
         use tacky::UnaryOp as TUnaryOp;
         ins.iter()
             .flat_map(|instruction| match instruction {
-                TIns::Ret(val) => vec![Mov(val.into(), Operand::Reg(Register::AX)), Ret],
+                TIns::Ret(val) => {
+                    let assembly_type = get_assembly_type_from_val(&val, symbol_table);
+                    vec![
+                        Mov(assembly_type, val.into(), Operand::Reg(Register::AX)),
+                        Ret,
+                    ]
+                }
                 TIns::Unary { op, src, dst } => match op {
                     TUnaryOp::Not => {
+                        let a1 = get_assembly_type_from_val(src, symbol_table);
+                        let a2 = get_assembly_type_from_val(dst, symbol_table);
                         // !x is the same as x==0, so compare
                         // then zero out dest addr and check if cmp returned equal
                         vec![
-                            Cmp(Operand::Imm(0), src.into()),
-                            Mov(Operand::Imm(0), dst.into()),
+                            Cmp(a1, Operand::Imm(0), src.into()),
+                            Mov(a2, Operand::Imm(0), dst.into()),
                             SetCC(CondCode::E, dst.into()),
                         ]
                     }
-                    o => vec![Mov(src.into(), dst.into()), Unary(o.into(), dst.into())],
+                    o => {
+                        let assembly_type = get_assembly_type_from_val(&src, symbol_table);
+                        vec![
+                            Mov(assembly_type, src.into(), dst.into()),
+                            Unary(o.into(), assembly_type, dst.into()),
+                        ]
+                    }
                 },
                 TIns::Binary {
                     op: tacky::BinaryOp::Divide,
                     src1,
                     src2,
                     dst,
-                } => vec![
-                    Mov(src1.into(), Operand::Reg(Register::AX)),
-                    Cdq,
-                    Idiv(src2.into()),
-                    Mov(Operand::Reg(Register::AX), dst.into()),
-                ],
+                } => {
+                    let assembly_type = get_assembly_type_from_val(&src1, symbol_table);
+                    vec![
+                        Mov(assembly_type, src1.into(), Operand::Reg(Register::AX)),
+                        Cdq(assembly_type),
+                        Idiv(assembly_type, src2.into()),
+                        Mov(assembly_type, Operand::Reg(Register::AX), dst.into()),
+                    ]
+                }
                 TIns::Binary {
                     op: tacky::BinaryOp::Remainder,
                     src1,
                     src2,
                     dst,
-                } => vec![
-                    Mov(src1.into(), Operand::Reg(Register::AX)),
-                    Cdq,
-                    Idiv(src2.into()),
-                    Mov(Operand::Reg(Register::DX), dst.into()),
-                ],
+                } => {
+                    let assembly_type = get_assembly_type_from_val(&src1, symbol_table);
+                    vec![
+                        Mov(assembly_type, src1.into(), Operand::Reg(Register::AX)),
+                        Cdq(assembly_type),
+                        Idiv(assembly_type, src2.into()),
+                        Mov(assembly_type, Operand::Reg(Register::DX), dst.into()),
+                    ]
+                }
                 // SHIFTRIGHT:
-                // since we need to sign extend for arithmetic we can use cdq for this
                 // TODO: maybe if src1 isn't a negative we avoid the sign extension
                 TIns::Binary {
                     op: tacky::BinaryOp::ShiftRight,
                     src1,
                     src2,
                     dst,
-                } => vec![
-                    Mov(src1.into(), Operand::Reg(Register::AX)),
-                    Binary(
-                        BinaryOp::ShiftRight,
-                        src2.into(),
-                        Operand::Reg(Register::AX),
-                    ),
-                    Mov(Operand::Reg(Register::AX), dst.into()),
-                ],
+                } => {
+                    // shouldn't expect a shift to change type
+                    let assembly_type = get_assembly_type_from_val(src1, symbol_table);
+                    vec![
+                        Mov(assembly_type, src1.into(), Operand::Reg(Register::AX)),
+                        Binary(
+                            BinaryOp::ShiftRight,
+                            assembly_type,
+                            src2.into(),
+                            Operand::Reg(Register::AX),
+                        ),
+                        Mov(assembly_type, Operand::Reg(Register::AX), dst.into()),
+                    ]
+                }
                 TIns::Binary {
                     op,
                     src1,
@@ -276,9 +320,10 @@ impl Asm {
                     | tacky::BinaryOp::Xor
                     | tacky::BinaryOp::ShiftLeft => {
                         let o = op.into();
+                        let assembly_type = get_assembly_type_from_val(&src1, symbol_table);
                         vec![
-                            Mov(src1.into(), dst.into()),
-                            Binary(o, src2.into(), dst.into()),
+                            Mov(assembly_type, src1.into(), dst.into()),
+                            Binary(o, assembly_type, src2.into(), dst.into()),
                         ]
                     }
                     tacky::BinaryOp::Equal
@@ -287,36 +332,54 @@ impl Asm {
                     | tacky::BinaryOp::LessOrEqual
                     | tacky::BinaryOp::GreaterThan
                     | tacky::BinaryOp::GreaterOrEqual => {
-                        Self::parse_binary_relational_ops(op, src1, src2, dst)
+                        Self::parse_binary_relational_ops(op, src1, src2, dst, symbol_table)
                     }
-                    tacky::BinaryOp::And | tacky::BinaryOp::Or => todo!(),
+                    tacky::BinaryOp::And | tacky::BinaryOp::Or => {
+                        unreachable!("BinAnd/BinOr are lowered to jumps")
+                    }
                     tacky::BinaryOp::Remainder
                     | tacky::BinaryOp::Divide
                     | tacky::BinaryOp::ShiftRight => unreachable!(),
                 },
                 TIns::JumpIfZero { cond, target } => {
                     // comp condition to 0, then jump if equal to target
+                    let assembly_type = get_assembly_type_from_val(cond, symbol_table);
                     vec![
-                        Cmp(Operand::Imm(0), cond.into()),
+                        Cmp(assembly_type, Operand::Imm(0), cond.into()),
                         JmpCC(CondCode::E, target.clone()),
                     ]
                 }
                 TIns::JumpIfNotZero { cond, target } => {
+                    let assembly_type = get_assembly_type_from_val(cond, symbol_table);
                     vec![
-                        Cmp(Operand::Imm(0), cond.into()),
+                        Cmp(assembly_type, Operand::Imm(0), cond.into()),
                         JmpCC(CondCode::NE, target.clone()),
                     ]
                 }
                 TIns::Label(ident) => vec![Label(ident.clone())],
-                TIns::Copy { src, dst } => vec![Mov(src.into(), dst.into())],
+                TIns::Copy { src, dst } => {
+                    let assembly_type = get_assembly_type_from_val(src, symbol_table);
+                    vec![Mov(assembly_type, src.into(), dst.into())]
+                }
                 TIns::Jump(ident) => vec![Jmp(ident.clone())],
-                TIns::FunCall { name, args, dst } => Self::parse_function_call(name, args, dst),
-                TIns::SignExtend { .. } | TIns::Truncate { .. } => todo!(),
+                TIns::FunCall { name, args, dst } => {
+                    Self::parse_function_call(name, args, dst, symbol_table)
+                }
+                TIns::SignExtend { src, dst } => vec![Movsx(src.into(), dst.into())],
+                TIns::Truncate { src, dst } => {
+                    // truncate by just moving low 4 bytes into destination
+                    vec![Mov(AssemblyType::Longword, src.into(), dst.into())]
+                }
             })
             .collect::<Vec<_>>()
     }
 
-    fn parse_function_call(name: &str, args: &[tacky::Val], dst: &tacky::Val) -> Vec<Instruction> {
+    fn parse_function_call(
+        name: &str,
+        args: &[tacky::Val],
+        dst: &tacky::Val,
+        symbol_table: &SymbolTable,
+    ) -> Vec<Instruction> {
         let registers = [
             Register::DI,
             Register::SI,
@@ -335,23 +398,45 @@ impl Asm {
 
         let mut instructions = vec![];
         if stack_padding != 0 {
-            instructions.push(Instruction::AllocateStack(stack_padding));
+            instructions.push(Instruction::Binary(
+                BinaryOp::Sub,
+                AssemblyType::Quadword,
+                Operand::Imm(stack_padding),
+                Operand::Reg(Register::SP),
+            ));
         }
         // pass register arguments in order
         for (idx, arg) in register_args.enumerate() {
             debug_assert!(idx < registers.len());
             let reg = registers[idx];
-            instructions.push(Instruction::Mov(arg.into(), Operand::Reg(reg)));
+            let assembly_type = get_assembly_type_from_val(arg, symbol_table);
+            instructions.push(Instruction::Mov(
+                assembly_type,
+                arg.into(),
+                Operand::Reg(reg),
+            ));
         }
 
         // pass stack arguments in reverse order
         for arg in stack_args.rev() {
+            let assembly_type = get_assembly_type_from_val(arg, symbol_table);
             let op: Operand = arg.into();
-            match op {
-                x @ (Operand::Reg(_) | Operand::Imm(_)) => instructions.push(Instruction::Push(x)),
-                other_op => {
-                    instructions.push(Instruction::Mov(other_op, Operand::Reg(Register::AX)));
-                    instructions.push(Instruction::Push(Operand::Reg(Register::AX)));
+            if assembly_type == AssemblyType::Quadword {
+                // we can push 8 byte values onto the stack without issue.
+                instructions.push(Instruction::Push(op));
+            } else {
+                match op {
+                    x @ (Operand::Reg(_) | Operand::Imm(_)) => {
+                        instructions.push(Instruction::Push(x))
+                    }
+                    other_op => {
+                        instructions.push(Instruction::Mov(
+                            AssemblyType::Longword,
+                            other_op,
+                            Operand::Reg(Register::AX),
+                        ));
+                        instructions.push(Instruction::Push(Operand::Reg(Register::AX)));
+                    }
                 }
             }
         }
@@ -363,10 +448,20 @@ impl Asm {
         let stack_args_len = args.iter().skip(6).len();
         let bytes_to_remove = 8 * stack_args_len + stack_padding;
         if bytes_to_remove != 0 {
-            instructions.push(Instruction::DeallocateStack(bytes_to_remove));
+            instructions.push(Instruction::Binary(
+                BinaryOp::Add,
+                AssemblyType::Quadword,
+                Operand::Imm(bytes_to_remove),
+                Operand::Reg(Register::SP),
+            ));
         }
         // just move the function return value to the destination register
-        instructions.push(Instruction::Mov(Operand::Reg(Register::AX), dst.into()));
+        let assembly_type = get_assembly_type_from_val(dst, symbol_table);
+        instructions.push(Instruction::Mov(
+            assembly_type,
+            Operand::Reg(Register::AX),
+            dst.into(),
+        ));
         instructions
     }
 
@@ -375,6 +470,7 @@ impl Asm {
         src1: &tacky::Val,
         src2: &tacky::Val,
         dst: &tacky::Val,
+        symbol_table: &SymbolTable,
     ) -> Vec<Instruction> {
         use Instruction::*;
         use tacky::BinaryOp as TBO;
@@ -389,27 +485,25 @@ impl Asm {
                 panic!("Unexpected tacky BinaryOp {op:?} when constructing relational instruction")
             }
         };
+        let a1 = get_assembly_type_from_val(src1, symbol_table);
+        let a2 = get_assembly_type_from_val(dst, symbol_table);
         // turns foo = x < y into
         // cmp y, x AKA x - y
         // zeros out foo
         // setl foo
         vec![
-            Cmp(src2.into(), src1.into()),
-            Mov(Operand::Imm(0), dst.clone().into()),
+            Cmp(a1, src2.into(), src1.into()),
+            Mov(a2, Operand::Imm(0), dst.clone().into()),
             SetCC(cond_code, dst.into()),
         ]
     }
 
-    fn fixup(
-        asm: &mut Asm,
-        generator: &mut AsmGenerator,
-        symbol_table: &semantic_analysis::SymbolTable,
-    ) {
+    fn fixup(asm: &mut Asm, generator: &mut AsmGenerator, symbol_table: BackendSymbolTable) {
         match asm {
             Asm::Program(funcs) => {
                 for func in funcs {
                     if let TopLevel::Func(func) = func {
-                        Self::fixup_function(func, generator, symbol_table);
+                        Self::fixup_function(func, generator, &symbol_table);
                     }
                 }
             }
@@ -418,7 +512,7 @@ impl Asm {
     fn fixup_function(
         func: &mut Function,
         generator: &mut AsmGenerator,
-        symbol_table: &semantic_analysis::SymbolTable,
+        symbol_table: &BackendSymbolTable,
     ) {
         let Function {
             name: _name,
@@ -434,24 +528,28 @@ impl Asm {
     fn fixup_pseudos_in_instructions(
         ins: &mut [Instruction],
         generator: &mut AsmGenerator,
-        symbol_table: &semantic_analysis::SymbolTable,
+        symbol_table: &BackendSymbolTable,
     ) {
         ins.iter_mut().for_each(|instruction| match instruction {
-            Instruction::Mov(src, dst) => {
+            Instruction::Mov(_, src, dst) => {
                 *src = Self::replace_pseudo_in_op(src, generator, symbol_table);
                 *dst = Self::replace_pseudo_in_op(dst, generator, symbol_table);
             }
-            Instruction::Unary(_op, dst) => {
+            Instruction::Movsx(src, dst) => {
+                *src = Self::replace_pseudo_in_op(src, generator, symbol_table);
                 *dst = Self::replace_pseudo_in_op(dst, generator, symbol_table);
             }
-            Instruction::Binary(_op, src1, src2) => {
+            Instruction::Unary(_op, _, dst) => {
+                *dst = Self::replace_pseudo_in_op(dst, generator, symbol_table);
+            }
+            Instruction::Binary(_op, _, src1, src2) => {
                 *src1 = Self::replace_pseudo_in_op(src1, generator, symbol_table);
                 *src2 = Self::replace_pseudo_in_op(src2, generator, symbol_table);
             }
-            Instruction::Idiv(src) => {
+            Instruction::Idiv(_, src) => {
                 *src = Self::replace_pseudo_in_op(src, generator, symbol_table);
             }
-            Instruction::Cmp(src, dst) => {
+            Instruction::Cmp(_, src, dst) => {
                 *src = Self::replace_pseudo_in_op(src, generator, symbol_table);
                 *dst = Self::replace_pseudo_in_op(dst, generator, symbol_table);
             }
@@ -466,24 +564,30 @@ impl Asm {
     fn replace_pseudo_in_op(
         op: &Operand,
         generator: &mut AsmGenerator,
-        symbol_table: &semantic_analysis::SymbolTable,
+        symbol_table: &BackendSymbolTable,
     ) -> Operand {
         match op {
             Operand::Pseudo(var) => {
                 // if the pseudo has static linkage, we use a Data operand. Otherwise, fixup with a
                 // stack location.
-                if let Some((_ctype, attr)) = symbol_table.get(var) {
-                    // how could it be missing?
-                    if let semantic_analysis::IdentifierAttrs::StaticAttr { .. } = attr {
-                        return Operand::Data(var.clone());
-                    }
+                let entry = symbol_table
+                    .get(var)
+                    .expect("Should have an entry in backend symbol table for {var:?}");
+                let symbol_table::BackendSymTableEntry::ObjEntry { ty, is_static } = entry else {
+                    unreachable!(
+                        "Got a non-object entry in the backend symbol table when replacing pseudos: {:?}",
+                        entry
+                    );
+                };
+                if *is_static {
+                    return Operand::Data(var.clone());
                 };
 
                 generator
                     .identifiers
                     .entry(var.clone())
                     .or_insert_with(|| {
-                        let next_offset = generator.stack_offset - 4;
+                        let next_offset = Self::next_aligned_offset(generator.stack_offset, ty);
                         generator.stack_offset = next_offset;
                         Operand::Stack(next_offset)
                     })
@@ -493,13 +597,31 @@ impl Asm {
         }
     }
 
+    fn next_aligned_offset(offset: i32, ty: &AssemblyType) -> i32 {
+        // ensures that everything is aligned. Quadwords need to be
+        // 8-byte aligned.
+        if ty == &AssemblyType::Longword {
+            return offset - 4;
+        }
+        let expected_offset = offset - 8;
+        if expected_offset % 8 == 0 {
+            return expected_offset;
+        }
+        (expected_offset as f32 / 8.0).floor() as i32 * 8
+    }
+
     fn insert_alloc_stack_func(func: &mut Function, generator: &AsmGenerator) {
         let old_ins = std::mem::take(&mut func.instructions);
         // round stack offset to next multiple of 16 for easier alignment
         let multiple = generator.stack_offset as f32 / -16.0;
         let rounded = multiple.ceil() as usize;
         let new_offset = rounded * 16;
-        let mut v = vec![Instruction::AllocateStack(new_offset)];
+        let mut v = vec![Instruction::Binary(
+            BinaryOp::Sub,
+            AssemblyType::Quadword,
+            Operand::Imm(new_offset),
+            Operand::Reg(Register::SP),
+        )];
         for i in old_ins.into_iter() {
             v.push(i);
         }
@@ -511,19 +633,97 @@ impl Asm {
         let mut v = Vec::with_capacity(old_ins.len());
         for ins in old_ins.into_iter() {
             match ins {
-                Instruction::Mov(src @ Operand::Stack(_), dst @ Operand::Stack(_))
-                | Instruction::Mov(src @ Operand::Data(_), dst @ Operand::Data(_))
-                | Instruction::Mov(src @ Operand::Stack(_), dst @ Operand::Data(_))
-                | Instruction::Mov(src @ Operand::Data(_), dst @ Operand::Stack(_)) => {
+                Instruction::Mov(at, src @ Operand::Stack(_), dst @ Operand::Stack(_))
+                | Instruction::Mov(at, src @ Operand::Data(_), dst @ Operand::Data(_))
+                | Instruction::Mov(at, src @ Operand::Stack(_), dst @ Operand::Data(_))
+                | Instruction::Mov(at, src @ Operand::Data(_), dst @ Operand::Stack(_)) => {
                     // movl can't move from two memory addrs, so
                     // use a temporary variable along the way in %r10d
-                    v.push(Instruction::Mov(src, Operand::Reg(Register::R10)));
-                    v.push(Instruction::Mov(Operand::Reg(Register::R10), dst));
+                    v.push(Instruction::Mov(at, src, Operand::Reg(Register::R10)));
+                    v.push(Instruction::Mov(at, Operand::Reg(Register::R10), dst));
                 }
-                Instruction::Binary(binop, src @ Operand::Stack(_), dst @ Operand::Stack(_))
-                | Instruction::Binary(binop, src @ Operand::Data(_), dst @ Operand::Data(_))
-                | Instruction::Binary(binop, src @ Operand::Stack(_), dst @ Operand::Data(_))
-                | Instruction::Binary(binop, src @ Operand::Data(_), dst @ Operand::Stack(_))
+                Instruction::Mov(AssemblyType::Longword, src @ Operand::Imm(i), dst)
+                    if i > u32::MAX as usize =>
+                {
+                    // Truncate gets rewritten to a mov, and if i32 doesn't fit then we want to
+                    // probably just manually truncate
+                    v.push(Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Imm(i & 0xFFFF_FFFF), // keep bottom 32 bits
+                        dst,
+                    ))
+                }
+                Instruction::Movsx(_, Operand::Imm(_))
+                | Instruction::Movsx(_, Operand::Pseudo(_)) => unreachable!(),
+                Instruction::Movsx(src @ Operand::Imm(_), dst @ Operand::Stack(_))
+                | Instruction::Movsx(src @ Operand::Imm(_), dst @ Operand::Data(_)) => {
+                    // need to use two registers here, R10 and R11
+                    // MOV src as a longword into R10, sign extend move into R11,
+                    // then MOV as a quadword into dst
+                    v.extend(vec![
+                        Instruction::Mov(AssemblyType::Longword, src, Operand::Reg(Register::R10)),
+                        Instruction::Movsx(
+                            Operand::Reg(Register::R10),
+                            Operand::Reg(Register::R11),
+                        ),
+                        Instruction::Mov(AssemblyType::Quadword, Operand::Reg(Register::R11), dst),
+                    ])
+                }
+                Instruction::Movsx(src @ Operand::Imm(_), dst @ Operand::Reg(_)) => {
+                    // MOVSX cant use an immediate as a source, so move into R10
+                    v.extend(vec![
+                        Instruction::Mov(AssemblyType::Longword, src, Operand::Reg(Register::R10)),
+                        Instruction::Movsx(Operand::Reg(Register::R10), dst),
+                    ])
+                }
+                Instruction::Movsx(src, dst @ Operand::Stack(_))
+                | Instruction::Movsx(src, dst @ Operand::Data(_)) => {
+                    // MOVSX can't use a memory address as a destiation, so we movsx into a
+                    // register and then MOV into the address.
+                    v.extend(vec![
+                        Instruction::Movsx(src, Operand::Reg(Register::R10)),
+                        Instruction::Mov(AssemblyType::Quadword, Operand::Reg(Register::R10), dst),
+                    ])
+                }
+                Instruction::Binary(
+                    binop @ BinaryOp::Add,
+                    AssemblyType::Quadword,
+                    src @ Operand::Imm(i),
+                    dst,
+                )
+                | Instruction::Binary(
+                    binop @ BinaryOp::Sub,
+                    AssemblyType::Quadword,
+                    src @ Operand::Imm(i),
+                    dst,
+                )
+                | Instruction::Binary(
+                    binop @ BinaryOp::Mult,
+                    AssemblyType::Quadword,
+                    src @ Operand::Imm(i),
+                    dst,
+                ) if i > i32::MAX as usize => {
+                    // addq, subq, imulq require that immediates fit in an int. If not, we use an
+                    // intermediary register.
+                    v.extend(vec![
+                        Instruction::Mov(AssemblyType::Quadword, src, Operand::Reg(Register::R10)),
+                        Instruction::Binary(
+                            binop,
+                            AssemblyType::Quadword,
+                            Operand::Reg(Register::R10),
+                            dst,
+                        ),
+                    ])
+                }
+                Instruction::Binary(
+                    binop,
+                    at,
+                    src @ Operand::Stack(_),
+                    dst @ Operand::Stack(_),
+                )
+                | Instruction::Binary(binop, at, src @ Operand::Data(_), dst @ Operand::Data(_))
+                | Instruction::Binary(binop, at, src @ Operand::Stack(_), dst @ Operand::Data(_))
+                | Instruction::Binary(binop, at, src @ Operand::Data(_), dst @ Operand::Stack(_))
                     if matches!(
                         binop,
                         BinaryOp::Add
@@ -535,60 +735,114 @@ impl Asm {
                 {
                     // some instructions can't operate from two memory addrs, so
                     // use a temporary variable along the way in %r10d
-                    v.push(Instruction::Mov(src, Operand::Reg(Register::R10)));
-                    v.push(Instruction::Binary(binop, Operand::Reg(Register::R10), dst));
+                    v.push(Instruction::Mov(at, src, Operand::Reg(Register::R10)));
+                    v.push(Instruction::Binary(
+                        binop,
+                        at,
+                        Operand::Reg(Register::R10),
+                        dst,
+                    ));
                 }
-                Instruction::Binary(binop, src, dst)
-                    if matches!(binop, BinaryOp::ShiftLeft | BinaryOp::ShiftRight) =>
-                {
+                Instruction::Binary(binop @ BinaryOp::ShiftLeft, at, src, dst)
+                | Instruction::Binary(binop @ BinaryOp::ShiftRight, at, src, dst) => {
                     // shift left/right cannot use a memory address as a source.
                     // We move the data to a scratch register. We write to ECX,
                     // then read from the lower 8 bits.
                     if let Operand::Stack(n) = src {
                         v.push(Instruction::Mov(
+                            at,
                             Operand::Stack(n),
                             Operand::Reg(Register::CX),
                         ));
-                        v.push(Instruction::Binary(binop, Operand::Reg(Register::CX), dst));
+                        v.push(Instruction::Binary(
+                            binop,
+                            at,
+                            Operand::Reg(Register::CX),
+                            dst,
+                        ));
                     } else {
-                        v.push(Instruction::Binary(binop, src, dst));
+                        v.push(Instruction::Binary(binop, at, src, dst));
                     }
                 }
-                Instruction::Binary(BinaryOp::Mult, src, dst @ Operand::Stack(_)) => {
+                Instruction::Binary(BinaryOp::Mult, at, src, dst @ Operand::Stack(_)) => {
                     // imul cannot take an addr as a destination, regardless of src.
                     // Rewrite via register %r11d
                     // Move dst into r11d
                     // Multiply src and r11d, store in r11d
                     // Move r11d into dst
-                    v.push(Instruction::Mov(dst.clone(), Operand::Reg(Register::R11)));
+                    v.push(Instruction::Mov(
+                        at,
+                        dst.clone(),
+                        Operand::Reg(Register::R11),
+                    ));
                     v.push(Instruction::Binary(
                         BinaryOp::Mult,
+                        at,
                         src,
                         Operand::Reg(Register::R11),
                     ));
-                    v.push(Instruction::Mov(Operand::Reg(Register::R11), dst));
+                    v.push(Instruction::Mov(at, Operand::Reg(Register::R11), dst));
                 }
-                Instruction::Idiv(imm @ Operand::Imm(_)) => {
+                Instruction::Idiv(at, imm @ Operand::Imm(_)) => {
                     // idiv cannot operate on immediates, so move to a scratch register
-                    v.push(Instruction::Mov(imm, Operand::Reg(Register::R10)));
-                    v.push(Instruction::Idiv(Operand::Reg(Register::R10)));
+                    v.push(Instruction::Mov(at, imm, Operand::Reg(Register::R10)));
+                    v.push(Instruction::Idiv(at, Operand::Reg(Register::R10)));
                 }
-                Instruction::Cmp(src @ Operand::Stack(_), dst @ Operand::Stack(_))
-                | Instruction::Cmp(src @ Operand::Data(_), dst @ Operand::Data(_))
-                | Instruction::Cmp(src @ Operand::Stack(_), dst @ Operand::Data(_))
-                | Instruction::Cmp(src @ Operand::Data(_), dst @ Operand::Stack(_)) => {
+                Instruction::Cmp(at, src @ Operand::Stack(_), dst @ Operand::Stack(_))
+                | Instruction::Cmp(at, src @ Operand::Data(_), dst @ Operand::Data(_))
+                | Instruction::Cmp(at, src @ Operand::Stack(_), dst @ Operand::Data(_))
+                | Instruction::Cmp(at, src @ Operand::Data(_), dst @ Operand::Stack(_)) => {
                     // cmpl can't move from two memory addrs, so
                     // use a temporary variable along the way in %r10d
-                    v.push(Instruction::Mov(src, Operand::Reg(Register::R10)));
-                    v.push(Instruction::Cmp(Operand::Reg(Register::R10), dst));
+                    v.push(Instruction::Mov(at, src, Operand::Reg(Register::R10)));
+                    v.push(Instruction::Cmp(at, Operand::Reg(Register::R10), dst));
                 }
-                Instruction::Cmp(src, dst @ Operand::Imm(_)) => {
+                Instruction::Cmp(at, src, dst @ Operand::Imm(_)) => {
+                    // if we're working with quadwords and src is an immediate that doesn't fit in
+                    // an int, we'll need to move that into a register as well
+                    let mut moved_src_to_reg = false;
+                    if at == AssemblyType::Quadword {
+                        if let Operand::Imm(i) = src
+                            && i > i32::MAX as usize
+                        {
+                            v.push(Instruction::Mov(
+                                at,
+                                src.clone(),
+                                Operand::Reg(Register::R10),
+                            ));
+                            moved_src_to_reg = true;
+                        }
+                    }
                     // cmpl can't use a constant as a destination so move into reg
                     // use a temporary variable along the way in %r11d
-                    v.push(Instruction::Mov(dst.clone(), Operand::Reg(Register::R11)));
-                    v.push(Instruction::Cmp(src, Operand::Reg(Register::R11)));
+                    v.push(Instruction::Mov(
+                        at,
+                        dst.clone(),
+                        Operand::Reg(Register::R11),
+                    ));
+                    let src = if moved_src_to_reg {
+                        Operand::Reg(Register::R10)
+                    } else {
+                        src
+                    };
+                    v.push(Instruction::Cmp(at, src, Operand::Reg(Register::R11)));
                 }
-
+                Instruction::Cmp(AssemblyType::Quadword, src @ Operand::Imm(i), dst)
+                    if i > i32::MAX as usize =>
+                {
+                    // need to move src into a register
+                    v.extend(vec![
+                        Instruction::Mov(AssemblyType::Quadword, src, Operand::Reg(Register::R10)),
+                        Instruction::Cmp(AssemblyType::Quadword, Operand::Reg(Register::R10), dst),
+                    ])
+                }
+                Instruction::Push(src @ Operand::Imm(i)) if i > i32::MAX as usize => {
+                    // need to move operand into register
+                    v.extend(vec![
+                        Instruction::Mov(AssemblyType::Quadword, src, Operand::Reg(Register::R10)),
+                        Instruction::Push(Operand::Reg(Register::R10)),
+                    ])
+                }
                 i => v.push(i),
             }
         }
@@ -601,8 +855,17 @@ mod tests {
     use super::*;
     use crate::parser::Const;
     use crate::semantic_analysis;
+    use crate::symbol_table::IdentifierAttrs;
     use crate::tacky;
     use crate::tacky::UnaryOp as TUOp;
+
+    fn int_sym_table(vars: &[&str]) -> semantic_analysis::SymbolTable {
+        let mut table = semantic_analysis::SymbolTable::new();
+        for &var in vars {
+            table.insert(var.to_string(), (CType::Int, IdentifierAttrs::LocalAttr));
+        }
+        table
+    }
     #[test]
     fn basic_parse() {
         let ast = tacky::AST::Program(vec![tacky::TopLevel::Function {
@@ -618,13 +881,13 @@ mod tests {
             name: "main".into(),
             global: true,
             instructions: vec![
-                Instruction::AllocateStack(0),
-                Instruction::Mov(Operand::Imm(100), Operand::Reg(Register::AX)),
+                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(0), Operand::Reg(Register::SP)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(100), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         })]);
 
-        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
+        let assembly = Asm::from_tacky(ast, int_sym_table(&[]));
         assert_eq!(assembly, expected);
     }
 
@@ -648,15 +911,15 @@ mod tests {
             name: "main".into(),
             global: true,
             instructions: vec![
-                Instruction::AllocateStack(16),
-                Instruction::Mov(Operand::Imm(100), Operand::Stack(-4)),
-                Instruction::Unary(UnaryOp::Neg, Operand::Stack(-4)),
-                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::AX)),
+                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(100), Operand::Stack(-4)),
+                Instruction::Unary(UnaryOp::Neg, AssemblyType::Longword, Operand::Stack(-4)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         })]);
 
-        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
+        let assembly = Asm::from_tacky(ast, int_sym_table(&["tmp.0"]));
         assert_eq!(assembly, expected);
     }
 
@@ -690,21 +953,21 @@ mod tests {
             name: "main".into(),
             global: true,
             instructions: vec![
-                Instruction::AllocateStack(16),
-                Instruction::Mov(Operand::Imm(100), Operand::Stack(-4)),
-                Instruction::Unary(UnaryOp::Neg, Operand::Stack(-4)),
-                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R10)),
-                Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-8)),
-                Instruction::Unary(UnaryOp::Not, Operand::Stack(-8)),
-                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::R10)),
-                Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-12)),
-                Instruction::Unary(UnaryOp::Neg, Operand::Stack(-12)),
-                Instruction::Mov(Operand::Stack(-12), Operand::Reg(Register::AX)),
+                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(100), Operand::Stack(-4)),
+                Instruction::Unary(UnaryOp::Neg, AssemblyType::Longword, Operand::Stack(-4)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::R10)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R10), Operand::Stack(-8)),
+                Instruction::Unary(UnaryOp::Not, AssemblyType::Longword, Operand::Stack(-8)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-8), Operand::Reg(Register::R10)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R10), Operand::Stack(-12)),
+                Instruction::Unary(UnaryOp::Neg, AssemblyType::Longword, Operand::Stack(-12)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-12), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         })]);
 
-        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
+        let assembly = Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1", "tmp.2"]));
         assert_eq!(assembly, expected);
     }
 
@@ -746,32 +1009,32 @@ mod tests {
             name: "main".into(),
             global: true,
             instructions: vec![
-                Instruction::AllocateStack(16),
+                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
                 // tmp0 = 1 * 2
-                Instruction::Mov(Operand::Imm(1), Operand::Stack(-4)),
-                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R11)),
-                Instruction::Binary(BinaryOp::Mult, Operand::Imm(2), Operand::Reg(Register::R11)),
-                Instruction::Mov(Operand::Reg(Register::R11), Operand::Stack(-4)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(1), Operand::Stack(-4)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::R11)),
+                Instruction::Binary(BinaryOp::Mult, AssemblyType::Longword, Operand::Imm(2), Operand::Reg(Register::R11)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R11), Operand::Stack(-4)),
                 // tmp1 = 4 + 5
-                Instruction::Mov(Operand::Imm(4), Operand::Stack(-8)),
-                Instruction::Binary(BinaryOp::Add, Operand::Imm(5), Operand::Stack(-8)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(4), Operand::Stack(-8)),
+                Instruction::Binary(BinaryOp::Add, AssemblyType::Longword, Operand::Imm(5), Operand::Stack(-8)),
                 // tmp2 = 3 % tmp1
-                Instruction::Mov(Operand::Imm(3), Operand::Reg(Register::AX)),
-                Instruction::Cdq,
-                Instruction::Idiv(Operand::Stack(-8)),
-                Instruction::Mov(Operand::Reg(Register::DX), Operand::Stack(-12)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(3), Operand::Reg(Register::AX)),
+                Instruction::Cdq(AssemblyType::Longword),
+                Instruction::Idiv(AssemblyType::Longword, Operand::Stack(-8)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::DX), Operand::Stack(-12)),
                 // tmp3 = tmp0 / tmp2
-                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::AX)),
-                Instruction::Cdq,
-                Instruction::Idiv(Operand::Stack(-12)),
-                Instruction::Mov(Operand::Reg(Register::AX), Operand::Stack(-16)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::AX)),
+                Instruction::Cdq(AssemblyType::Longword),
+                Instruction::Idiv(AssemblyType::Longword, Operand::Stack(-12)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::AX), Operand::Stack(-16)),
                 // return
-                Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::AX)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-16), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         })]);
 
-        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
+        let assembly = Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1", "tmp.2", "tmp.3"]));
         assert_eq!(assembly, expected);
     }
 
@@ -820,42 +1083,43 @@ mod tests {
             name: "main".into(),
             global: true,
             instructions: vec![
-                Instruction::AllocateStack(32),
+                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(32), Operand::Reg(Register::SP)),
                 // tmp0 = 5 * 4 = 20
-                Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),
-                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R11)),
-                Instruction::Binary(BinaryOp::Mult, Operand::Imm(4), Operand::Reg(Register::R11)),
-                Instruction::Mov(Operand::Reg(Register::R11), Operand::Stack(-4)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(5), Operand::Stack(-4)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::R11)),
+                Instruction::Binary(BinaryOp::Mult, AssemblyType::Longword, Operand::Imm(4), Operand::Reg(Register::R11)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R11), Operand::Stack(-4)),
                 // tmp1 = tmp0 / 2 = 10
-                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::AX)),
-                Instruction::Cdq,
-                Instruction::Mov(Operand::Imm(2), Operand::Reg(Register::R10)),
-                Instruction::Idiv(Operand::Reg(Register::R10)),
-                Instruction::Mov(Operand::Reg(Register::AX), Operand::Stack(-8)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::AX)),
+                Instruction::Cdq(AssemblyType::Longword),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(2), Operand::Reg(Register::R10)),
+                Instruction::Idiv(AssemblyType::Longword, Operand::Reg(Register::R10)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::AX), Operand::Stack(-8)),
                 // tmp2 = 2 + 1  = 3
-                Instruction::Mov(Operand::Imm(2), Operand::Stack(-12)),
-                Instruction::Binary(BinaryOp::Add, Operand::Imm(1), Operand::Stack(-12)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(2), Operand::Stack(-12)),
+                Instruction::Binary(BinaryOp::Add, AssemblyType::Longword, Operand::Imm(1), Operand::Stack(-12)),
                 // tmp3 = 3 % tmp2 = 0
-                Instruction::Mov(Operand::Imm(3), Operand::Reg(Register::AX)),
-                Instruction::Cdq,
-                Instruction::Idiv(Operand::Stack(-12)),
-                Instruction::Mov(Operand::Reg(Register::DX), Operand::Stack(-16)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(3), Operand::Reg(Register::AX)),
+                Instruction::Cdq(AssemblyType::Longword),
+                Instruction::Idiv(AssemblyType::Longword, Operand::Stack(-12)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::DX), Operand::Stack(-16)),
                 // tmp3 = tmp1 - tmp3 = 10
-                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::R10)),
-                Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-20)),
-                Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::R10)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-8), Operand::Reg(Register::R10)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R10), Operand::Stack(-20)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-16), Operand::Reg(Register::R10)),
                 Instruction::Binary(
                     BinaryOp::Sub,
+                    AssemblyType::Longword,
                     Operand::Reg(Register::R10),
                     Operand::Stack(-20),
                 ),
                 // return
-                Instruction::Mov(Operand::Stack(-20), Operand::Reg(Register::AX)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-20), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         })]);
 
-        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
+        let assembly = Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1", "tmp.2", "tmp.3", "tmp.4"]));
         assert_eq!(assembly, expected);
     }
 
@@ -897,34 +1161,35 @@ mod tests {
             name: "main".into(),
             global: true,
             instructions: vec![
-                Instruction::AllocateStack(16),
+                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
                 // tmp0 = 5 * 4
-                Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),
-                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R11)),
-                Instruction::Binary(BinaryOp::Mult, Operand::Imm(4), Operand::Reg(Register::R11)),
-                Instruction::Mov(Operand::Reg(Register::R11), Operand::Stack(-4)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(5), Operand::Stack(-4)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::R11)),
+                Instruction::Binary(BinaryOp::Mult, AssemblyType::Longword, Operand::Imm(4), Operand::Reg(Register::R11)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R11), Operand::Stack(-4)),
                 // tmp1 = 4 - 5
-                Instruction::Mov(Operand::Imm(4), Operand::Stack(-8)),
-                Instruction::Binary(BinaryOp::Sub, Operand::Imm(5), Operand::Stack(-8)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(4), Operand::Stack(-8)),
+                Instruction::Binary(BinaryOp::Sub, AssemblyType::Longword, Operand::Imm(5), Operand::Stack(-8)),
                 // tmp2 = tmp1 & 6
-                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::R10)),
-                Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-12)),
-                Instruction::Binary(BinaryOp::BitwiseAnd, Operand::Imm(6), Operand::Stack(-12)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-8), Operand::Reg(Register::R10)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R10), Operand::Stack(-12)),
+                Instruction::Binary(BinaryOp::BitwiseAnd, AssemblyType::Longword, Operand::Imm(6), Operand::Stack(-12)),
                 // tmp3 = tmp0 | tmp2
-                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R10)),
-                Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-16)),
-                Instruction::Mov(Operand::Stack(-12), Operand::Reg(Register::R10)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::R10)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R10), Operand::Stack(-16)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-12), Operand::Reg(Register::R10)),
                 Instruction::Binary(
                     BinaryOp::BitwiseOr,
+                    AssemblyType::Longword,
                     Operand::Reg(Register::R10),
                     Operand::Stack(-16),
                 ),
                 // return
-                Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::AX)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-16), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         })]);
-        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
+        let assembly = Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1", "tmp.2", "tmp.3"]));
         assert_eq!(assembly, expected);
     }
 
@@ -955,23 +1220,23 @@ mod tests {
             name: "main".into(),
             global: true,
             instructions: vec![
-                Instruction::AllocateStack(16),
+                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
                 // tmp0 = 5 * 4
-                Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),
-                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R11)),
-                Instruction::Binary(BinaryOp::Mult, Operand::Imm(4), Operand::Reg(Register::R11)),
-                Instruction::Mov(Operand::Reg(Register::R11), Operand::Stack(-4)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(5), Operand::Stack(-4)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::R11)),
+                Instruction::Binary(BinaryOp::Mult, AssemblyType::Longword, Operand::Imm(4), Operand::Reg(Register::R11)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R11), Operand::Stack(-4)),
                 // tmp1 = tmp.0 << 2
                 // moves tmp.8 into tmp.1 via reg10
-                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R10)),
-                Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-8)),
-                Instruction::Binary(BinaryOp::ShiftLeft, Operand::Imm(2), Operand::Stack(-8)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::R10)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R10), Operand::Stack(-8)),
+                Instruction::Binary(BinaryOp::ShiftLeft, AssemblyType::Longword, Operand::Imm(2), Operand::Stack(-8)),
                 // return
-                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::AX)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-8), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         })]);
-        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
+        let assembly = Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1"]));
         assert_eq!(assembly, expected);
     }
 
@@ -1000,24 +1265,25 @@ mod tests {
             name: "main".into(),
             global: true,
             instructions: vec![
-                Instruction::AllocateStack(16),
+                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
                 // tmp0 = -5
-                Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),
-                Instruction::Unary(UnaryOp::Neg, Operand::Stack(-4)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(5), Operand::Stack(-4)),
+                Instruction::Unary(UnaryOp::Neg, AssemblyType::Longword, Operand::Stack(-4)),
                 // tmp1 = tmp.0 >> 30
-                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::AX)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::AX)),
                 Instruction::Binary(
                     BinaryOp::ShiftRight,
+                    AssemblyType::Longword,
                     Operand::Imm(30),
                     Operand::Reg(Register::AX),
                 ),
-                Instruction::Mov(Operand::Reg(Register::AX), Operand::Stack(-8)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::AX), Operand::Stack(-8)),
                 // return
-                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::AX)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-8), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         })]);
-        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
+        let assembly = Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1"]));
         assert_eq!(assembly, expected);
     }
 
@@ -1047,24 +1313,25 @@ mod tests {
             name: "main".into(),
             global: true,
             instructions: vec![
-                Instruction::AllocateStack(16),
+                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
                 // tmp0 = 1 + 2
-                Instruction::Mov(Operand::Imm(1), Operand::Stack(-4)),
-                Instruction::Binary(BinaryOp::Add, Operand::Imm(2), Operand::Stack(-4)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(1), Operand::Stack(-4)),
+                Instruction::Binary(BinaryOp::Add, AssemblyType::Longword, Operand::Imm(2), Operand::Stack(-4)),
                 // tmp1 = 5 << tmp.0
-                Instruction::Mov(Operand::Imm(5), Operand::Stack(-8)),
-                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::CX)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(5), Operand::Stack(-8)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::CX)),
                 Instruction::Binary(
                     BinaryOp::ShiftLeft,
+                    AssemblyType::Longword,
                     Operand::Reg(Register::CX),
                     Operand::Stack(-8),
                 ),
                 // return
-                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::AX)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-8), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         })]);
-        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
+        let assembly = Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1"]));
         assert_eq!(assembly, expected);
     }
 
@@ -1092,16 +1359,16 @@ mod tests {
             // and write to stack addr -4
             // move stack addr -4 to EAX and return
             instructions: vec![
-                Instruction::AllocateStack(16),
-                Instruction::Mov(Operand::Imm(1), Operand::Reg(Register::R11)),
-                Instruction::Cmp(Operand::Imm(0), Operand::Reg(Register::R11)),
-                Instruction::Mov(Operand::Imm(0), Operand::Stack(-4)),
+                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(1), Operand::Reg(Register::R11)),
+                Instruction::Cmp(AssemblyType::Longword, Operand::Imm(0), Operand::Reg(Register::R11)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(0), Operand::Stack(-4)),
                 Instruction::SetCC(CondCode::E, Operand::Stack(-4)),
-                Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::AX)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         })]);
-        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
+        let assembly = Asm::from_tacky(ast, int_sym_table(&["tmp.0"]));
         assert_eq!(assembly, expected);
     }
 
@@ -1125,15 +1392,15 @@ mod tests {
             name: "main".into(),
             global: true,
             instructions: vec![
-                Instruction::AllocateStack(16),
-                Instruction::Cmp(Operand::Imm(2), Operand::Stack(-4)),
-                Instruction::Mov(Operand::Imm(0), Operand::Stack(-8)),
+                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
+                Instruction::Cmp(AssemblyType::Longword, Operand::Imm(2), Operand::Stack(-4)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(0), Operand::Stack(-8)),
                 Instruction::SetCC(CondCode::GE, Operand::Stack(-8)),
-                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::AX)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-8), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         })]);
-        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
+        let assembly = Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1"]));
         assert_eq!(assembly, expected);
     }
 
@@ -1185,26 +1452,26 @@ mod tests {
             name: "main".into(),
             global: true,
             instructions: vec![
-                Instruction::AllocateStack(16),
-                Instruction::Mov(Operand::Imm(5), Operand::Stack(-4)),
-                Instruction::Cmp(Operand::Imm(0), Operand::Stack(-4)),
+                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(5), Operand::Stack(-4)),
+                Instruction::Cmp(AssemblyType::Longword, Operand::Imm(0), Operand::Stack(-4)),
                 Instruction::JmpCC(CondCode::E, "and_expr_false.0".into()),
-                Instruction::Mov(Operand::Imm(1), Operand::Stack(-8)),
-                Instruction::Binary(BinaryOp::Add, Operand::Imm(2), Operand::Stack(-8)),
-                Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::R10)),
-                Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-12)),
-                Instruction::Cmp(Operand::Imm(0), Operand::Stack(-12)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(1), Operand::Stack(-8)),
+                Instruction::Binary(BinaryOp::Add, AssemblyType::Longword, Operand::Imm(2), Operand::Stack(-8)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-8), Operand::Reg(Register::R10)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R10), Operand::Stack(-12)),
+                Instruction::Cmp(AssemblyType::Longword, Operand::Imm(0), Operand::Stack(-12)),
                 Instruction::JmpCC(CondCode::E, "and_expr_false.0".into()),
-                Instruction::Mov(Operand::Imm(1), Operand::Stack(-16)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(1), Operand::Stack(-16)),
                 Instruction::Jmp("and_expr_end.1".into()),
                 Instruction::Label("and_expr_false.0".into()),
-                Instruction::Mov(Operand::Imm(0), Operand::Stack(-16)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Imm(0), Operand::Stack(-16)),
                 Instruction::Label("and_expr_end.1".into()),
-                Instruction::Mov(Operand::Stack(-16), Operand::Reg(Register::AX)),
+                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-16), Operand::Reg(Register::AX)),
                 Instruction::Ret,
             ],
         })]);
-        let assembly = Asm::from_tacky(ast, &semantic_analysis::SymbolTable::new());
+        let assembly = Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1", "tmp.2", "tmp.3"]));
         assert_eq!(assembly, expected);
     }
 
@@ -1232,26 +1499,27 @@ mod tests {
         let Ok(tacky_ast) = tacky else {
             panic!();
         };
-        let actual = Asm::from_tacky(tacky_ast, &symbol_table);
+        let actual = Asm::from_tacky(tacky_ast, symbol_table);
         let expected = Asm::Program(vec![
             TopLevel::Func(Function {
                 name: "foo".into(),
                 global: true,
                 instructions: vec![
-                    Instruction::AllocateStack(16),
-                    Instruction::Mov(Operand::Reg(Register::DI), Operand::Stack(-4)),
-                    Instruction::Mov(Operand::Reg(Register::SI), Operand::Stack(-8)),
-                    Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R10)),
-                    Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-12)),
-                    Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::R10)),
+                    Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::DI), Operand::Stack(-4)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::SI), Operand::Stack(-8)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::R10)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R10), Operand::Stack(-12)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Stack(-8), Operand::Reg(Register::R10)),
                     Instruction::Binary(
                         BinaryOp::Add,
+                        AssemblyType::Longword,
                         Operand::Reg(Register::R10),
                         Operand::Stack(-12),
                     ),
-                    Instruction::Mov(Operand::Stack(-12), Operand::Reg(Register::AX)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Stack(-12), Operand::Reg(Register::AX)),
                     Instruction::Ret,
-                    Instruction::Mov(Operand::Imm(0), Operand::Reg(Register::AX)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Imm(0), Operand::Reg(Register::AX)),
                     Instruction::Ret,
                 ],
             }),
@@ -1259,17 +1527,17 @@ mod tests {
                 name: "main".into(),
                 global: true,
                 instructions: vec![
-                    Instruction::AllocateStack(16),
-                    Instruction::Mov(Operand::Imm(1), Operand::Reg(Register::DI)),
-                    Instruction::Mov(Operand::Imm(2), Operand::Reg(Register::SI)),
+                    Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Imm(1), Operand::Reg(Register::DI)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Imm(2), Operand::Reg(Register::SI)),
                     Instruction::Call("foo".into()),
-                    Instruction::Mov(Operand::Reg(Register::AX), Operand::Stack(-4)),
-                    Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::R10)),
-                    Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-8)),
-                    Instruction::Binary(BinaryOp::Add, Operand::Imm(3), Operand::Stack(-8)),
-                    Instruction::Mov(Operand::Stack(-8), Operand::Reg(Register::AX)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::AX), Operand::Stack(-4)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::R10)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R10), Operand::Stack(-8)),
+                    Instruction::Binary(BinaryOp::Add, AssemblyType::Longword, Operand::Imm(3), Operand::Stack(-8)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Stack(-8), Operand::Reg(Register::AX)),
                     Instruction::Ret,
-                    Instruction::Mov(Operand::Imm(0), Operand::Reg(Register::AX)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Imm(0), Operand::Reg(Register::AX)),
                     Instruction::Ret,
                 ],
             }),
@@ -1277,25 +1545,51 @@ mod tests {
                 name: "many_args".into(),
                 global: true,
                 instructions: vec![
-                    Instruction::AllocateStack(32),
-                    Instruction::Mov(Operand::Reg(Register::DI), Operand::Stack(-4)),
-                    Instruction::Mov(Operand::Reg(Register::SI), Operand::Stack(-8)),
-                    Instruction::Mov(Operand::Reg(Register::DX), Operand::Stack(-12)),
-                    Instruction::Mov(Operand::Reg(Register::CX), Operand::Stack(-16)),
-                    Instruction::Mov(Operand::Reg(Register::R8), Operand::Stack(-20)),
-                    Instruction::Mov(Operand::Reg(Register::R9), Operand::Stack(-24)),
-                    Instruction::Mov(Operand::Stack(16), Operand::Reg(Register::R10)),
-                    Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-28)),
-                    Instruction::Mov(Operand::Stack(24), Operand::Reg(Register::R10)),
-                    Instruction::Mov(Operand::Reg(Register::R10), Operand::Stack(-32)),
-                    Instruction::Mov(Operand::Stack(-4), Operand::Reg(Register::AX)),
+                    Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(32), Operand::Reg(Register::SP)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::DI), Operand::Stack(-4)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::SI), Operand::Stack(-8)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::DX), Operand::Stack(-12)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::CX), Operand::Stack(-16)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R8), Operand::Stack(-20)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R9), Operand::Stack(-24)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Stack(16), Operand::Reg(Register::R10)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R10), Operand::Stack(-28)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Stack(24), Operand::Reg(Register::R10)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R10), Operand::Stack(-32)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::AX)),
                     Instruction::Ret,
-                    Instruction::Mov(Operand::Imm(0), Operand::Reg(Register::AX)),
+                    Instruction::Mov(AssemblyType::Longword, Operand::Imm(0), Operand::Reg(Register::AX)),
                     Instruction::Ret,
                 ],
             }),
         ]);
         assert_eq!(expected, actual);
+    }
+}
+
+fn get_assembly_type_from_val(val: &tacky::Val, symbol_table: &SymbolTable) -> AssemblyType {
+    match val {
+        Val::Constant(Const::Int(_)) => AssemblyType::Longword,
+        Val::Constant(Const::Long(_)) => AssemblyType::Quadword,
+        Val::Var(s) => get_assembly_type_from_var_name(s.as_str(), symbol_table),
+    }
+}
+
+fn get_assembly_type_from_var_name(var: &str, symbol_table: &SymbolTable) -> AssemblyType {
+    let (ctype, _attr) = symbol_table
+        .get(var)
+        .expect("Expected entry for {s:?} in symbol table");
+    match ctype {
+        CType::Int => AssemblyType::Longword,
+        CType::Long => AssemblyType::Quadword,
+        CType::FunType { .. } => unreachable!(),
+    }
+}
+
+fn alignment_for_assembly_type(at: &AssemblyType) -> usize {
+    match at {
+        AssemblyType::Longword => 4,
+        AssemblyType::Quadword => 8,
     }
 }
 
@@ -1305,7 +1599,7 @@ impl From<tacky::UnaryOp> for UnaryOp {
         match op {
             tacky::UnaryOp::Complement => UnaryOp::Not,
             tacky::UnaryOp::Negate => UnaryOp::Neg,
-            tacky::UnaryOp::Not => todo!(),
+            tacky::UnaryOp::Not => unreachable!(),
         }
     }
 }
