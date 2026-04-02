@@ -653,6 +653,22 @@ impl Asm {
                         dst,
                     ))
                 }
+                Instruction::Mov(
+                    AssemblyType::Quadword,
+                    src @ Operand::Imm(i),
+                    dst @ Operand::Data(_),
+                )
+                | Instruction::Mov(
+                    AssemblyType::Quadword,
+                    src @ Operand::Imm(i),
+                    dst @ Operand::Stack(_),
+                ) if i > i32::MAX as usize => {
+                    // movq can't move big values into memory but needs an intermediate register
+                    v.extend(vec![
+                        Instruction::Mov(AssemblyType::Quadword, src, Operand::Reg(Register::R10)),
+                        Instruction::Mov(AssemblyType::Quadword, Operand::Reg(Register::R10), dst),
+                    ]);
+                }
                 Instruction::Movsx(_, Operand::Imm(_))
                 | Instruction::Movsx(_, Operand::Pseudo(_)) => unreachable!(),
                 Instruction::Movsx(src @ Operand::Imm(_), dst @ Operand::Stack(_))
@@ -686,6 +702,58 @@ impl Asm {
                     ])
                 }
                 Instruction::Binary(
+                    BinaryOp::Mult,
+                    AssemblyType::Quadword,
+                    src @ Operand::Imm(i),
+                    dst @ Operand::Stack(_),
+                )
+                | Instruction::Binary(
+                    BinaryOp::Mult,
+                    AssemblyType::Quadword,
+                    src @ Operand::Imm(i),
+                    dst @ Operand::Data(_),
+                ) if i > i32::MAX as usize => {
+                    // special case: multiplying can't use a memory as a destination, so for very
+                    // big ints we're going to move into R10, move dest into R11, mutl on registers
+                    // and move back into dst at the end.
+                    // We catch non-memory-destinations later
+                    v.extend(vec![
+                        Instruction::Mov(AssemblyType::Quadword, src, Operand::Reg(Register::R10)),
+                        Instruction::Mov(
+                            AssemblyType::Quadword,
+                            dst.clone(),
+                            Operand::Reg(Register::R11),
+                        ),
+                        Instruction::Binary(
+                            BinaryOp::Mult,
+                            AssemblyType::Quadword,
+                            Operand::Reg(Register::R10),
+                            Operand::Reg(Register::R11),
+                        ),
+                        Instruction::Mov(AssemblyType::Quadword, Operand::Reg(Register::R11), dst),
+                    ]);
+                }
+                Instruction::Binary(BinaryOp::Mult, at, src, dst @ Operand::Stack(_))
+                | Instruction::Binary(BinaryOp::Mult, at, src, dst @ Operand::Data(_)) => {
+                    // imul cannot take an addr as a destination, regardless of src.
+                    // Rewrite via register %r11d
+                    // Move dst into r11d
+                    // Multiply src and r11d, store in r11d
+                    // Move r11d into dst
+                    v.push(Instruction::Mov(
+                        at,
+                        dst.clone(),
+                        Operand::Reg(Register::R11),
+                    ));
+                    v.push(Instruction::Binary(
+                        BinaryOp::Mult,
+                        at,
+                        src,
+                        Operand::Reg(Register::R11),
+                    ));
+                    v.push(Instruction::Mov(at, Operand::Reg(Register::R11), dst));
+                }
+                Instruction::Binary(
                     binop @ BinaryOp::Add,
                     AssemblyType::Quadword,
                     src @ Operand::Imm(i),
@@ -696,14 +764,8 @@ impl Asm {
                     AssemblyType::Quadword,
                     src @ Operand::Imm(i),
                     dst,
-                )
-                | Instruction::Binary(
-                    binop @ BinaryOp::Mult,
-                    AssemblyType::Quadword,
-                    src @ Operand::Imm(i),
-                    dst,
                 ) if i > i32::MAX as usize => {
-                    // addq, subq, imulq require that immediates fit in an int. If not, we use an
+                    // addq, subq require that immediates fit in an int. If not, we use an
                     // intermediary register.
                     v.extend(vec![
                         Instruction::Mov(AssemblyType::Quadword, src, Operand::Reg(Register::R10)),
@@ -763,25 +825,6 @@ impl Asm {
                     } else {
                         v.push(Instruction::Binary(binop, at, src, dst));
                     }
-                }
-                Instruction::Binary(BinaryOp::Mult, at, src, dst @ Operand::Stack(_)) => {
-                    // imul cannot take an addr as a destination, regardless of src.
-                    // Rewrite via register %r11d
-                    // Move dst into r11d
-                    // Multiply src and r11d, store in r11d
-                    // Move r11d into dst
-                    v.push(Instruction::Mov(
-                        at,
-                        dst.clone(),
-                        Operand::Reg(Register::R11),
-                    ));
-                    v.push(Instruction::Binary(
-                        BinaryOp::Mult,
-                        at,
-                        src,
-                        Operand::Reg(Register::R11),
-                    ));
-                    v.push(Instruction::Mov(at, Operand::Reg(Register::R11), dst));
                 }
                 Instruction::Idiv(at, imm @ Operand::Imm(_)) => {
                     // idiv cannot operate on immediates, so move to a scratch register
@@ -881,8 +924,17 @@ mod tests {
             name: "main".into(),
             global: true,
             instructions: vec![
-                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(0), Operand::Reg(Register::SP)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Imm(100), Operand::Reg(Register::AX)),
+                Instruction::Binary(
+                    BinaryOp::Sub,
+                    AssemblyType::Quadword,
+                    Operand::Imm(0),
+                    Operand::Reg(Register::SP),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Imm(100),
+                    Operand::Reg(Register::AX),
+                ),
                 Instruction::Ret,
             ],
         })]);
@@ -911,10 +963,23 @@ mod tests {
             name: "main".into(),
             global: true,
             instructions: vec![
-                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Imm(100), Operand::Stack(-4)),
+                Instruction::Binary(
+                    BinaryOp::Sub,
+                    AssemblyType::Quadword,
+                    Operand::Imm(16),
+                    Operand::Reg(Register::SP),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Imm(100),
+                    Operand::Stack(-4),
+                ),
                 Instruction::Unary(UnaryOp::Neg, AssemblyType::Longword, Operand::Stack(-4)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::AX)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-4),
+                    Operand::Reg(Register::AX),
+                ),
                 Instruction::Ret,
             ],
         })]);
@@ -953,16 +1018,45 @@ mod tests {
             name: "main".into(),
             global: true,
             instructions: vec![
-                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Imm(100), Operand::Stack(-4)),
+                Instruction::Binary(
+                    BinaryOp::Sub,
+                    AssemblyType::Quadword,
+                    Operand::Imm(16),
+                    Operand::Reg(Register::SP),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Imm(100),
+                    Operand::Stack(-4),
+                ),
                 Instruction::Unary(UnaryOp::Neg, AssemblyType::Longword, Operand::Stack(-4)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::R10)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R10), Operand::Stack(-8)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-4),
+                    Operand::Reg(Register::R10),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Reg(Register::R10),
+                    Operand::Stack(-8),
+                ),
                 Instruction::Unary(UnaryOp::Not, AssemblyType::Longword, Operand::Stack(-8)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-8), Operand::Reg(Register::R10)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R10), Operand::Stack(-12)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-8),
+                    Operand::Reg(Register::R10),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Reg(Register::R10),
+                    Operand::Stack(-12),
+                ),
                 Instruction::Unary(UnaryOp::Neg, AssemblyType::Longword, Operand::Stack(-12)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-12), Operand::Reg(Register::AX)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-12),
+                    Operand::Reg(Register::AX),
+                ),
                 Instruction::Ret,
             ],
         })]);
@@ -1009,27 +1103,70 @@ mod tests {
             name: "main".into(),
             global: true,
             instructions: vec![
-                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
+                Instruction::Binary(
+                    BinaryOp::Sub,
+                    AssemblyType::Quadword,
+                    Operand::Imm(16),
+                    Operand::Reg(Register::SP),
+                ),
                 // tmp0 = 1 * 2
                 Instruction::Mov(AssemblyType::Longword, Operand::Imm(1), Operand::Stack(-4)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::R11)),
-                Instruction::Binary(BinaryOp::Mult, AssemblyType::Longword, Operand::Imm(2), Operand::Reg(Register::R11)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R11), Operand::Stack(-4)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-4),
+                    Operand::Reg(Register::R11),
+                ),
+                Instruction::Binary(
+                    BinaryOp::Mult,
+                    AssemblyType::Longword,
+                    Operand::Imm(2),
+                    Operand::Reg(Register::R11),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Reg(Register::R11),
+                    Operand::Stack(-4),
+                ),
                 // tmp1 = 4 + 5
                 Instruction::Mov(AssemblyType::Longword, Operand::Imm(4), Operand::Stack(-8)),
-                Instruction::Binary(BinaryOp::Add, AssemblyType::Longword, Operand::Imm(5), Operand::Stack(-8)),
+                Instruction::Binary(
+                    BinaryOp::Add,
+                    AssemblyType::Longword,
+                    Operand::Imm(5),
+                    Operand::Stack(-8),
+                ),
                 // tmp2 = 3 % tmp1
-                Instruction::Mov(AssemblyType::Longword, Operand::Imm(3), Operand::Reg(Register::AX)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Imm(3),
+                    Operand::Reg(Register::AX),
+                ),
                 Instruction::Cdq(AssemblyType::Longword),
                 Instruction::Idiv(AssemblyType::Longword, Operand::Stack(-8)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::DX), Operand::Stack(-12)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Reg(Register::DX),
+                    Operand::Stack(-12),
+                ),
                 // tmp3 = tmp0 / tmp2
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::AX)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-4),
+                    Operand::Reg(Register::AX),
+                ),
                 Instruction::Cdq(AssemblyType::Longword),
                 Instruction::Idiv(AssemblyType::Longword, Operand::Stack(-12)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::AX), Operand::Stack(-16)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Reg(Register::AX),
+                    Operand::Stack(-16),
+                ),
                 // return
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-16), Operand::Reg(Register::AX)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-16),
+                    Operand::Reg(Register::AX),
+                ),
                 Instruction::Ret,
             ],
         })]);
@@ -1083,30 +1220,85 @@ mod tests {
             name: "main".into(),
             global: true,
             instructions: vec![
-                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(32), Operand::Reg(Register::SP)),
+                Instruction::Binary(
+                    BinaryOp::Sub,
+                    AssemblyType::Quadword,
+                    Operand::Imm(32),
+                    Operand::Reg(Register::SP),
+                ),
                 // tmp0 = 5 * 4 = 20
                 Instruction::Mov(AssemblyType::Longword, Operand::Imm(5), Operand::Stack(-4)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::R11)),
-                Instruction::Binary(BinaryOp::Mult, AssemblyType::Longword, Operand::Imm(4), Operand::Reg(Register::R11)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R11), Operand::Stack(-4)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-4),
+                    Operand::Reg(Register::R11),
+                ),
+                Instruction::Binary(
+                    BinaryOp::Mult,
+                    AssemblyType::Longword,
+                    Operand::Imm(4),
+                    Operand::Reg(Register::R11),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Reg(Register::R11),
+                    Operand::Stack(-4),
+                ),
                 // tmp1 = tmp0 / 2 = 10
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::AX)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-4),
+                    Operand::Reg(Register::AX),
+                ),
                 Instruction::Cdq(AssemblyType::Longword),
-                Instruction::Mov(AssemblyType::Longword, Operand::Imm(2), Operand::Reg(Register::R10)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Imm(2),
+                    Operand::Reg(Register::R10),
+                ),
                 Instruction::Idiv(AssemblyType::Longword, Operand::Reg(Register::R10)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::AX), Operand::Stack(-8)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Reg(Register::AX),
+                    Operand::Stack(-8),
+                ),
                 // tmp2 = 2 + 1  = 3
                 Instruction::Mov(AssemblyType::Longword, Operand::Imm(2), Operand::Stack(-12)),
-                Instruction::Binary(BinaryOp::Add, AssemblyType::Longword, Operand::Imm(1), Operand::Stack(-12)),
+                Instruction::Binary(
+                    BinaryOp::Add,
+                    AssemblyType::Longword,
+                    Operand::Imm(1),
+                    Operand::Stack(-12),
+                ),
                 // tmp3 = 3 % tmp2 = 0
-                Instruction::Mov(AssemblyType::Longword, Operand::Imm(3), Operand::Reg(Register::AX)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Imm(3),
+                    Operand::Reg(Register::AX),
+                ),
                 Instruction::Cdq(AssemblyType::Longword),
                 Instruction::Idiv(AssemblyType::Longword, Operand::Stack(-12)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::DX), Operand::Stack(-16)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Reg(Register::DX),
+                    Operand::Stack(-16),
+                ),
                 // tmp3 = tmp1 - tmp3 = 10
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-8), Operand::Reg(Register::R10)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R10), Operand::Stack(-20)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-16), Operand::Reg(Register::R10)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-8),
+                    Operand::Reg(Register::R10),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Reg(Register::R10),
+                    Operand::Stack(-20),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-16),
+                    Operand::Reg(Register::R10),
+                ),
                 Instruction::Binary(
                     BinaryOp::Sub,
                     AssemblyType::Longword,
@@ -1114,12 +1306,19 @@ mod tests {
                     Operand::Stack(-20),
                 ),
                 // return
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-20), Operand::Reg(Register::AX)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-20),
+                    Operand::Reg(Register::AX),
+                ),
                 Instruction::Ret,
             ],
         })]);
 
-        let assembly = Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1", "tmp.2", "tmp.3", "tmp.4"]));
+        let assembly = Asm::from_tacky(
+            ast,
+            int_sym_table(&["tmp.0", "tmp.1", "tmp.2", "tmp.3", "tmp.4"]),
+        );
         assert_eq!(assembly, expected);
     }
 
@@ -1161,23 +1360,71 @@ mod tests {
             name: "main".into(),
             global: true,
             instructions: vec![
-                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
+                Instruction::Binary(
+                    BinaryOp::Sub,
+                    AssemblyType::Quadword,
+                    Operand::Imm(16),
+                    Operand::Reg(Register::SP),
+                ),
                 // tmp0 = 5 * 4
                 Instruction::Mov(AssemblyType::Longword, Operand::Imm(5), Operand::Stack(-4)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::R11)),
-                Instruction::Binary(BinaryOp::Mult, AssemblyType::Longword, Operand::Imm(4), Operand::Reg(Register::R11)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R11), Operand::Stack(-4)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-4),
+                    Operand::Reg(Register::R11),
+                ),
+                Instruction::Binary(
+                    BinaryOp::Mult,
+                    AssemblyType::Longword,
+                    Operand::Imm(4),
+                    Operand::Reg(Register::R11),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Reg(Register::R11),
+                    Operand::Stack(-4),
+                ),
                 // tmp1 = 4 - 5
                 Instruction::Mov(AssemblyType::Longword, Operand::Imm(4), Operand::Stack(-8)),
-                Instruction::Binary(BinaryOp::Sub, AssemblyType::Longword, Operand::Imm(5), Operand::Stack(-8)),
+                Instruction::Binary(
+                    BinaryOp::Sub,
+                    AssemblyType::Longword,
+                    Operand::Imm(5),
+                    Operand::Stack(-8),
+                ),
                 // tmp2 = tmp1 & 6
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-8), Operand::Reg(Register::R10)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R10), Operand::Stack(-12)),
-                Instruction::Binary(BinaryOp::BitwiseAnd, AssemblyType::Longword, Operand::Imm(6), Operand::Stack(-12)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-8),
+                    Operand::Reg(Register::R10),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Reg(Register::R10),
+                    Operand::Stack(-12),
+                ),
+                Instruction::Binary(
+                    BinaryOp::BitwiseAnd,
+                    AssemblyType::Longword,
+                    Operand::Imm(6),
+                    Operand::Stack(-12),
+                ),
                 // tmp3 = tmp0 | tmp2
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::R10)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R10), Operand::Stack(-16)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-12), Operand::Reg(Register::R10)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-4),
+                    Operand::Reg(Register::R10),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Reg(Register::R10),
+                    Operand::Stack(-16),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-12),
+                    Operand::Reg(Register::R10),
+                ),
                 Instruction::Binary(
                     BinaryOp::BitwiseOr,
                     AssemblyType::Longword,
@@ -1185,7 +1432,11 @@ mod tests {
                     Operand::Stack(-16),
                 ),
                 // return
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-16), Operand::Reg(Register::AX)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-16),
+                    Operand::Reg(Register::AX),
+                ),
                 Instruction::Ret,
             ],
         })]);
@@ -1220,19 +1471,54 @@ mod tests {
             name: "main".into(),
             global: true,
             instructions: vec![
-                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
+                Instruction::Binary(
+                    BinaryOp::Sub,
+                    AssemblyType::Quadword,
+                    Operand::Imm(16),
+                    Operand::Reg(Register::SP),
+                ),
                 // tmp0 = 5 * 4
                 Instruction::Mov(AssemblyType::Longword, Operand::Imm(5), Operand::Stack(-4)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::R11)),
-                Instruction::Binary(BinaryOp::Mult, AssemblyType::Longword, Operand::Imm(4), Operand::Reg(Register::R11)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R11), Operand::Stack(-4)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-4),
+                    Operand::Reg(Register::R11),
+                ),
+                Instruction::Binary(
+                    BinaryOp::Mult,
+                    AssemblyType::Longword,
+                    Operand::Imm(4),
+                    Operand::Reg(Register::R11),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Reg(Register::R11),
+                    Operand::Stack(-4),
+                ),
                 // tmp1 = tmp.0 << 2
                 // moves tmp.8 into tmp.1 via reg10
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::R10)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R10), Operand::Stack(-8)),
-                Instruction::Binary(BinaryOp::ShiftLeft, AssemblyType::Longword, Operand::Imm(2), Operand::Stack(-8)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-4),
+                    Operand::Reg(Register::R10),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Reg(Register::R10),
+                    Operand::Stack(-8),
+                ),
+                Instruction::Binary(
+                    BinaryOp::ShiftLeft,
+                    AssemblyType::Longword,
+                    Operand::Imm(2),
+                    Operand::Stack(-8),
+                ),
                 // return
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-8), Operand::Reg(Register::AX)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-8),
+                    Operand::Reg(Register::AX),
+                ),
                 Instruction::Ret,
             ],
         })]);
@@ -1265,21 +1551,38 @@ mod tests {
             name: "main".into(),
             global: true,
             instructions: vec![
-                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
+                Instruction::Binary(
+                    BinaryOp::Sub,
+                    AssemblyType::Quadword,
+                    Operand::Imm(16),
+                    Operand::Reg(Register::SP),
+                ),
                 // tmp0 = -5
                 Instruction::Mov(AssemblyType::Longword, Operand::Imm(5), Operand::Stack(-4)),
                 Instruction::Unary(UnaryOp::Neg, AssemblyType::Longword, Operand::Stack(-4)),
                 // tmp1 = tmp.0 >> 30
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::AX)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-4),
+                    Operand::Reg(Register::AX),
+                ),
                 Instruction::Binary(
                     BinaryOp::ShiftRight,
                     AssemblyType::Longword,
                     Operand::Imm(30),
                     Operand::Reg(Register::AX),
                 ),
-                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::AX), Operand::Stack(-8)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Reg(Register::AX),
+                    Operand::Stack(-8),
+                ),
                 // return
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-8), Operand::Reg(Register::AX)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-8),
+                    Operand::Reg(Register::AX),
+                ),
                 Instruction::Ret,
             ],
         })]);
@@ -1313,13 +1616,27 @@ mod tests {
             name: "main".into(),
             global: true,
             instructions: vec![
-                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
+                Instruction::Binary(
+                    BinaryOp::Sub,
+                    AssemblyType::Quadword,
+                    Operand::Imm(16),
+                    Operand::Reg(Register::SP),
+                ),
                 // tmp0 = 1 + 2
                 Instruction::Mov(AssemblyType::Longword, Operand::Imm(1), Operand::Stack(-4)),
-                Instruction::Binary(BinaryOp::Add, AssemblyType::Longword, Operand::Imm(2), Operand::Stack(-4)),
+                Instruction::Binary(
+                    BinaryOp::Add,
+                    AssemblyType::Longword,
+                    Operand::Imm(2),
+                    Operand::Stack(-4),
+                ),
                 // tmp1 = 5 << tmp.0
                 Instruction::Mov(AssemblyType::Longword, Operand::Imm(5), Operand::Stack(-8)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::CX)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-4),
+                    Operand::Reg(Register::CX),
+                ),
                 Instruction::Binary(
                     BinaryOp::ShiftLeft,
                     AssemblyType::Longword,
@@ -1327,7 +1644,11 @@ mod tests {
                     Operand::Stack(-8),
                 ),
                 // return
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-8), Operand::Reg(Register::AX)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-8),
+                    Operand::Reg(Register::AX),
+                ),
                 Instruction::Ret,
             ],
         })]);
@@ -1359,12 +1680,29 @@ mod tests {
             // and write to stack addr -4
             // move stack addr -4 to EAX and return
             instructions: vec![
-                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Imm(1), Operand::Reg(Register::R11)),
-                Instruction::Cmp(AssemblyType::Longword, Operand::Imm(0), Operand::Reg(Register::R11)),
+                Instruction::Binary(
+                    BinaryOp::Sub,
+                    AssemblyType::Quadword,
+                    Operand::Imm(16),
+                    Operand::Reg(Register::SP),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Imm(1),
+                    Operand::Reg(Register::R11),
+                ),
+                Instruction::Cmp(
+                    AssemblyType::Longword,
+                    Operand::Imm(0),
+                    Operand::Reg(Register::R11),
+                ),
                 Instruction::Mov(AssemblyType::Longword, Operand::Imm(0), Operand::Stack(-4)),
                 Instruction::SetCC(CondCode::E, Operand::Stack(-4)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::AX)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-4),
+                    Operand::Reg(Register::AX),
+                ),
                 Instruction::Ret,
             ],
         })]);
@@ -1392,11 +1730,20 @@ mod tests {
             name: "main".into(),
             global: true,
             instructions: vec![
-                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
+                Instruction::Binary(
+                    BinaryOp::Sub,
+                    AssemblyType::Quadword,
+                    Operand::Imm(16),
+                    Operand::Reg(Register::SP),
+                ),
                 Instruction::Cmp(AssemblyType::Longword, Operand::Imm(2), Operand::Stack(-4)),
                 Instruction::Mov(AssemblyType::Longword, Operand::Imm(0), Operand::Stack(-8)),
                 Instruction::SetCC(CondCode::GE, Operand::Stack(-8)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-8), Operand::Reg(Register::AX)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-8),
+                    Operand::Reg(Register::AX),
+                ),
                 Instruction::Ret,
             ],
         })]);
@@ -1452,14 +1799,32 @@ mod tests {
             name: "main".into(),
             global: true,
             instructions: vec![
-                Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
+                Instruction::Binary(
+                    BinaryOp::Sub,
+                    AssemblyType::Quadword,
+                    Operand::Imm(16),
+                    Operand::Reg(Register::SP),
+                ),
                 Instruction::Mov(AssemblyType::Longword, Operand::Imm(5), Operand::Stack(-4)),
                 Instruction::Cmp(AssemblyType::Longword, Operand::Imm(0), Operand::Stack(-4)),
                 Instruction::JmpCC(CondCode::E, "and_expr_false.0".into()),
                 Instruction::Mov(AssemblyType::Longword, Operand::Imm(1), Operand::Stack(-8)),
-                Instruction::Binary(BinaryOp::Add, AssemblyType::Longword, Operand::Imm(2), Operand::Stack(-8)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-8), Operand::Reg(Register::R10)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R10), Operand::Stack(-12)),
+                Instruction::Binary(
+                    BinaryOp::Add,
+                    AssemblyType::Longword,
+                    Operand::Imm(2),
+                    Operand::Stack(-8),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-8),
+                    Operand::Reg(Register::R10),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Reg(Register::R10),
+                    Operand::Stack(-12),
+                ),
                 Instruction::Cmp(AssemblyType::Longword, Operand::Imm(0), Operand::Stack(-12)),
                 Instruction::JmpCC(CondCode::E, "and_expr_false.0".into()),
                 Instruction::Mov(AssemblyType::Longword, Operand::Imm(1), Operand::Stack(-16)),
@@ -1467,7 +1832,11 @@ mod tests {
                 Instruction::Label("and_expr_false.0".into()),
                 Instruction::Mov(AssemblyType::Longword, Operand::Imm(0), Operand::Stack(-16)),
                 Instruction::Label("and_expr_end.1".into()),
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(-16), Operand::Reg(Register::AX)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Stack(-16),
+                    Operand::Reg(Register::AX),
+                ),
                 Instruction::Ret,
             ],
         })]);
@@ -1505,21 +1874,54 @@ mod tests {
                 name: "foo".into(),
                 global: true,
                 instructions: vec![
-                    Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
-                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::DI), Operand::Stack(-4)),
-                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::SI), Operand::Stack(-8)),
-                    Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::R10)),
-                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R10), Operand::Stack(-12)),
-                    Instruction::Mov(AssemblyType::Longword, Operand::Stack(-8), Operand::Reg(Register::R10)),
+                    Instruction::Binary(
+                        BinaryOp::Sub,
+                        AssemblyType::Quadword,
+                        Operand::Imm(16),
+                        Operand::Reg(Register::SP),
+                    ),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Reg(Register::DI),
+                        Operand::Stack(-4),
+                    ),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Reg(Register::SI),
+                        Operand::Stack(-8),
+                    ),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Stack(-4),
+                        Operand::Reg(Register::R10),
+                    ),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Reg(Register::R10),
+                        Operand::Stack(-12),
+                    ),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Stack(-8),
+                        Operand::Reg(Register::R10),
+                    ),
                     Instruction::Binary(
                         BinaryOp::Add,
                         AssemblyType::Longword,
                         Operand::Reg(Register::R10),
                         Operand::Stack(-12),
                     ),
-                    Instruction::Mov(AssemblyType::Longword, Operand::Stack(-12), Operand::Reg(Register::AX)),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Stack(-12),
+                        Operand::Reg(Register::AX),
+                    ),
                     Instruction::Ret,
-                    Instruction::Mov(AssemblyType::Longword, Operand::Imm(0), Operand::Reg(Register::AX)),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Imm(0),
+                        Operand::Reg(Register::AX),
+                    ),
                     Instruction::Ret,
                 ],
             }),
@@ -1527,17 +1929,55 @@ mod tests {
                 name: "main".into(),
                 global: true,
                 instructions: vec![
-                    Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(16), Operand::Reg(Register::SP)),
-                    Instruction::Mov(AssemblyType::Longword, Operand::Imm(1), Operand::Reg(Register::DI)),
-                    Instruction::Mov(AssemblyType::Longword, Operand::Imm(2), Operand::Reg(Register::SI)),
+                    Instruction::Binary(
+                        BinaryOp::Sub,
+                        AssemblyType::Quadword,
+                        Operand::Imm(16),
+                        Operand::Reg(Register::SP),
+                    ),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Imm(1),
+                        Operand::Reg(Register::DI),
+                    ),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Imm(2),
+                        Operand::Reg(Register::SI),
+                    ),
                     Instruction::Call("foo".into()),
-                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::AX), Operand::Stack(-4)),
-                    Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::R10)),
-                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R10), Operand::Stack(-8)),
-                    Instruction::Binary(BinaryOp::Add, AssemblyType::Longword, Operand::Imm(3), Operand::Stack(-8)),
-                    Instruction::Mov(AssemblyType::Longword, Operand::Stack(-8), Operand::Reg(Register::AX)),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Reg(Register::AX),
+                        Operand::Stack(-4),
+                    ),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Stack(-4),
+                        Operand::Reg(Register::R10),
+                    ),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Reg(Register::R10),
+                        Operand::Stack(-8),
+                    ),
+                    Instruction::Binary(
+                        BinaryOp::Add,
+                        AssemblyType::Longword,
+                        Operand::Imm(3),
+                        Operand::Stack(-8),
+                    ),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Stack(-8),
+                        Operand::Reg(Register::AX),
+                    ),
                     Instruction::Ret,
-                    Instruction::Mov(AssemblyType::Longword, Operand::Imm(0), Operand::Reg(Register::AX)),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Imm(0),
+                        Operand::Reg(Register::AX),
+                    ),
                     Instruction::Ret,
                 ],
             }),
@@ -1545,20 +1985,73 @@ mod tests {
                 name: "many_args".into(),
                 global: true,
                 instructions: vec![
-                    Instruction::Binary(BinaryOp::Sub, AssemblyType::Quadword, Operand::Imm(32), Operand::Reg(Register::SP)),
-                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::DI), Operand::Stack(-4)),
-                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::SI), Operand::Stack(-8)),
-                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::DX), Operand::Stack(-12)),
-                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::CX), Operand::Stack(-16)),
-                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R8), Operand::Stack(-20)),
-                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R9), Operand::Stack(-24)),
-                    Instruction::Mov(AssemblyType::Longword, Operand::Stack(16), Operand::Reg(Register::R10)),
-                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R10), Operand::Stack(-28)),
-                    Instruction::Mov(AssemblyType::Longword, Operand::Stack(24), Operand::Reg(Register::R10)),
-                    Instruction::Mov(AssemblyType::Longword, Operand::Reg(Register::R10), Operand::Stack(-32)),
-                    Instruction::Mov(AssemblyType::Longword, Operand::Stack(-4), Operand::Reg(Register::AX)),
+                    Instruction::Binary(
+                        BinaryOp::Sub,
+                        AssemblyType::Quadword,
+                        Operand::Imm(32),
+                        Operand::Reg(Register::SP),
+                    ),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Reg(Register::DI),
+                        Operand::Stack(-4),
+                    ),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Reg(Register::SI),
+                        Operand::Stack(-8),
+                    ),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Reg(Register::DX),
+                        Operand::Stack(-12),
+                    ),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Reg(Register::CX),
+                        Operand::Stack(-16),
+                    ),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Reg(Register::R8),
+                        Operand::Stack(-20),
+                    ),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Reg(Register::R9),
+                        Operand::Stack(-24),
+                    ),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Stack(16),
+                        Operand::Reg(Register::R10),
+                    ),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Reg(Register::R10),
+                        Operand::Stack(-28),
+                    ),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Stack(24),
+                        Operand::Reg(Register::R10),
+                    ),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Reg(Register::R10),
+                        Operand::Stack(-32),
+                    ),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Stack(-4),
+                        Operand::Reg(Register::AX),
+                    ),
                     Instruction::Ret,
-                    Instruction::Mov(AssemblyType::Longword, Operand::Imm(0), Operand::Reg(Register::AX)),
+                    Instruction::Mov(
+                        AssemblyType::Longword,
+                        Operand::Imm(0),
+                        Operand::Reg(Register::AX),
+                    ),
                     Instruction::Ret,
                 ],
             }),

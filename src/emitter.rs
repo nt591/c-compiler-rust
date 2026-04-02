@@ -34,8 +34,8 @@ impl Emitter {
                     identifier,
                     global,
                     init,
-                    ..
-                } => Self::emit_static_variable(identifier, *global, *init, output)?,
+                    alignment,
+                } => Self::emit_static_variable(identifier, *global, *init, *alignment, output)?,
             }
         }
         Ok(())
@@ -69,23 +69,24 @@ impl Emitter {
         identifier: &str,
         global: bool,
         init: StaticInit,
+        alignment: usize,
         output: &mut W,
     ) -> std::io::Result<()> {
         if global {
             writeln!(output, "  .globl _{}", identifier)?;
         }
-        let init = types::static_init_as_usize(&init);
-        if init == 0 {
+        if types::static_init_as_usize(&init) == 0 {
             writeln!(output, "  .bss")?;
         } else {
             writeln!(output, "  .data")?;
         }
-        writeln!(output, "  .balign 4")?;
+        writeln!(output, "  .balign {alignment}")?;
         writeln!(output, "_{}:", identifier)?;
-        if init == 0 {
-            writeln!(output, "  .zero 4")?;
-        } else {
-            writeln!(output, "  .long {}", init)?;
+        match init {
+            StaticInit::IntInit(0) => writeln!(output, "  .zero 4")?,
+            StaticInit::IntInit(i) => writeln!(output, "  .long {}", i)?,
+            StaticInit::LongInit(0) => writeln!(output, "  .zero 8")?,
+            StaticInit::LongInit(i) => writeln!(output, "  .quad {}", i)?,
         }
         Ok(())
     }
@@ -101,53 +102,72 @@ impl Emitter {
                 writeln!(output, "  popq   %rbp")?;
                 writeln!(output, "  ret")?;
             }
-            asm::Instruction::Mov(_, src, dst) => {
-                write!(output, "  movl   ")?;
+            asm::Instruction::Mov(at, src, dst) => {
+                match at {
+                    types::AssemblyType::Longword => write!(output, "  movl   ")?,
+                    types::AssemblyType::Quadword => write!(output, "  movq   ")?,
+                }
+                Self::emit_op(src, at.into(), output)?;
+                write!(output, ", ")?;
+                Self::emit_op(dst, at.into(), output)?;
+                write!(output, "\n")?;
+            }
+            asm::Instruction::Movsx(src, dst) => {
+                write!(output, "  movslq ")?;
                 Self::emit_op(src, RegisterSize::FourByte, output)?;
                 write!(output, ", ")?;
-                Self::emit_op(dst, RegisterSize::FourByte, output)?;
+                Self::emit_op(dst, RegisterSize::EightByte, output)?;
                 write!(output, "\n")?;
             }
-            asm::Instruction::Unary(unary, _, operand) => {
+            asm::Instruction::Unary(unary, at, operand) => {
                 write!(output, "  ")?;
-                Self::emit_unary(unary, output)?;
+                Self::emit_unary(unary, at, output)?;
                 write!(output, "   ")?;
-                Self::emit_op(operand, RegisterSize::FourByte, output)?;
+                Self::emit_op(operand, at.into(), output)?;
                 write!(output, "\n")?;
             }
-            asm::Instruction::Binary(binop @ asm::BinaryOp::ShiftLeft, _, src, dst)
-            | asm::Instruction::Binary(binop @ asm::BinaryOp::ShiftRight, _, src, dst) => {
+            asm::Instruction::Binary(binop @ asm::BinaryOp::ShiftLeft, at, src, dst)
+            | asm::Instruction::Binary(binop @ asm::BinaryOp::ShiftRight, at, src, dst) => {
                 // shift left and right use the lower 8 bits of ECX to read
                 write!(output, "  ")?;
-                Self::emit_binary(binop, output)?;
+                Self::emit_binary(binop, at, output)?;
                 // assume emit_binary handles proper space formatting!
                 Self::emit_op(src, RegisterSize::OneByte, output)?;
                 write!(output, ", ")?;
-                Self::emit_op(dst, RegisterSize::FourByte, output)?;
+                Self::emit_op(dst, at.into(), output)?;
                 write!(output, "\n")?;
             }
-            asm::Instruction::Binary(binop, _, src, dst) => {
+            asm::Instruction::Binary(binop, at, src, dst) => {
                 write!(output, "  ")?;
-                Self::emit_binary(binop, output)?;
+                Self::emit_binary(binop, at, output)?;
                 // assume emit_binary handles proper space formatting!
-                Self::emit_op(src, RegisterSize::FourByte, output)?;
+                Self::emit_op(src, at.into(), output)?;
                 write!(output, ", ")?;
-                Self::emit_op(dst, RegisterSize::FourByte, output)?;
+                Self::emit_op(dst, at.into(), output)?;
                 write!(output, "\n")?;
             }
-            asm::Instruction::Cdq(_) => {
+            asm::Instruction::Cdq(types::AssemblyType::Longword) => {
                 writeln!(output, "  cdq")?;
             }
-            asm::Instruction::Idiv(_, operand) => {
-                write!(output, "  idivl  ")?;
-                Self::emit_op(operand, RegisterSize::FourByte, output)?;
+            asm::Instruction::Cdq(types::AssemblyType::Quadword) => {
+                writeln!(output, "  cqo")?;
+            }
+            asm::Instruction::Idiv(at, operand) => {
+                match at {
+                    types::AssemblyType::Quadword => write!(output, "  idivq  ")?,
+                    types::AssemblyType::Longword => write!(output, "  idivl  ")?,
+                }
+                Self::emit_op(operand, at.into(), output)?;
                 write!(output, "\n")?;
             }
-            asm::Instruction::Cmp(_, op1, op2) => {
-                write!(output, "  cmpl   ")?;
-                Self::emit_op(op1, RegisterSize::FourByte, output)?;
+            asm::Instruction::Cmp(at, op1, op2) => {
+                match at {
+                    types::AssemblyType::Longword => write!(output, "  cmpl   ")?,
+                    types::AssemblyType::Quadword => write!(output, "  cmpq   ")?,
+                }
+                Self::emit_op(op1, at.into(), output)?;
                 write!(output, ", ")?;
-                Self::emit_op(op2, RegisterSize::FourByte, output)?;
+                Self::emit_op(op2, at.into(), output)?;
                 write!(output, "\n")?;
             }
             asm::Instruction::Jmp(label) => {
@@ -179,7 +199,6 @@ impl Emitter {
             asm::Instruction::Call(lbl) => {
                 writeln!(output, "  call   _{}", lbl)?;
             }
-            asm::Instruction::Movsx(_, _) => todo!(),
         }
         Ok(())
     }
@@ -197,8 +216,6 @@ impl Emitter {
                     Self::emit_register_one_byte(reg, output)?;
                 } else if regsize == RegisterSize::EightByte {
                     Self::emit_register_eight_bytes(reg, output)?;
-                } else {
-                    unreachable!("Found unexpected regsize {regsize:?}");
                 }
             }
             asm::Operand::Imm(imm) => write!(output, "${}", imm)?,
@@ -210,25 +227,45 @@ impl Emitter {
         Ok(())
     }
 
-    fn emit_unary<W: Write>(uop: &asm::UnaryOp, output: &mut W) -> std::io::Result<()> {
-        match uop {
-            asm::UnaryOp::Not => write!(output, "notl")?,
-            asm::UnaryOp::Neg => write!(output, "negl")?,
-        }
+    fn emit_unary<W: Write>(
+        uop: &asm::UnaryOp,
+        assembly_type: &types::AssemblyType,
+        output: &mut W,
+    ) -> std::io::Result<()> {
+        let instruction = match uop {
+            asm::UnaryOp::Not => "not",
+            asm::UnaryOp::Neg => "neg",
+        };
+        let suffix = match assembly_type {
+            types::AssemblyType::Longword => "l",
+            types::AssemblyType::Quadword => "q",
+        };
+        write!(output, "{instruction}{suffix}")?;
         Ok(())
     }
 
-    fn emit_binary<W: Write>(binop: &asm::BinaryOp, output: &mut W) -> std::io::Result<()> {
-        match binop {
-            asm::BinaryOp::Add => write!(output, "addl   ")?,
-            asm::BinaryOp::Mult => write!(output, "imull  ")?,
-            asm::BinaryOp::Sub => write!(output, "subl   ")?,
-            asm::BinaryOp::BitwiseAnd => write!(output, "andl   ")?,
-            asm::BinaryOp::BitwiseOr => write!(output, "orl    ")?,
-            asm::BinaryOp::Xor => write!(output, "xorl   ")?,
-            asm::BinaryOp::ShiftLeft => write!(output, "shll   ")?,
-            asm::BinaryOp::ShiftRight => write!(output, "sarl   ")?,
-        }
+    fn emit_binary<W: Write>(
+        binop: &asm::BinaryOp,
+        assembly_type: &types::AssemblyType,
+        output: &mut W,
+    ) -> std::io::Result<()> {
+        // involves an allocation but we can forgive me.
+        let instruction = match binop {
+            asm::BinaryOp::Add => "add",
+            asm::BinaryOp::Mult => "imul",
+            asm::BinaryOp::Sub => "sub",
+            asm::BinaryOp::BitwiseAnd => "and",
+            asm::BinaryOp::BitwiseOr => "or",
+            asm::BinaryOp::Xor => "xor",
+            asm::BinaryOp::ShiftLeft => "shl",
+            asm::BinaryOp::ShiftRight => "sar",
+        };
+        let suffix = match assembly_type {
+            types::AssemblyType::Longword => "l",
+            types::AssemblyType::Quadword => "q",
+        };
+        let padding = 7 - instruction.len() - suffix.len();
+        write!(output, "{instruction}{suffix}{}", " ".repeat(padding))?;
         Ok(())
     }
 
@@ -244,7 +281,7 @@ impl Emitter {
             Register::R9 => write!(output, "{}", "%r9d"),
             Register::R10 => write!(output, "{}", "%r10d"),
             Register::R11 => write!(output, "{}", "%r11d"),
-            Register::SP => write!(output, "{}", "%rsp"),
+            Register::SP => unreachable!(),
         }
     }
 
@@ -263,7 +300,7 @@ impl Emitter {
             Register::R9 => write!(output, "{}", "%r9b"),
             Register::R10 => write!(output, "{}", "%r10b"),
             Register::R11 => write!(output, "{}", "%r11b"),
-            Register::SP => write!(output, "{}", "%rsp"),
+            Register::SP => unreachable!(),
         }
     }
 
@@ -315,6 +352,15 @@ impl Emitter {
             LE => write!(output, "setle      ")?,
         }
         Ok(())
+    }
+}
+
+impl From<&types::AssemblyType> for RegisterSize {
+    fn from(o: &types::AssemblyType) -> Self {
+        match o {
+            types::AssemblyType::Longword => RegisterSize::FourByte,
+            types::AssemblyType::Quadword => RegisterSize::EightByte,
+        }
     }
 }
 
