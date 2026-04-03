@@ -1,3 +1,4 @@
+use regex::Regex;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -21,6 +22,8 @@ pub enum Token<'a> {
     Identifier(&'a str),
     Constant(usize),
     LongConstant(usize),
+    UnsignedIntConstant(usize),
+    UnsignedLongConstant(usize),
     SingleLineComment(&'a str),
     BlockComment(&'a str),
     PreprocessorBlock(&'a str), //todo
@@ -89,6 +92,9 @@ pub enum Token<'a> {
     // storage / linkage
     Static,
     Extern,
+    // ch 12: signed / unsigned values
+    Signed,
+    Unsigned,
 }
 
 impl<'a> Token<'a> {
@@ -98,6 +104,8 @@ impl<'a> Token<'a> {
             Identifier(s) => format!("Identifier {s}"),
             Constant(c) => format!("Constant {c}"),
             LongConstant(c) => format!("LongConstant {c}"),
+            UnsignedIntConstant(c) => format!("UnsignedIntConstant {c}"),
+            UnsignedLongConstant(c) => format!("UnsignedLongConstant {c}"),
             SingleLineComment(c) => format!("SingleLineComment {c}"),
             BlockComment(c) => format!("BlockComment {c}"),
             PreprocessorBlock(c) => format!("PreprocessorBlock {c}"),
@@ -158,8 +166,18 @@ impl<'a> Token<'a> {
             PlusPlus => format!("PlusPlus"),
             Static => format!("Static"),
             Extern => format!("Extern"),
+            Signed => format!("Signed"),
+            Unsigned => format!("Unsigned"),
         }
     }
+}
+
+// helper for suffix parsing
+#[derive(Debug, PartialEq, Copy, Clone)]
+enum DigitType {
+    Long,
+    UnsignedInt,
+    UnsignedLongInt,
 }
 
 impl<'a> Lexer<'a> {
@@ -427,25 +445,38 @@ impl<'a> Lexer<'a> {
                     // Else, we'll see if we have a valid suffix and push a different sized
                     // constant. Still does not support floats yet.
                     if end < len && bytes[end].is_ascii_alphabetic() {
-                        if !matches!(&bytes[end], b'l' | b'L') {
-                            return Err(Self::error_string(&bytes[start..=end]));
-                        }
-                        // we need to make sure here that if there is another character available,
-                        // it is not a valid identifier character. Anything that would be a valid
-                        // word boundary is good here.
-                        let possible_end = end + 1;
-                        if possible_end < len
+                        // we need to find a suffix here, if possible. To do that,
+                        // move an index forward as long as we see a valid identifier.
+                        // Then we hardcode some checks for types.
+                        let mut possible_end = end + 1;
+                        while possible_end < len
                             && Self::is_valid_identifier_character(bytes[possible_end])
                         {
-                            return Err(Self::error_string(&bytes[start..=possible_end]));
+                            possible_end += 1;
                         }
+                        let Some(digit_type) =
+                            Self::get_digit_type_from_suffix(&bytes[end..possible_end])
+                        else {
+                            return Err(LexerError::UnexpectedToken(format!(
+                                "Unexpected suffix for digit: {}",
+                                std::str::from_utf8(&bytes[start..possible_end])
+                                    .expect("Should be UTF-8")
+                            )));
+                        };
                         let s =
                             std::str::from_utf8(&bytes[start..end]).expect("We know this is UTF8");
                         let constant: usize = s
                             .parse()
                             .expect("Didn't get a digit after parsing a string");
-                        tokens.push(Token::LongConstant(constant));
-                        idx = end; // point to suffix, let increment at the end point after it.
+                        let token = match digit_type {
+                            DigitType::Long => Token::LongConstant(constant),
+                            DigitType::UnsignedInt => Token::UnsignedIntConstant(constant),
+                            DigitType::UnsignedLongInt => Token::UnsignedLongConstant(constant),
+                        };
+
+                        tokens.push(token);
+                        // point to last char of suffix, let increment at the end point after it.
+                        idx = possible_end - 1;
                     } else {
                         // at this point, either end == len OR end < len and bytes[end] is a
                         // non-alphabetic character (period, whitespace, etc). Just scrape up
@@ -471,6 +502,23 @@ impl<'a> Lexer<'a> {
         matches!(c, b'a'..=b'z' | b'A'..=b'Z'| b'0'..=b'9' | b'_')
     }
 
+    fn get_digit_type_from_suffix(bytes: &[u8]) -> Option<DigitType> {
+        let bytestring = std::str::from_utf8(bytes).expect("Should be UTF-8");
+        if Regex::new(r"^[uU]$").unwrap().is_match(bytestring) {
+            return Some(DigitType::UnsignedInt);
+        };
+        if Regex::new(r"^[lL]$").unwrap().is_match(bytestring) {
+            return Some(DigitType::Long);
+        };
+        if Regex::new(r"^([lL][uU]|[uU][lL])$")
+            .unwrap()
+            .is_match(bytestring)
+        {
+            return Some(DigitType::UnsignedLongInt);
+        };
+        None
+    }
+
     fn parse_keyword(s: &str) -> Option<Token<'_>> {
         match s {
             "int" => Some(Token::Int),
@@ -488,15 +536,10 @@ impl<'a> Lexer<'a> {
             "continue" => Some(Token::Continue),
             "static" => Some(Token::Static),
             "extern" => Some(Token::Extern),
+            "signed" => Some(Token::Signed),
+            "unsigned" => Some(Token::Unsigned),
             _ => None,
         }
-    }
-
-    fn error_string(v: &[u8]) -> LexerError {
-        LexerError::UnexpectedToken(
-            String::from_utf8(v.to_vec())
-                .expect("got invalid utf-8 when addressing byte range from source string"),
-        )
     }
 }
 
@@ -562,6 +605,70 @@ mod tests {
         let source = "long x = 2LL";
         let lexer = Lexer::lex(source);
         assert!(lexer.is_err());
+    }
+
+    #[test]
+    fn invalid_suffix_from_missing_whitespace() {
+        let source = "123ullong"; // should error, not be unsigned long + long keyword
+        let lexer = Lexer::lex(source);
+        let Err(LexerError::UnexpectedToken(s)) = lexer else {
+            panic!();
+        };
+        assert_eq!(s, "Unexpected suffix for digit: 123ullong");
+    }
+
+    #[test]
+    fn unsigned_and_signed_constants() {
+        let source = r"
+            unsigned int x = 1u;
+            signed int y = 2;
+            unsigned long z1 = 3ul;
+            unsigned long z2 = 4Lu;
+            unsigned long a = 5Ul;
+            unsigned long b = 6lU;
+            ";
+        let lexer = Lexer::lex(source);
+        assert!(lexer.is_ok(), "bad lexer {lexer:?}");
+        let lexer = lexer.unwrap();
+        let mut tokens = lexer.tokens();
+        assert_eq!(Some(&Token::Unsigned), tokens.next());
+        assert_eq!(Some(&Token::Int), tokens.next());
+        assert_eq!(Some(&Token::Identifier("x")), tokens.next());
+        assert_eq!(Some(&Token::Equal), tokens.next());
+        assert_eq!(Some(&Token::UnsignedIntConstant(1)), tokens.next());
+        assert_eq!(Some(&Token::Semicolon), tokens.next());
+        assert_eq!(Some(&Token::Signed), tokens.next());
+        assert_eq!(Some(&Token::Int), tokens.next());
+        assert_eq!(Some(&Token::Identifier("y")), tokens.next());
+        assert_eq!(Some(&Token::Equal), tokens.next());
+        assert_eq!(Some(&Token::Constant(2)), tokens.next());
+        assert_eq!(Some(&Token::Semicolon), tokens.next());
+        assert_eq!(Some(&Token::Unsigned), tokens.next());
+        assert_eq!(Some(&Token::Long), tokens.next());
+        assert_eq!(Some(&Token::Identifier("z1")), tokens.next());
+        assert_eq!(Some(&Token::Equal), tokens.next());
+        assert_eq!(Some(&Token::UnsignedLongConstant(3)), tokens.next());
+        assert_eq!(Some(&Token::Semicolon), tokens.next());
+        assert_eq!(Some(&Token::Unsigned), tokens.next());
+        assert_eq!(Some(&Token::Long), tokens.next());
+        assert_eq!(Some(&Token::Identifier("z2")), tokens.next());
+        assert_eq!(Some(&Token::Equal), tokens.next());
+        assert_eq!(Some(&Token::UnsignedLongConstant(4)), tokens.next());
+        assert_eq!(Some(&Token::Semicolon), tokens.next());
+        assert_eq!(Some(&Token::Unsigned), tokens.next());
+        assert_eq!(Some(&Token::Long), tokens.next());
+        assert_eq!(Some(&Token::Identifier("a")), tokens.next());
+        assert_eq!(Some(&Token::Equal), tokens.next());
+        assert_eq!(Some(&Token::UnsignedLongConstant(5)), tokens.next());
+        assert_eq!(Some(&Token::Semicolon), tokens.next());
+        assert_eq!(Some(&Token::Unsigned), tokens.next());
+        assert_eq!(Some(&Token::Long), tokens.next());
+        assert_eq!(Some(&Token::Identifier("b")), tokens.next());
+        assert_eq!(Some(&Token::Equal), tokens.next());
+        assert_eq!(Some(&Token::UnsignedLongConstant(6)), tokens.next());
+        assert_eq!(Some(&Token::Semicolon), tokens.next());
+
+        assert_eq!(None, tokens.next());
     }
 
     #[test]
