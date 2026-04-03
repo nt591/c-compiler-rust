@@ -65,7 +65,7 @@ impl CType {
         }
     }
 
-    fn size(&self) -> usize {
+    pub fn size(&self) -> usize {
         match self {
             CType::Int | CType::UInt => 32,
             CType::Long | CType::ULong => 64,
@@ -73,7 +73,7 @@ impl CType {
         }
     }
 
-    fn signed(&self) -> bool {
+    pub fn signed(&self) -> bool {
         match self {
             CType::Int | CType::Long => true,
             CType::UInt | CType::ULong | CType::FunType { .. } => false,

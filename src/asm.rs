@@ -370,6 +370,7 @@ impl Asm {
                     // truncate by just moving low 4 bytes into destination
                     vec![Mov(AssemblyType::Longword, src.into(), dst.into())]
                 }
+                TIns::ZeroExtend { .. } => todo!(),
             })
             .collect::<Vec<_>>()
     }

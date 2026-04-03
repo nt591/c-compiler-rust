@@ -90,6 +90,10 @@ pub enum Instruction {
         src: Val,
         dst: Val,
     },
+    ZeroExtend {
+        src: Val,
+        dst: Val,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -219,7 +223,8 @@ impl<'a> Tacky {
                             }
                             CType::Int => StaticInit::IntInit(0),
                             CType::Long => StaticInit::LongInit(0),
-                            CType::ULong | CType::UInt => todo!(),
+                            CType::ULong => StaticInit::ULongInit(0),
+                            CType::UInt => StaticInit::UIntInit(0),
                         };
                         defs.push(TopLevel::StaticVariable {
                             identifier: name.clone(),
@@ -349,20 +354,42 @@ impl<'a> Tacky {
             TypedExprKind::Cast(t, expr) => {
                 let result = self.parse_expression(expr, ctx)?;
                 // if we're casting to the same type, no need to emit extra instructions
-                if *t == expr.get_type() {
+                let inner_ty = expr.get_type();
+                if *t == inner_ty {
                     return Ok(result);
                 };
                 let dst = self.make_tacky_variable(ctx, t.clone())?;
-                let extension_instruction = match t {
-                    CType::Long => Instruction::SignExtend {
+                // Following C Standard, if types are different
+                // and types are same size, copy into dst.
+                // If target type is smaller, we'll truncate.
+                // If target type is signed, we'll sign-extend.
+                // Else, zero-extend into dst
+
+                let target_size = t.size();
+                let expr_size = inner_ty.size();
+                let extension_instruction = if target_size == expr_size {
+                    Instruction::Copy {
                         src: result,
                         dst: dst.clone(),
-                    },
-                    CType::Int => Instruction::Truncate {
+                    }
+                } else if target_size < expr_size {
+                    Instruction::Truncate {
                         src: result,
                         dst: dst.clone(),
-                    },
-                    _ => unreachable!("Tried to extend a type that isn't int or long"),
+                    }
+                } else {
+                    // moving bits into a target size
+                    if inner_ty.signed() {
+                        Instruction::SignExtend {
+                            src: result,
+                            dst: dst.clone(),
+                        }
+                    } else {
+                        Instruction::ZeroExtend {
+                            src: result,
+                            dst: dst.clone(),
+                        }
+                    }
                 };
                 ctx.push(extension_instruction);
                 Ok(dst)
@@ -2417,6 +2444,40 @@ mod tests {
                 .iter()
                 .any(|i| matches!(i, Instruction::SignExtend { .. })),
             "Expected a SignExtend for int->long arg conversion, got: {instrs:?}"
+        );
+    }
+
+    #[test]
+    fn zero_extend_when_casting_unsigned_value_to_larger_target() {
+        let src = r#"
+            int main(void) {
+                unsigned int x = 1;
+                long y = 2;
+                return x + y;
+            }
+        "#;
+        let instrs = tacky_instructions_for(src);
+        assert!(
+            instrs
+                .iter()
+                .any(|i| matches!(i, Instruction::ZeroExtend { .. })),
+            "Expected a ZeroExtend for int->unsigned long arg conversion, got: {instrs:?}"
+        );
+    }
+
+    #[test]
+    fn cast_emits_copy_when_targets_are_same_size() {
+        let src = r#"
+            int main(void) {
+                int x = 1;
+                unsigned int y = 2;
+                return x + y;
+            }
+        "#;
+        let instrs = tacky_instructions_for(src);
+        assert!(
+            instrs.iter().any(|i| matches!(i, Instruction::Copy { .. })),
+            "Expected a Copy for int->unsigned int arg conversion, got: {instrs:?}"
         );
     }
 }
