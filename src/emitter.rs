@@ -87,6 +87,7 @@ impl Emitter {
             StaticInit::IntInit(i) => writeln!(output, "  .long {}", i)?,
             StaticInit::LongInit(0) => writeln!(output, "  .zero 8")?,
             StaticInit::LongInit(i) => writeln!(output, "  .quad {}", i)?,
+            StaticInit::UIntInit(_) | StaticInit::ULongInit(_) => todo!(),
         }
         Ok(())
     }

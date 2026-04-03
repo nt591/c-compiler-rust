@@ -2132,7 +2132,6 @@ impl From<&tacky::Val> for Operand {
         use crate::parser::Const;
         match v {
             tacky::Val::Constant(imm) => {
-                // TODO!
                 let imm = match imm {
                     Const::Int(i) => *i as usize,
                     Const::Long(i) => *i as usize,

@@ -10,7 +10,7 @@ use crate::types::CType;
 use crate::types::StaticInit;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use thiserror::Error; // todo
+use thiserror::Error;
 
 pub type AST = crate::ast::AST<()>;
 pub type Declaration = crate::ast::Declaration<()>;
@@ -265,7 +265,7 @@ fn typecheck_function_declaration(
     decl: &FunctionDeclaration,
     ctx: &mut Ctx,
 ) -> Result<TypedFunctionDeclaration, SemanticAnalysisError> {
-    let CType::FunType { params, .. } = &decl.ftype else {
+    let CType::FunType { params, ret } = &decl.ftype else {
         unreachable!();
     };
     let has_body = decl.block.is_some();
@@ -282,7 +282,8 @@ fn typecheck_function_declaration(
             );
         };
         let CType::FunType {
-            params: old_params, ..
+            params: old_params,
+            ret: old_ret,
         } = old_ctype
         else {
             return Err(SemanticAnalysisError::IncompatibleFunctionDeclaration);
@@ -292,6 +293,10 @@ fn typecheck_function_declaration(
         if params != old_params {
             return Err(SemanticAnalysisError::IncompatibleFunctionDeclaration);
         };
+        if ret != old_ret {
+            return Err(SemanticAnalysisError::IncompatibleFunctionDeclaration);
+        };
+
         let defined = match old_ctype {
             _old_decl if *defined && has_body => {
                 Err(SemanticAnalysisError::DuplicateFunction(decl.name.clone()))
@@ -404,18 +409,7 @@ fn typecheck_file_scope_variable_declaration(
             _ => {}
         }
     }
-    let typed_init = match initial_value {
-        _ if var.init.is_none() => None,
-        InitialValue::Initial(StaticInit::IntInit(v)) => Some(TypedExpression {
-            ty: CType::Int,
-            kind: Box::new(TypedExprKind::Constant(Const::Int(v))),
-        }),
-        InitialValue::Initial(StaticInit::LongInit(v)) => Some(TypedExpression {
-            ty: CType::Long,
-            kind: Box::new(TypedExprKind::Constant(Const::Long(v))),
-        }),
-        _ => unreachable!(),
-    };
+    let typed_init = typed_expr_for_initial_value(var.init.as_ref(), &initial_value);
     ctx.symbol_table.insert(
         var.name.clone(),
         (
@@ -518,18 +512,7 @@ fn typecheck_local_var_decl(
                 },
             };
             // book says to just re-build here instead of typechecking.
-            let typed_init = match new_init {
-                _ if init.is_none() => None,
-                InitialValue::Initial(StaticInit::IntInit(v)) => Some(TypedExpression {
-                    ty: CType::Int,
-                    kind: Box::new(TypedExprKind::Constant(Const::Int(v))),
-                }),
-                InitialValue::Initial(StaticInit::LongInit(v)) => Some(TypedExpression {
-                    ty: CType::Long,
-                    kind: Box::new(TypedExprKind::Constant(Const::Long(v))),
-                }),
-                _ => unreachable!(),
-            };
+            let typed_init = typed_expr_for_initial_value(init.as_ref(), &new_init);
             ctx.symbol_table.insert(
                 name.clone(),
                 (
@@ -687,7 +670,10 @@ fn typecheck_expr(
             };
             (TypedExprKind::Var(name.clone()), stored_type.0.clone())
         }
-        ExprKind::Constant(Const::ULong(_) | Const::UInt(_)) => todo!(),
+        ExprKind::Constant(c @ Const::ULong(_)) => {
+            (TypedExprKind::Constant(c.clone()), CType::ULong)
+        }
+        ExprKind::Constant(c @ Const::UInt(_)) => (TypedExprKind::Constant(c.clone()), CType::UInt),
         ExprKind::Constant(c @ Const::Int(_)) => (TypedExprKind::Constant(c.clone()), CType::Int),
         ExprKind::Constant(c @ Const::Long(_)) => (TypedExprKind::Constant(c.clone()), CType::Long),
         ExprKind::Unary(op, expr) => {
@@ -1166,6 +1152,34 @@ fn convert_to(e: TypedExpression, t: CType) -> TypedExpression {
     }
 }
 
+fn typed_expr_for_initial_value(
+    init: Option<&Expression>,
+    iv: &InitialValue,
+) -> Option<TypedExpression> {
+    if init.is_none() {
+        return None;
+    }
+    match iv {
+        InitialValue::Initial(StaticInit::IntInit(v)) => Some(TypedExpression {
+            ty: CType::Int,
+            kind: Box::new(TypedExprKind::Constant(Const::Int(*v))),
+        }),
+        InitialValue::Initial(StaticInit::LongInit(v)) => Some(TypedExpression {
+            ty: CType::Long,
+            kind: Box::new(TypedExprKind::Constant(Const::Long(*v))),
+        }),
+        InitialValue::Initial(StaticInit::UIntInit(v)) => Some(TypedExpression {
+            ty: CType::UInt,
+            kind: Box::new(TypedExprKind::Constant(Const::UInt(*v))),
+        }),
+        InitialValue::Initial(StaticInit::ULongInit(v)) => Some(TypedExpression {
+            ty: CType::ULong,
+            kind: Box::new(TypedExprKind::Constant(Const::ULong(*v))),
+        }),
+        _ => unreachable!(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1601,6 +1615,32 @@ mod tests {
         let src = r#"
             int foo(int a);
             int foo(long a);
+            int main(void) { return 0; }
+        "#;
+        assert_eq!(
+            resolve_src(src),
+            Err(SemanticAnalysisError::IncompatibleFunctionDeclaration)
+        );
+    }
+
+    #[test]
+    fn incompatible_function_redeclaration_different_return_type() {
+        let src = r#"
+            int foo(int a);
+            long foo(int a);
+            int main(void) { return 0; }
+        "#;
+        assert_eq!(
+            resolve_src(src),
+            Err(SemanticAnalysisError::IncompatibleFunctionDeclaration)
+        );
+    }
+
+    #[test]
+    fn incompatible_function_redeclaration_unsigned_return_type() {
+        let src = r#"
+            unsigned int foo(int a);
+            int foo(int a);
             int main(void) { return 0; }
         "#;
         assert_eq!(
