@@ -200,6 +200,8 @@ impl Emitter {
             asm::Instruction::Call(lbl) => {
                 writeln!(output, "  call   _{}", lbl)?;
             }
+            asm::Instruction::MovZeroExtend { .. } => todo!(),
+            asm::Instruction::Div(_, _) => todo!(),
         }
         Ok(())
     }
@@ -338,6 +340,7 @@ impl Emitter {
             GE => write!(output, "jge         ")?,
             L => write!(output, "jl          ")?,
             LE => write!(output, "jle         ")?,
+            A | AE | B | BE => todo!(),
         }
         Ok(())
     }
@@ -351,6 +354,7 @@ impl Emitter {
             GE => write!(output, "setge      ")?,
             L => write!(output, "setl       ")?,
             LE => write!(output, "setle      ")?,
+            A | AE | B | BE => todo!(),
         }
         Ok(())
     }

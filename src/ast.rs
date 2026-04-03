@@ -156,6 +156,17 @@ pub enum Const {
     ULong(u64),
 }
 
+impl Const {
+    pub fn to_ctype(&self) -> CType {
+        match self {
+            Const::Int(_) => CType::Int,
+            Const::Long(_) => CType::Long,
+            Const::UInt(_) => CType::UInt,
+            Const::ULong(_) => CType::ULong,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum UnaryOp {
     Negate,

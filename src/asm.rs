@@ -56,21 +56,29 @@ pub enum BinaryOp {
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum CondCode {
-    E,  // equal
-    NE, // not equal
+    E,  // equal, ZF set
+    NE, // not equal, ZF not set
+    // signed only
     G,  // greater than
     GE, // greater or equal
     L,  // less than
     LE, // less than or equal
+    // Unsigned only
+    A,  // Above, ZF not set and CF not set (a > b)
+    AE, // Above or equal, CF not set (if equal, ZF set)
+    B,  // Below, CF set (a < b)
+    BE, // Below or equal, CF set or ZF set
 }
 
 #[derive(Debug, PartialEq)]
 pub enum Instruction {
     Mov(AssemblyType, Operand, Operand),
-    Movsx(Operand, Operand), // src, dst
+    Movsx(Operand, Operand),         // src, dst
+    MovZeroExtend(Operand, Operand), // src, dst
     Unary(UnaryOp, AssemblyType, Operand),
     Binary(BinaryOp, AssemblyType, Operand, Operand),
     Idiv(AssemblyType, Operand),
+    Div(AssemblyType, Operand), // unsigned division instruction
     Cdq(AssemblyType),
     Ret,
     // relational operation instructions
@@ -258,55 +266,6 @@ impl Asm {
                     }
                 },
                 TIns::Binary {
-                    op: tacky::BinaryOp::Divide,
-                    src1,
-                    src2,
-                    dst,
-                } => {
-                    let assembly_type = get_assembly_type_from_val(&src1, symbol_table);
-                    vec![
-                        Mov(assembly_type, src1.into(), Operand::Reg(Register::AX)),
-                        Cdq(assembly_type),
-                        Idiv(assembly_type, src2.into()),
-                        Mov(assembly_type, Operand::Reg(Register::AX), dst.into()),
-                    ]
-                }
-                TIns::Binary {
-                    op: tacky::BinaryOp::Remainder,
-                    src1,
-                    src2,
-                    dst,
-                } => {
-                    let assembly_type = get_assembly_type_from_val(&src1, symbol_table);
-                    vec![
-                        Mov(assembly_type, src1.into(), Operand::Reg(Register::AX)),
-                        Cdq(assembly_type),
-                        Idiv(assembly_type, src2.into()),
-                        Mov(assembly_type, Operand::Reg(Register::DX), dst.into()),
-                    ]
-                }
-                // SHIFTRIGHT:
-                // TODO: maybe if src1 isn't a negative we avoid the sign extension
-                TIns::Binary {
-                    op: tacky::BinaryOp::ShiftRight,
-                    src1,
-                    src2,
-                    dst,
-                } => {
-                    // shouldn't expect a shift to change type
-                    let assembly_type = get_assembly_type_from_val(src1, symbol_table);
-                    vec![
-                        Mov(assembly_type, src1.into(), Operand::Reg(Register::AX)),
-                        Binary(
-                            BinaryOp::ShiftRight,
-                            assembly_type,
-                            src2.into(),
-                            Operand::Reg(Register::AX),
-                        ),
-                        Mov(assembly_type, Operand::Reg(Register::AX), dst.into()),
-                    ]
-                }
-                TIns::Binary {
                     op,
                     src1,
                     src2,
@@ -337,9 +296,66 @@ impl Asm {
                     tacky::BinaryOp::And | tacky::BinaryOp::Or => {
                         unreachable!("BinAnd/BinOr are lowered to jumps")
                     }
-                    tacky::BinaryOp::Remainder
-                    | tacky::BinaryOp::Divide
-                    | tacky::BinaryOp::ShiftRight => unreachable!(),
+                    tacky::BinaryOp::Divide => {
+                        let assembly_type = get_assembly_type_from_val(&src1, symbol_table);
+                        let ctype = get_ctype_for_val(src1, symbol_table);
+                        // if ctype is signed, we sign-extend EAX/RAX (cdq instruction) and issue
+                        // idiv.
+                        // if ctype is unsigned, we zero out EDX/RDX and issue standard div.
+                        // Accumulator stores quotient, so copy EAX/RAX into destination
+                        if ctype.signed() {
+                            vec![
+                                Mov(assembly_type, src1.into(), Operand::Reg(Register::AX)),
+                                Cdq(assembly_type),
+                                Idiv(assembly_type, src2.into()),
+                                Mov(assembly_type, Operand::Reg(Register::AX), dst.into()),
+                            ]
+                        } else {
+                            vec![
+                                Mov(assembly_type, src1.into(), Operand::Reg(Register::AX)),
+                                Mov(assembly_type, Operand::Imm(0), Operand::Reg(Register::DX)),
+                                Div(assembly_type, src2.into()),
+                                Mov(assembly_type, Operand::Reg(Register::AX), dst.into()),
+                            ]
+                        }
+                    }
+                    tacky::BinaryOp::Remainder => {
+                        // if ctype is signed, we sign-extend EAX/RAX (cdq instruction) and issue
+                        // idiv.
+                        // if ctype is unsigned, we zero out EDX/RDX and issue standard div.
+                        // DX stores remainder, so copy EDX/RDX into destination
+                        let assembly_type = get_assembly_type_from_val(&src1, symbol_table);
+                        let ctype = get_ctype_for_val(src1, symbol_table);
+                        if ctype.signed() {
+                            vec![
+                                Mov(assembly_type, src1.into(), Operand::Reg(Register::AX)),
+                                Cdq(assembly_type),
+                                Idiv(assembly_type, src2.into()),
+                                Mov(assembly_type, Operand::Reg(Register::DX), dst.into()),
+                            ]
+                        } else {
+                            vec![
+                                Mov(assembly_type, src1.into(), Operand::Reg(Register::AX)),
+                                Mov(assembly_type, Operand::Imm(0), Operand::Reg(Register::DX)),
+                                Div(assembly_type, src2.into()),
+                                Mov(assembly_type, Operand::Reg(Register::DX), dst.into()),
+                            ]
+                        }
+                    }
+                    tacky::BinaryOp::ShiftRight => {
+                        // shouldn't expect a shift to change type
+                        let assembly_type = get_assembly_type_from_val(src1, symbol_table);
+                        vec![
+                            Mov(assembly_type, src1.into(), Operand::Reg(Register::AX)),
+                            Binary(
+                                BinaryOp::ShiftRight,
+                                assembly_type,
+                                src2.into(),
+                                Operand::Reg(Register::AX),
+                            ),
+                            Mov(assembly_type, Operand::Reg(Register::AX), dst.into()),
+                        ]
+                    }
                 },
                 TIns::JumpIfZero { cond, target } => {
                     // comp condition to 0, then jump if equal to target
@@ -370,7 +386,9 @@ impl Asm {
                     // truncate by just moving low 4 bytes into destination
                     vec![Mov(AssemblyType::Longword, src.into(), dst.into())]
                 }
-                TIns::ZeroExtend { .. } => todo!(),
+                TIns::ZeroExtend { src, dst } => {
+                    vec![MovZeroExtend(src.into(), dst.into())]
+                }
             })
             .collect::<Vec<_>>()
     }
@@ -475,13 +493,18 @@ impl Asm {
     ) -> Vec<Instruction> {
         use Instruction::*;
         use tacky::BinaryOp as TBO;
+        let ctype = get_ctype_for_val(src1, symbol_table);
         let cond_code = match op {
             TBO::Equal => CondCode::E,
             TBO::NotEqual => CondCode::NE,
-            TBO::GreaterThan => CondCode::G,
-            TBO::GreaterOrEqual => CondCode::GE,
-            TBO::LessThan => CondCode::L,
-            TBO::LessOrEqual => CondCode::LE,
+            TBO::GreaterThan if ctype.signed() => CondCode::G,
+            TBO::GreaterThan => CondCode::A,
+            TBO::GreaterOrEqual if ctype.signed() => CondCode::GE,
+            TBO::GreaterOrEqual => CondCode::AE,
+            TBO::LessThan if ctype.signed() => CondCode::L,
+            TBO::LessThan => CondCode::B,
+            TBO::LessOrEqual if ctype.signed() => CondCode::LE,
+            TBO::LessOrEqual => CondCode::BE,
             _ => {
                 panic!("Unexpected tacky BinaryOp {op:?} when constructing relational instruction")
             }
@@ -536,6 +559,10 @@ impl Asm {
                 *src = Self::replace_pseudo_in_op(src, generator, symbol_table);
                 *dst = Self::replace_pseudo_in_op(dst, generator, symbol_table);
             }
+            Instruction::MovZeroExtend(src, dst) => {
+                *src = Self::replace_pseudo_in_op(src, generator, symbol_table);
+                *dst = Self::replace_pseudo_in_op(dst, generator, symbol_table);
+            }
             Instruction::Movsx(src, dst) => {
                 *src = Self::replace_pseudo_in_op(src, generator, symbol_table);
                 *dst = Self::replace_pseudo_in_op(dst, generator, symbol_table);
@@ -548,6 +575,9 @@ impl Asm {
                 *src2 = Self::replace_pseudo_in_op(src2, generator, symbol_table);
             }
             Instruction::Idiv(_, src) => {
+                *src = Self::replace_pseudo_in_op(src, generator, symbol_table);
+            }
+            Instruction::Div(_, src) => {
                 *src = Self::replace_pseudo_in_op(src, generator, symbol_table);
             }
             Instruction::Cmp(_, src, dst) => {
@@ -702,6 +732,18 @@ impl Asm {
                         Instruction::Mov(AssemblyType::Quadword, Operand::Reg(Register::R10), dst),
                     ])
                 }
+                Instruction::MovZeroExtend(src, dst @ Operand::Reg(_)) => {
+                    // if we're moving and zero extending into a register, just a movl is sufficient
+                    v.push(Instruction::Mov(AssemblyType::Longword, src, dst))
+                }
+                Instruction::MovZeroExtend(src, dst @ (Operand::Data(_) | Operand::Stack(_))) => {
+                    // if we're zero extending + moving into a memory address, we first movl into
+                    // a register, THEN movq into the actual destination.
+                    v.extend(vec![
+                        Instruction::Mov(AssemblyType::Longword, src, Operand::Reg(Register::R10)),
+                        Instruction::Mov(AssemblyType::Quadword, Operand::Reg(Register::R10), dst),
+                    ])
+                }
                 Instruction::Binary(
                     BinaryOp::Mult,
                     AssemblyType::Quadword,
@@ -832,6 +874,11 @@ impl Asm {
                     v.push(Instruction::Mov(at, imm, Operand::Reg(Register::R10)));
                     v.push(Instruction::Idiv(at, Operand::Reg(Register::R10)));
                 }
+                Instruction::Div(at, imm @ Operand::Imm(_)) => {
+                    // div cannot operate on immediates, so move to a scratch register
+                    v.push(Instruction::Mov(at, imm, Operand::Reg(Register::R10)));
+                    v.push(Instruction::Div(at, Operand::Reg(Register::R10)));
+                }
                 Instruction::Cmp(at, src @ Operand::Stack(_), dst @ Operand::Stack(_))
                 | Instruction::Cmp(at, src @ Operand::Data(_), dst @ Operand::Data(_))
                 | Instruction::Cmp(at, src @ Operand::Stack(_), dst @ Operand::Data(_))
@@ -894,6 +941,43 @@ impl Asm {
     }
 }
 
+fn get_assembly_type_from_val(val: &tacky::Val, symbol_table: &SymbolTable) -> AssemblyType {
+    match val {
+        Val::Constant(Const::Int(_) | Const::UInt(_)) => AssemblyType::Longword,
+        Val::Constant(Const::Long(_) | Const::ULong(_)) => AssemblyType::Quadword,
+        Val::Var(s) => get_assembly_type_from_var_name(s.as_str(), symbol_table),
+    }
+}
+
+fn get_assembly_type_from_var_name(var: &str, symbol_table: &SymbolTable) -> AssemblyType {
+    let (ctype, _attr) = symbol_table
+        .get(var)
+        .expect("Expected entry for {s:?} in symbol table");
+    match ctype {
+        CType::Int | CType::UInt => AssemblyType::Longword,
+        CType::Long | CType::ULong => AssemblyType::Quadword,
+        CType::FunType { .. } => unreachable!(),
+    }
+}
+
+fn alignment_for_assembly_type(at: &AssemblyType) -> usize {
+    match at {
+        AssemblyType::Longword => 4,
+        AssemblyType::Quadword => 8,
+    }
+}
+
+fn get_ctype_for_val(val: &Val, symbol_table: &SymbolTable) -> CType {
+    match val {
+        Val::Constant(c) => c.to_ctype(),
+        Val::Var(s) => symbol_table
+            .get(s)
+            .expect("Missing symbol for {s:?} in frontend symbol table")
+            .0
+            .clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -907,6 +991,14 @@ mod tests {
         let mut table = semantic_analysis::SymbolTable::new();
         for &var in vars {
             table.insert(var.to_string(), (CType::Int, IdentifierAttrs::LocalAttr));
+        }
+        table
+    }
+
+    fn sym_table(vars: &[(&str, CType)]) -> semantic_analysis::SymbolTable {
+        let mut table = semantic_analysis::SymbolTable::new();
+        for &(var, ref ctype) in vars {
+            table.insert(var.to_string(), (ctype.clone(), IdentifierAttrs::LocalAttr));
         }
         table
     }
@@ -2059,33 +2151,99 @@ mod tests {
         ]);
         assert_eq!(expected, actual);
     }
-}
 
-fn get_assembly_type_from_val(val: &tacky::Val, symbol_table: &SymbolTable) -> AssemblyType {
-    match val {
-        Val::Constant(Const::Int(_)) => AssemblyType::Longword,
-        Val::Constant(Const::Long(_)) => AssemblyType::Quadword,
-        Val::Constant(Const::UInt(_) | Const::ULong(_)) => todo!(),
-        Val::Var(s) => get_assembly_type_from_var_name(s.as_str(), symbol_table),
+    #[test]
+    fn unsigned_greater_than_uses_above_cond_code() {
+        // unsigned int a > unsigned int b should emit SetCC(A), not SetCC(G)
+        let ast = tacky::AST::Program(vec![tacky::TopLevel::Function {
+            name: "main".into(),
+            params: vec![],
+            global: true,
+            instructions: vec![
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::GreaterThan,
+                    src1: tacky::Val::Var("a.0".into()),
+                    src2: tacky::Val::Var("b.1".into()),
+                    dst: tacky::Val::Var("tmp.2".into()),
+                },
+                tacky::Instruction::Ret(tacky::Val::Var("tmp.2".into())),
+            ],
+        }]);
+        let table = sym_table(&[
+            ("a.0", CType::UInt),
+            ("b.1", CType::UInt),
+            ("tmp.2", CType::Int), // comparison result is always int
+        ]);
+        let asm = Asm::from_tacky(ast, table);
+        let Asm::Program(ref tops) = asm;
+        let TopLevel::Func(ref func) = tops[0] else { panic!() };
+        assert!(
+            func.instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::SetCC(CondCode::A, _))),
+            "Expected SetCC(A) for unsigned GreaterThan, got: {:?}",
+            func.instructions
+        );
+        assert!(
+            !func.instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::SetCC(CondCode::G, _))),
+            "Got signed CondCode::G for unsigned comparison"
+        );
     }
-}
 
-fn get_assembly_type_from_var_name(var: &str, symbol_table: &SymbolTable) -> AssemblyType {
-    let (ctype, _attr) = symbol_table
-        .get(var)
-        .expect("Expected entry for {s:?} in symbol table");
-    match ctype {
-        CType::Int => AssemblyType::Longword,
-        CType::Long => AssemblyType::Quadword,
-        CType::UInt | CType::ULong => todo!(),
-        CType::FunType { .. } => unreachable!(),
-    }
-}
-
-fn alignment_for_assembly_type(at: &AssemblyType) -> usize {
-    match at {
-        AssemblyType::Longword => 4,
-        AssemblyType::Quadword => 8,
+    #[test]
+    fn unsigned_division_emits_div_and_zeroes_dx() {
+        // unsigned division should zero DX and use div, not cdq/idiv
+        let ast = tacky::AST::Program(vec![tacky::TopLevel::Function {
+            name: "main".into(),
+            params: vec![],
+            global: true,
+            instructions: vec![
+                tacky::Instruction::Binary {
+                    op: tacky::BinaryOp::Divide,
+                    src1: tacky::Val::Var("a.0".into()),
+                    src2: tacky::Val::Var("b.1".into()),
+                    dst: tacky::Val::Var("tmp.2".into()),
+                },
+                tacky::Instruction::Ret(tacky::Val::Var("tmp.2".into())),
+            ],
+        }]);
+        let table = sym_table(&[
+            ("a.0", CType::UInt),
+            ("b.1", CType::UInt),
+            ("tmp.2", CType::UInt),
+        ]);
+        let asm = Asm::from_tacky(ast, table);
+        let Asm::Program(ref tops) = asm;
+        let TopLevel::Func(ref func) = tops[0] else { panic!() };
+        assert!(
+            func.instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::Div(..))),
+            "Expected Div for unsigned division, got: {:?}",
+            func.instructions
+        );
+        assert!(
+            func.instructions.iter().any(|i| matches!(
+                i,
+                Instruction::Mov(_, Operand::Imm(0), Operand::Reg(Register::DX))
+            )),
+            "Expected DX zeroed before unsigned div, got: {:?}",
+            func.instructions
+        );
+        assert!(
+            !func.instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::Idiv(..))),
+            "Got Idiv for unsigned division"
+        );
+        assert!(
+            !func.instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::Cdq(..))),
+            "Got Cdq for unsigned division"
+        );
     }
 }
 
@@ -2105,11 +2263,11 @@ impl From<tacky::Val> for Operand {
         use crate::parser::Const;
         match v {
             tacky::Val::Constant(imm) => {
-                // TODO!
                 let imm = match imm {
                     Const::Int(i) => i as usize,
                     Const::Long(i) => i as usize,
-                    Const::ULong(_) | Const::UInt(_) => todo!(),
+                    Const::ULong(i) => i as usize,
+                    Const::UInt(i) => i as usize,
                 };
                 Operand::Imm(imm)
             }
@@ -2136,7 +2294,8 @@ impl From<&tacky::Val> for Operand {
                 let imm = match imm {
                     Const::Int(i) => *i as usize,
                     Const::Long(i) => *i as usize,
-                    Const::UInt(_) | Const::ULong(_) => todo!(),
+                    Const::ULong(i) => *i as usize,
+                    Const::UInt(i) => *i as usize,
                 };
                 Operand::Imm(imm)
             }

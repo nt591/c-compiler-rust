@@ -31,23 +31,26 @@ pub fn backend_symbol_table_from_symbol_table(symtable: SymbolTable) -> BackendS
     let mut new_table = HashMap::with_capacity(symtable.len());
     for (name, (ctype, attrs)) in symtable {
         let entry = match (ctype, attrs) {
-            (CType::UInt | CType::ULong, _) => todo!(),
             (CType::FunType { .. }, IdentifierAttrs::FunAttr { defined, .. }) => {
                 BackendSymTableEntry::FunEntry { defined }
             }
-            (CType::Int, IdentifierAttrs::StaticAttr { .. }) => BackendSymTableEntry::ObjEntry {
-                ty: AssemblyType::Longword,
-                is_static: true,
-            },
-            (CType::Int, _) => BackendSymTableEntry::ObjEntry {
+            (CType::Int | CType::UInt, IdentifierAttrs::StaticAttr { .. }) => {
+                BackendSymTableEntry::ObjEntry {
+                    ty: AssemblyType::Longword,
+                    is_static: true,
+                }
+            }
+            (CType::Int | CType::UInt, _) => BackendSymTableEntry::ObjEntry {
                 ty: AssemblyType::Longword,
                 is_static: false,
             },
-            (CType::Long, IdentifierAttrs::StaticAttr { .. }) => BackendSymTableEntry::ObjEntry {
-                ty: AssemblyType::Quadword,
-                is_static: true,
-            },
-            (CType::Long, _) => BackendSymTableEntry::ObjEntry {
+            (CType::Long | CType::ULong, IdentifierAttrs::StaticAttr { .. }) => {
+                BackendSymTableEntry::ObjEntry {
+                    ty: AssemblyType::Quadword,
+                    is_static: true,
+                }
+            }
+            (CType::Long | CType::ULong, _) => BackendSymTableEntry::ObjEntry {
                 ty: AssemblyType::Quadword,
                 is_static: false,
             },
