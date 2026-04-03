@@ -5,6 +5,8 @@ use crate::types::StaticInit;
 
 pub fn convert_const(c: Const, target: &CType) -> StaticInit {
     match (c, target) {
+        (Const::UInt(_) | Const::ULong(_), _) => todo!(),
+        (_, CType::UInt | CType::ULong) => todo!(),
         (Const::Int(i), CType::Long) => StaticInit::LongInit(i as i64),
         (Const::Int(i), CType::Int) => StaticInit::IntInit(i),
         (Const::Long(l), CType::Long) => StaticInit::LongInit(l),

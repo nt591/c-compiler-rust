@@ -17,7 +17,7 @@ pub struct Lexer<'a> {
     tokens: Vec<Token<'a>>,
 }
 
-#[derive(Debug, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Copy, Clone, Eq, Hash)]
 pub enum Token<'a> {
     Identifier(&'a str),
     Constant(usize),

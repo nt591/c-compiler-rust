@@ -3,6 +3,8 @@
 pub enum CType {
     Int,
     Long,
+    UInt,
+    ULong,
     FunType {
         params: Vec<CType>,
         ret: Box<CType>, // TODO: intern CType and carry a u32 everywhere.

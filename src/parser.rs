@@ -1,6 +1,7 @@
 pub use crate::ast::{BinaryOp, Const, StorageClass, UnaryOp};
 use crate::lexer::Token;
 use crate::types::CType;
+use std::collections::HashSet;
 use std::iter::Peekable;
 use thiserror::Error;
 
@@ -85,12 +86,32 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_type(specifier_list: &[Token]) -> Result<CType, ParserError> {
-        match specifier_list {
-            [Token::Int] => Ok(CType::Int),
-            [Token::Long] => Ok(CType::Long),
-            [Token::Long, Token::Int] | [Token::Int, Token::Long] => Ok(CType::Long),
-            _otherwise => Err(ParserError::InvalidTypeSpecifier),
+        // tokens are allowed here in any order, so here's what we do
+        // First, check for empty list. If nothing, we error.
+        // Second, look for duplicates: no 'int int' - not implementing 'long long'.
+        // Third, look for conflicts - cant have both signed and unsigned.
+        if specifier_list.is_empty() {
+            return Err(ParserError::InvalidTypeSpecifier);
         }
+        let set: HashSet<&Token> = HashSet::from_iter(specifier_list);
+        if set.len() != specifier_list.len() {
+            // got duplicates
+            return Err(ParserError::InvalidTypeSpecifier);
+        }
+        if set.contains(&Token::Unsigned) {
+            if set.contains(&Token::Signed) {
+                return Err(ParserError::InvalidTypeSpecifier);
+            }
+            if set.contains(&Token::Long) {
+                return Ok(CType::ULong);
+            }
+            return Ok(CType::UInt);
+        }
+        // at this point, may or may not contain signed Token but MUST be signed type
+        if set.contains(&Token::Long) {
+            return Ok(CType::Long);
+        }
+        Ok(CType::Int)
     }
 
     fn parse_type_and_storage_class(
@@ -103,6 +124,8 @@ impl<'a> Parser<'a> {
             match self.tokens.peek() {
                 Some(Token::Int) => types.push(Token::Int),
                 Some(Token::Long) => types.push(Token::Long),
+                Some(Token::Signed) => types.push(Token::Signed),
+                Some(Token::Unsigned) => types.push(Token::Unsigned),
                 Some(Token::Static) => classes.push(StorageClass::Static),
                 Some(Token::Extern) => classes.push(StorageClass::Extern),
                 _ => break,
@@ -137,14 +160,10 @@ impl<'a> Parser<'a> {
             loop {
                 // collect token until we see an identifier, then
                 // we'll parse a CType
-                let mut types = vec![];
-                loop {
-                    if !token_is_valid_specifier(self.tokens.peek().copied()) {
-                        break;
-                    }
-                    types.push(self.tokens.next().copied().unwrap());
+                let (ty_, storage_class) = self.parse_type_and_storage_class()?;
+                if storage_class.is_some() {
+                    return Err(ParserError::InvalidStorageClass);
                 }
-                let ty_ = Self::parse_type(&types)?;
                 let Some(Token::Identifier(ident)) = self.tokens.next() else {
                     return Err(ParserError::ExpectedIdentifierAfterType);
                 };
@@ -557,29 +576,35 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_constant(tok: Token) -> Result<Const, ParserError> {
-        let v = match tok {
-            Token::Constant(c) | Token::LongConstant(c) => c,
+        match tok {
+            Token::Constant(c) if c <= i32::MAX as usize => Ok(Const::Int(c.try_into().unwrap())),
+            // promote signed int to signed long if c > i32
+            Token::Constant(c) | Token::LongConstant(c) => {
+                Ok(Const::Long(c.try_into().map_err(|_| {
+                    ParserError::IntegerTooLargeToFitInConstant
+                })?))
+            }
+            Token::UnsignedIntConstant(c) if c <= u32::MAX as usize => {
+                Ok(Const::UInt(c.try_into().unwrap()))
+            }
+            // promote unsigned int to unsigned long if c > u32
+            Token::UnsignedIntConstant(c) | Token::UnsignedLongConstant(c) => {
+                Ok(Const::ULong(c.try_into().map_err(|_| {
+                    ParserError::IntegerTooLargeToFitInConstant
+                })?))
+            }
             _ => panic!("Somehow tried to parse a token that isn't a constant, got {tok:?}"),
-        };
-        if v > i64::MAX as usize {
-            return Err(ParserError::IntegerTooLargeToFitInConstant);
         }
-        if let Token::Constant(_) = tok
-            && v <= i32::MAX as usize
-        {
-            return Ok(Const::Int(
-                v.try_into()
-                    .map_err(|_| ParserError::IntegerTooLargeToFitInConstant)?,
-            ));
-        }
-        Ok(Const::Long(v.try_into().map_err(|_| {
-            ParserError::IntegerTooLargeToFitInConstant
-        })?))
     }
 
     fn parse_factor(&mut self) -> Result<Expression, ParserError> {
         match self.tokens.next() {
-            Some(t @ Token::Constant(_) | t @ Token::LongConstant(_)) => {
+            Some(
+                t @ (Token::Constant(_)
+                | Token::LongConstant(_)
+                | Token::UnsignedLongConstant(_)
+                | Token::UnsignedIntConstant(_)),
+            ) => {
                 let constant = Self::parse_constant(*t)?;
                 Ok(Expression::new(ExprKind::Constant(constant)))
             }
@@ -609,11 +634,10 @@ impl<'a> Parser<'a> {
                 // specifiers and turn this into a Cast expression. Else,
                 // throw away parens and use just inner expression
                 if token_is_valid_specifier(self.tokens.peek().copied()) {
-                    let mut types = vec![];
-                    while token_is_valid_specifier(self.tokens.peek().copied()) {
-                        types.push(self.tokens.next().copied().unwrap());
+                    let (type_, storage_class) = self.parse_type_and_storage_class()?;
+                    if storage_class.is_some() {
+                        return Err(ParserError::InvalidStorageClass);
                     }
-                    let type_ = Self::parse_type(&types)?;
                     self.expect(Token::RightParen)?;
                     let expr = self.parse_factor()?;
                     Ok(Expression::new(ExprKind::Cast(type_, Box::new(expr))))
@@ -724,8 +748,13 @@ fn token_is_valid_specifier(tok: Option<&Token>) -> bool {
 }
 
 fn token_is_valid_type_specifier(tok: Option<&Token>) -> bool {
-    tok.map(|t| matches!(t, Token::Int | Token::Long))
-        .unwrap_or(false)
+    tok.map(|t| {
+        matches!(
+            t,
+            Token::Int | Token::Long | Token::Signed | Token::Unsigned
+        )
+    })
+    .unwrap_or(false)
 }
 
 fn token_is_valid_storage_class(tok: Option<&Token>) -> bool {
@@ -2198,6 +2227,112 @@ mod tests {
     }
 
     #[test]
+    fn parses_unsigned_types() {
+        // all orderings of unsigned int / unsigned long should parse correctly
+        for (src, expected_type) in [
+            ("int main(void) { unsigned int x; return 0; }", CType::UInt),
+            ("int main(void) { unsigned x; return 0; }", CType::UInt),
+            ("int main(void) { int unsigned x; return 0; }", CType::UInt),
+            (
+                "int main(void) { unsigned long x; return 0; }",
+                CType::ULong,
+            ),
+            (
+                "int main(void) { long unsigned x; return 0; }",
+                CType::ULong,
+            ),
+            (
+                "int main(void) { unsigned long int x; return 0; }",
+                CType::ULong,
+            ),
+            (
+                "int main(void) { signed long int x; return 0; }",
+                CType::Long,
+            ),
+            ("int main(void) { signed int x; return 0; }", CType::Int),
+            ("int main(void) { signed x; return 0; }", CType::Int),
+        ] {
+            let lexer = crate::lexer::Lexer::lex(src).unwrap();
+            let tokens = lexer.as_syntactic_tokens();
+            let ast = Parser::new(&tokens).into_ast();
+            assert!(ast.is_ok(), "failed for: {src}");
+            let AST::Program(decls) = ast.unwrap();
+            let Declaration::FunDecl(main) = &decls[0] else {
+                panic!()
+            };
+            let crate::ast::Block(items) = main.block.as_ref().unwrap();
+            let BlockItem::Decl(Declaration::VarDecl(vd)) = &items[0] else {
+                panic!()
+            };
+            assert_eq!(vd.vtype, expected_type, "wrong type for: {src}");
+        }
+    }
+
+    #[test]
+    fn invalid_unsigned_type_specifiers() {
+        for src in [
+            // signed and unsigned together
+            "int main(void) { signed unsigned x; return 0; }",
+            // duplicates
+            "int main(void) { unsigned unsigned x; return 0; }",
+            "int main(void) { signed signed x; return 0; }",
+        ] {
+            let lexer = crate::lexer::Lexer::lex(src).unwrap();
+            let tokens = lexer.as_syntactic_tokens();
+            let ast = Parser::new(&tokens).into_ast();
+            assert_eq!(
+                ast,
+                Err(ParserError::InvalidTypeSpecifier),
+                "should fail for: {src}"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_storage_class() {
+        for src in [
+            // storage class in cast
+            "int main(void) { return (static int) 10; }",
+            // storage class in function parameter type
+            "int foo(static int x) { return x; }",
+        ] {
+            let lexer = crate::lexer::Lexer::lex(src).unwrap();
+            let tokens = lexer.as_syntactic_tokens();
+            let ast = Parser::new(&tokens).into_ast();
+            assert_eq!(
+                ast,
+                Err(ParserError::InvalidStorageClass),
+                "should fail for: {src}"
+            );
+        }
+    }
+    #[test]
+    fn parses_unsigned_constants() {
+        for (src, expected_const) in [
+            ("int main(void) { return 1u; }", Const::UInt(1)),
+            ("int main(void) { return 1ul; }", Const::ULong(1)),
+        ] {
+            let lexer = crate::lexer::Lexer::lex(src).unwrap();
+            let tokens = lexer.as_syntactic_tokens();
+            let ast = Parser::new(&tokens).into_ast();
+            assert!(ast.is_ok(), "failed for: {src}");
+            let AST::Program(decls) = ast.unwrap();
+            let Declaration::FunDecl(main) = &decls[0] else {
+                panic!()
+            };
+            let crate::ast::Block(items) = main.block.as_ref().unwrap();
+            let BlockItem::Stmt(crate::ast::Statement::Return(expr)) = &items[0] else {
+                panic!()
+            };
+            assert_eq!(
+                *expr.kind,
+                crate::ast::ExprKind::Constant(expected_const),
+                "wrong const for: {src}"
+            );
+        }
+    }
+
+    #[test]
     fn invalid_storage_and_type_specifiers() {
         let src = "main(void) { return 0 ; }";
         let lexer = crate::lexer::Lexer::lex(src).unwrap();
@@ -2215,5 +2350,23 @@ mod tests {
         let parse = Parser::new(&tokens);
         let ast = parse.into_ast();
         assert_eq!(ast, Err(ParserError::InvalidStorageClass));
+    }
+
+    #[test]
+    fn parse_constant_should_promote_signed_int_to_signed_long() {
+        let t = Token::Constant(i32::MAX as usize + 1);
+        let c = Parser::parse_constant(t);
+        assert!(c.is_ok());
+        let const_ = c.unwrap();
+        assert_eq!(const_, Const::Long(i32::MAX as i64 + 1));
+    }
+
+    #[test]
+    fn parse_constant_should_promote_unsigned_int_to_unsigned_long() {
+        let t = Token::UnsignedIntConstant(u32::MAX as usize + 1);
+        let c = Parser::parse_constant(t);
+        assert!(c.is_ok());
+        let const_ = c.unwrap();
+        assert_eq!(const_, Const::ULong(u32::MAX as u64 + 1));
     }
 }

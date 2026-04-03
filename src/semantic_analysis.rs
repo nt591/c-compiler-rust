@@ -687,7 +687,7 @@ fn typecheck_expr(
             };
             (TypedExprKind::Var(name.clone()), stored_type.0.clone())
         }
-
+        ExprKind::Constant(Const::ULong(_) | Const::UInt(_)) => todo!(),
         ExprKind::Constant(c @ Const::Int(_)) => (TypedExprKind::Constant(c.clone()), CType::Int),
         ExprKind::Constant(c @ Const::Long(_)) => (TypedExprKind::Constant(c.clone()), CType::Long),
         ExprKind::Unary(op, expr) => {

@@ -31,6 +31,7 @@ pub fn backend_symbol_table_from_symbol_table(symtable: SymbolTable) -> BackendS
     let mut new_table = HashMap::with_capacity(symtable.len());
     for (name, (ctype, attrs)) in symtable {
         let entry = match (ctype, attrs) {
+            (CType::UInt | CType::ULong, _) => todo!(),
             (CType::FunType { .. }, IdentifierAttrs::FunAttr { defined, .. }) => {
                 BackendSymTableEntry::FunEntry { defined }
             }

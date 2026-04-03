@@ -152,6 +152,8 @@ pub enum ExprKind<T> {
 pub enum Const {
     Int(i32),
     Long(i64),
+    UInt(u32),
+    ULong(u64),
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]
