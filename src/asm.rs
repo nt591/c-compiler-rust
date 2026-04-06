@@ -2176,7 +2176,9 @@ mod tests {
         ]);
         let asm = Asm::from_tacky(ast, table);
         let Asm::Program(ref tops) = asm;
-        let TopLevel::Func(ref func) = tops[0] else { panic!() };
+        let TopLevel::Func(ref func) = tops[0] else {
+            panic!()
+        };
         assert!(
             func.instructions
                 .iter()
@@ -2185,7 +2187,8 @@ mod tests {
             func.instructions
         );
         assert!(
-            !func.instructions
+            !func
+                .instructions
                 .iter()
                 .any(|i| matches!(i, Instruction::SetCC(CondCode::G, _))),
             "Got signed CondCode::G for unsigned comparison"
@@ -2216,7 +2219,9 @@ mod tests {
         ]);
         let asm = Asm::from_tacky(ast, table);
         let Asm::Program(ref tops) = asm;
-        let TopLevel::Func(ref func) = tops[0] else { panic!() };
+        let TopLevel::Func(ref func) = tops[0] else {
+            panic!()
+        };
         assert!(
             func.instructions
                 .iter()
@@ -2233,13 +2238,15 @@ mod tests {
             func.instructions
         );
         assert!(
-            !func.instructions
+            !func
+                .instructions
                 .iter()
                 .any(|i| matches!(i, Instruction::Idiv(..))),
             "Got Idiv for unsigned division"
         );
         assert!(
-            !func.instructions
+            !func
+                .instructions
                 .iter()
                 .any(|i| matches!(i, Instruction::Cdq(..))),
             "Got Cdq for unsigned division"

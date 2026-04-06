@@ -83,11 +83,12 @@ impl Emitter {
         writeln!(output, "  .balign {alignment}")?;
         writeln!(output, "_{}:", identifier)?;
         match init {
-            StaticInit::IntInit(0) => writeln!(output, "  .zero 4")?,
+            StaticInit::IntInit(0) | StaticInit::UIntInit(0) => writeln!(output, "  .zero 4")?,
             StaticInit::IntInit(i) => writeln!(output, "  .long {}", i)?,
-            StaticInit::LongInit(0) => writeln!(output, "  .zero 8")?,
+            StaticInit::UIntInit(i) => writeln!(output, "  .long {}", i)?,
+            StaticInit::LongInit(0) | StaticInit::ULongInit(0) => writeln!(output, "  .zero 8")?,
             StaticInit::LongInit(i) => writeln!(output, "  .quad {}", i)?,
-            StaticInit::UIntInit(_) | StaticInit::ULongInit(_) => todo!(),
+            StaticInit::ULongInit(i) => writeln!(output, "  .quad {}", i)?,
         }
         Ok(())
     }
@@ -161,6 +162,14 @@ impl Emitter {
                 Self::emit_op(operand, at.into(), output)?;
                 write!(output, "\n")?;
             }
+            asm::Instruction::Div(at, operand) => {
+                match at {
+                    types::AssemblyType::Quadword => write!(output, "  divq   ")?,
+                    types::AssemblyType::Longword => write!(output, "  divl   ")?,
+                }
+                Self::emit_op(operand, at.into(), output)?;
+                write!(output, "\n")?;
+            }
             asm::Instruction::Cmp(at, op1, op2) => {
                 match at {
                     types::AssemblyType::Longword => write!(output, "  cmpl   ")?,
@@ -200,8 +209,9 @@ impl Emitter {
             asm::Instruction::Call(lbl) => {
                 writeln!(output, "  call   _{}", lbl)?;
             }
-            asm::Instruction::MovZeroExtend { .. } => todo!(),
-            asm::Instruction::Div(_, _) => todo!(),
+            asm::Instruction::MovZeroExtend { .. } => {
+                unreachable!("MovZeroExtend is rewritten to Mov instructions after fixups")
+            }
         }
         Ok(())
     }
@@ -340,7 +350,10 @@ impl Emitter {
             GE => write!(output, "jge         ")?,
             L => write!(output, "jl          ")?,
             LE => write!(output, "jle         ")?,
-            A | AE | B | BE => todo!(),
+            A => write!(output, "ja          ")?,
+            AE => write!(output, "jae         ")?,
+            B => write!(output, "jb          ")?,
+            BE => write!(output, "jbe         ")?,
         }
         Ok(())
     }
@@ -354,7 +367,10 @@ impl Emitter {
             GE => write!(output, "setge      ")?,
             L => write!(output, "setl       ")?,
             LE => write!(output, "setle      ")?,
-            A | AE | B | BE => todo!(),
+            A => write!(output, "seta       ")?,
+            AE => write!(output, "setae      ")?,
+            B => write!(output, "setb       ")?,
+            BE => write!(output, "setbe      ")?,
         }
         Ok(())
     }
