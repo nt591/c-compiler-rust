@@ -50,6 +50,10 @@ struct Args {
     /// Compiles to an object file
     #[arg(short = 'c')]
     object: bool,
+
+    /// shared libraries
+    #[arg(short = 'l')]
+    libraries: Option<Vec<String>>,
 }
 
 #[derive(PartialEq, Debug, Copy, Clone)]
@@ -85,8 +89,8 @@ fn main() -> anyhow::Result<()> {
 
     let assembly_files = assembly_files.into_iter().flat_map(|x| x).collect();
     match stage {
-        ProcessingStage::Object => compile_to_object(assembly_files)?,
-        ProcessingStage::Full => compile_to_binary(assembly_files)?,
+        ProcessingStage::Object => compile_to_object(assembly_files, args.libraries)?,
+        ProcessingStage::Full => compile_to_binary(assembly_files, args.libraries)?,
         _ => (),
     };
     Ok(())
@@ -160,7 +164,7 @@ fn path_to_str(path: PathBuf) -> String {
         .expect("Should be valid string")
 }
 
-fn compile_to_binary(paths: Vec<PathBuf>) -> anyhow::Result<()> {
+fn compile_to_binary(paths: Vec<PathBuf>, libraries: Option<Vec<String>>) -> anyhow::Result<()> {
     debug_assert!(!paths.is_empty());
     let fst = paths[..].first().unwrap().to_owned();
     let target = fst.with_extension("");
@@ -168,12 +172,16 @@ fn compile_to_binary(paths: Vec<PathBuf>) -> anyhow::Result<()> {
     args.extend(paths.into_iter().map(path_to_str));
     args.push("-o".into());
     args.push(path_to_str(target));
-
+    if let Some(libs) = libraries {
+        for lib in libs {
+            args.push(format!("l{lib}"));
+        }
+    }
     std::process::Command::new("gcc").args(args).spawn()?;
     Ok(())
 }
 
-fn compile_to_object(paths: Vec<PathBuf>) -> anyhow::Result<()> {
+fn compile_to_object(paths: Vec<PathBuf>, libraries: Option<Vec<String>>) -> anyhow::Result<()> {
     debug_assert!(!paths.is_empty());
 
     // GCC doesn't allow specifying -o flags when compiling multiple files
@@ -192,6 +200,12 @@ fn compile_to_object(paths: Vec<PathBuf>) -> anyhow::Result<()> {
         args.push("-o".into());
         args.push(target);
     };
+    if let Some(libs) = libraries {
+        for lib in libs {
+            args.push(format!("l{lib}"));
+        }
+    }
+
     std::process::Command::new("gcc").args(args).spawn()?;
     Ok(())
 }
