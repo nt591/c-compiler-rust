@@ -9,6 +9,8 @@ pub enum LexerError {
     UnexpectedChar(char),
     #[error("Never closed a block comment")]
     UnclosedBlockComment,
+    #[error("Unexpected EOF")]
+    UnexpectedEOF,
 }
 
 // todo: let's stop carrying the entire text around
@@ -95,6 +97,9 @@ pub enum Token<'a> {
     // ch 12: signed / unsigned values
     Signed,
     Unsigned,
+    // ch 13
+    Double,
+    FloatingPointConstant(&'a str), // converted to f64 in parser
 }
 
 impl<'a> Token<'a> {
@@ -168,6 +173,8 @@ impl<'a> Token<'a> {
             Extern => format!("Extern"),
             Signed => format!("Signed"),
             Unsigned => format!("Unsigned"),
+            Double => format!("Double"),
+            FloatingPointConstant(c) => format!("FloatingPointConstant {c}"),
         }
     }
 }
@@ -442,9 +449,33 @@ impl<'a> Lexer<'a> {
                     // we parsed the entire string, and it ends with a digit, OR
                     // end < len and we are pointing to a non-digit character.
                     // What do we do? If we're at the end, attempt to return a constant.
+                    // If we see a period, we'll look for a double precision float.
                     // Else, we'll see if we have a valid suffix and push a different sized
                     // constant. Still does not support floats yet.
-                    if end < len && bytes[end].is_ascii_alphabetic() {
+                    if end < len && bytes[end] == b'.' {
+                        let end = Self::get_end_of_fractional_part_of_decimal(bytes, end)?;
+                        let s =
+                            std::str::from_utf8(&bytes[start..end]).expect("We know this is UTF8");
+                        tokens.push(Token::FloatingPointConstant(s));
+                        // end points to space just after parse, so walk backwards once
+                        idx = end - 1;
+                    } else if end < len && matches!(bytes[end], b'E' | b'e') {
+                        // special case: scientific notation
+                        if end + 1 == len {
+                            // we need an integer for scientific notation form
+                            return Err(LexerError::UnexpectedToken(format!(
+                                "Need an integer after {} for scientific notation, found end of file",
+                                bytes[end] as char
+                            )));
+                        }
+                        let suffix_end =
+                            Self::get_valid_suffix_for_exponent_notation(bytes, end + 1)?;
+                        let s = std::str::from_utf8(&bytes[start..suffix_end])
+                            .expect("We know this is UTF8");
+                        tokens.push(Token::FloatingPointConstant(s));
+                        // end points to space just after parse, so walk backwards once
+                        idx = suffix_end - 1;
+                    } else if end < len && bytes[end].is_ascii_alphabetic() {
                         // we need to find a suffix here, if possible. To do that,
                         // move an index forward as long as we see a valid identifier.
                         // Then we hardcode some checks for types.
@@ -479,7 +510,7 @@ impl<'a> Lexer<'a> {
                         idx = possible_end - 1;
                     } else {
                         // at this point, either end == len OR end < len and bytes[end] is a
-                        // non-alphabetic character (period, whitespace, etc). Just scrape up
+                        // non-alphabetic, non-period character (whitespace, etc). Just scrape up
                         // the text and move on
                         let s =
                             std::str::from_utf8(&bytes[start..end]).expect("We know this is UTF8");
@@ -490,12 +521,108 @@ impl<'a> Lexer<'a> {
                         idx = end - 1; // increment at the end sets idx == end
                     }
                 }
+                b'.' => {
+                    // floating point number, nothing on the LHS of the period
+                    // Here we require a digit after the period, since '.' is not a valid double
+                    if idx == len - 1 || !bytes[idx + 1].is_ascii_digit() {
+                        return Err(LexerError::UnexpectedChar(bytes[idx].into()));
+                    }
+                    let end = Self::get_end_of_fractional_part_of_decimal(bytes, idx)?;
+                    let s = std::str::from_utf8(&bytes[idx..end]).expect("We know this is UTF8");
+                    tokens.push(Token::FloatingPointConstant(s));
+                    // end points to space just after parse, so walk backwards once
+                    idx = end - 1;
+                }
                 _ => return Err(LexerError::UnexpectedChar(bytes[idx].into())),
             }
             idx += 1;
         }
 
         Ok(Lexer { tokens })
+    }
+
+    fn get_end_of_fractional_part_of_decimal(
+        bytes: &[u8],
+        idx: usize,
+    ) -> Result<usize, LexerError> {
+        // to parse, we'll iterate a pointer forward following some simple rules:
+        // 1) scoop up as many digits as we see
+        // 2) if the next char is e or E, keep going
+        // 3) if we see + or - here ONCE, it's valid
+        // 4) keep scooping up digits
+        let len = bytes.len();
+        let mut end = idx + 1;
+        while end < len && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
+        if end == len {
+            return Ok(end);
+        }
+        if !bytes[end].is_ascii_alphanumeric() {
+            // just to be safe, make sure we don't grab non-alphanumeric
+            // identifier characters. In this case, just underscore.
+            if bytes[end] == b'_' {
+                return Err(LexerError::UnexpectedToken(format!(
+                    "Found {} in the middle of a decimal fractional part",
+                    bytes[end] as char
+                )));
+            }
+            return Ok(end);
+        }
+        // at this point, we have an ascii alphanumeric char and we're within
+        // source length.
+        if matches!(bytes[end], b'e' | b'E') {
+            end += 1;
+        } else {
+            // we have some weird suffix-looking thing here, error
+            return Err(LexerError::UnexpectedToken(format!(
+                "Found {} in the middle of a decimal fractional part",
+                bytes[end] as char
+            )));
+        }
+        Self::get_valid_suffix_for_exponent_notation(bytes, end)
+    }
+
+    fn get_valid_suffix_for_exponent_notation(
+        bytes: &[u8],
+        idx: usize,
+    ) -> Result<usize, LexerError> {
+        // the next char MUST be a +, -, or digit or else we're in errortown
+        // allow a + or - here
+        let mut end = idx;
+        let len = bytes.len();
+        if end == len {
+            return Err(LexerError::UnexpectedEOF);
+        }
+        let re = Regex::new(r"[0-9]|\+|\-").unwrap();
+        if !re.is_match(std::str::from_utf8(&bytes[end..=end]).unwrap()) {
+            return Err(LexerError::UnexpectedToken(format!(
+                "Expected +, - or digit after E/e, got {}",
+                bytes[end] as char
+            )));
+        }
+        if end < len && matches!(bytes[end], b'-' | b'+') {
+            end += 1;
+        }
+        let idx_of_sign_byte = end;
+        while end < len && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
+        // If there's source text left, it must not be a valid alphanumeric, or a period which
+        // would indicate a nested decimal
+        if end < len && (bytes[end].is_ascii_alphanumeric() | (bytes[end] == b'.')) {
+            return Err(LexerError::UnexpectedToken(format!(
+                "Expected non-alphanumeric, non-period after decimal fractional part, got {}",
+                bytes[end] as char
+            )));
+        }
+        if end == idx_of_sign_byte {
+            return Err(LexerError::UnexpectedToken(format!(
+                "Did not find digits after sign byte in token {:?}",
+                std::str::from_utf8(&bytes[idx..end]).unwrap()
+            )));
+        }
+        Ok(end)
     }
 
     fn is_valid_identifier_character(c: u8) -> bool {
@@ -538,6 +665,7 @@ impl<'a> Lexer<'a> {
             "extern" => Some(Token::Extern),
             "signed" => Some(Token::Signed),
             "unsigned" => Some(Token::Unsigned),
+            "double" => Some(Token::Double),
             _ => None,
         }
     }
@@ -887,5 +1015,62 @@ bloop blorp */
         let mut tokens = lexer.tokens();
         assert_eq!(Some(&Token::Identifier("return_val_123")), tokens.next());
         assert_eq!(None, tokens.next());
+    }
+
+    #[test]
+    fn test_double_precision_floats() {
+        // + and - operators are valid in scientific notation
+        let source = "1. 1.0 0.5 .5 100e1 1.E+10 1e-10";
+        let lexer = Lexer::lex(source);
+        assert!(lexer.is_ok(), "got lexer error {lexer:?}");
+        let lexer = lexer.unwrap();
+        let mut tokens = lexer.tokens();
+        assert_eq!(Some(&Token::FloatingPointConstant("1.")), tokens.next());
+        assert_eq!(Some(&Token::FloatingPointConstant("1.0")), tokens.next());
+        assert_eq!(Some(&Token::FloatingPointConstant("0.5")), tokens.next());
+        assert_eq!(Some(&Token::FloatingPointConstant(".5")), tokens.next());
+        assert_eq!(Some(&Token::FloatingPointConstant("100e1")), tokens.next());
+        assert_eq!(Some(&Token::FloatingPointConstant("1.E+10")), tokens.next());
+        assert_eq!(Some(&Token::FloatingPointConstant("1e-10")), tokens.next());
+        assert_eq!(None, tokens.next());
+    }
+
+    #[test]
+    fn invalid_doubles() {
+        for (source, err_msg) in [
+            ("2._", "Found _ in the middle of a decimal fractional part"),
+            // non-sign, non-digit right after e/E
+            ("2ex", "Expected +, - or digit after E/e, got x"),
+            // outer guard: nothing at all after e (before get_valid_suffix_for_exponent_notation is called)
+            ("1e", "Need an integer after e for scientific notation, found end of file"),
+            // digits followed by trailing alphanumeric
+            ("1e1a", "Expected non-alphanumeric, non-period after decimal fractional part, got a"),
+            // digits followed by trailing period
+            ("1e1.", "Expected non-alphanumeric, non-period after decimal fractional part, got ."),
+            // sign followed by alphanumeric (no digits consumed before the letter)
+            ("1e+a", "Expected non-alphanumeric, non-period after decimal fractional part, got a"),
+            // sign with no digits — EOF after sign
+            ("1e+", "Did not find digits after sign byte in token \"+\""),
+            ("1e-", "Did not find digits after sign byte in token \"-\""),
+            // sign with no digits — non-alphanumeric (space) after sign
+            ("1e+ ", "Did not find digits after sign byte in token \"+\""),
+            ("1e- ", "Did not find digits after sign byte in token \"-\""),
+        ] {
+            let lexer = Lexer::lex(source);
+            assert!(lexer.is_err(), "got valid lexer {lexer:?}");
+            let Err(LexerError::UnexpectedToken(s)) = lexer else {
+                panic!("Expected UnexpectedToken for {source:?}, got {lexer:?}");
+            };
+            assert_eq!(s, err_msg, "wrong message for {source:?}");
+        }
+
+        // UnexpectedEOF only comes from get_valid_suffix_for_exponent_notation via
+        // get_end_of_fractional_part_of_decimal when the e/E is the very last byte
+        // e.g. "1.e" — period path consumes the e then calls get_valid_suffix with idx==len
+        let lexer = Lexer::lex("1.e");
+        assert!(
+            matches!(lexer, Err(LexerError::UnexpectedEOF)),
+            "expected UnexpectedEOF for \"1.e\", got {lexer:?}"
+        );
     }
 }
