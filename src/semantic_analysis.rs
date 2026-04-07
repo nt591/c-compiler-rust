@@ -86,6 +86,8 @@ pub enum SemanticAnalysisError {
     StorageClassInForInit,
     #[error("Redeclared local var from {0:?} to {1:?}")]
     VariableDeclaredWithNewType(CType, CType),
+    #[error("Invalid operator: {0:?}")]
+    InvalidOperator(String),
 }
 
 #[derive(Debug, Clone)]
@@ -676,10 +678,18 @@ fn typecheck_expr(
         ExprKind::Constant(c @ Const::UInt(_)) => (TypedExprKind::Constant(c.clone()), CType::UInt),
         ExprKind::Constant(c @ Const::Int(_)) => (TypedExprKind::Constant(c.clone()), CType::Int),
         ExprKind::Constant(c @ Const::Long(_)) => (TypedExprKind::Constant(c.clone()), CType::Long),
-        ExprKind::Constant(Const::Double(_)) => todo!(),
+        ExprKind::Constant(c @ Const::Double(_)) => {
+            (TypedExprKind::Constant(c.clone()), CType::Double)
+        }
         ExprKind::Unary(op, expr) => {
             let inner = typecheck_expr(expr, ctx)?;
             let inner_ty = inner.get_type(); // todo: make sure we only clone when we need
+            // can't take bitwise complement of a double
+            if *op == UnaryOp::Complement && inner_ty == CType::Double {
+                return Err(SemanticAnalysisError::InvalidOperator(
+                    "Can't take bitwise complement of a double".to_string(),
+                ));
+            }
             let expr = TypedExprKind::Unary(*op, Box::new(inner));
             let ty = if *op == UnaryOp::Not {
                 CType::Int
@@ -701,6 +711,12 @@ fn typecheck_expr(
             let e2 = typecheck_expr(rhs, ctx)?;
             let t1 = e1.get_type();
             let t2 = e2.get_type();
+            // can't take remainder with double operands
+            if *op == BinaryOp::Remainder && (t1 == CType::Double || t2 == CType::Double) {
+                return Err(SemanticAnalysisError::InvalidOperator(
+                    "Can't take remainder with doubles as operand, got {t1:?} % {t2:?}".to_string(),
+                ));
+            }
             let common_type = CType::get_common_type(t1, t2);
             // we now need to see if each expression needs to be potentially
             // cast to the common type
@@ -1176,6 +1192,10 @@ fn typed_expr_for_initial_value(
         InitialValue::Initial(StaticInit::ULongInit(v)) => Some(TypedExpression {
             ty: CType::ULong,
             kind: Box::new(TypedExprKind::Constant(Const::ULong(*v))),
+        }),
+        InitialValue::Initial(StaticInit::DoubleInit(f)) => Some(TypedExpression {
+            ty: CType::Double,
+            kind: Box::new(TypedExprKind::Constant(Const::Double(*f))),
         }),
         _ => unreachable!(),
     }

@@ -18,6 +18,7 @@ pub enum StaticInit {
     LongInit(i64),
     UIntInit(u32),
     ULongInit(u64),
+    DoubleInit(f64),
 }
 
 impl CType {
@@ -34,6 +35,11 @@ impl CType {
         // (1): If both operands have the same type, then no further conversion is needed.
         if t1 == t2 {
             return t1;
+        }
+
+        // the common type of double and anything numerical is double
+        if t1 == CType::Double || t2 == CType::Double {
+            return CType::Double;
         }
 
         /*
@@ -88,6 +94,7 @@ pub fn static_init_as_usize(si: &StaticInit) -> usize {
         StaticInit::LongInit(i) => *i as usize,
         StaticInit::UIntInit(i) => *i as usize,
         StaticInit::ULongInit(i) => *i as usize,
+        StaticInit::DoubleInit(f) => *f as usize,
     }
 }
 

@@ -2262,7 +2262,7 @@ impl From<tacky::UnaryOp> for UnaryOp {
         match op {
             tacky::UnaryOp::Complement => UnaryOp::Not,
             tacky::UnaryOp::Negate => UnaryOp::Neg,
-            tacky::UnaryOp::Not => unreachable!(),
+            tacky::UnaryOp::Not => unreachable!("tacky Not is lowered to Cmp+SetCC, never goes through From"),
         }
     }
 }
@@ -2291,7 +2291,7 @@ impl From<&tacky::UnaryOp> for UnaryOp {
         match op {
             &tacky::UnaryOp::Complement => UnaryOp::Not,
             &tacky::UnaryOp::Negate => UnaryOp::Neg,
-            &tacky::UnaryOp::Not => todo!(),
+            &tacky::UnaryOp::Not => unreachable!("tacky Not is lowered to Cmp+SetCC, never goes through From"),
         }
     }
 }
