@@ -154,6 +154,7 @@ pub enum Const {
     Long(i64),
     UInt(u32),
     ULong(u64),
+    Double(f64),
 }
 
 impl Const {
@@ -163,6 +164,7 @@ impl Const {
             Const::Long(_) => CType::Long,
             Const::UInt(_) => CType::UInt,
             Const::ULong(_) => CType::ULong,
+            Const::Double(_) => CType::Double,
         }
     }
 }

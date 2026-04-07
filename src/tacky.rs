@@ -225,6 +225,7 @@ impl<'a> Tacky {
                             CType::Long => StaticInit::LongInit(0),
                             CType::ULong => StaticInit::ULongInit(0),
                             CType::UInt => StaticInit::UIntInit(0),
+                            CType::Double => todo!(),
                         };
                         defs.push(TopLevel::StaticVariable {
                             identifier: name.clone(),

@@ -945,6 +945,7 @@ fn get_assembly_type_from_val(val: &tacky::Val, symbol_table: &SymbolTable) -> A
     match val {
         Val::Constant(Const::Int(_) | Const::UInt(_)) => AssemblyType::Longword,
         Val::Constant(Const::Long(_) | Const::ULong(_)) => AssemblyType::Quadword,
+        Val::Constant(Const::Double(_)) => todo!(),
         Val::Var(s) => get_assembly_type_from_var_name(s.as_str(), symbol_table),
     }
 }
@@ -956,6 +957,7 @@ fn get_assembly_type_from_var_name(var: &str, symbol_table: &SymbolTable) -> Ass
     match ctype {
         CType::Int | CType::UInt => AssemblyType::Longword,
         CType::Long | CType::ULong => AssemblyType::Quadword,
+        CType::Double => todo!(),
         CType::FunType { .. } => unreachable!(),
     }
 }
@@ -2275,6 +2277,7 @@ impl From<tacky::Val> for Operand {
                     Const::Long(i) => i as usize,
                     Const::ULong(i) => i as usize,
                     Const::UInt(i) => i as usize,
+                    Const::Double(i) => i as usize,
                 };
                 Operand::Imm(imm)
             }
@@ -2303,6 +2306,7 @@ impl From<&tacky::Val> for Operand {
                     Const::Long(i) => *i as usize,
                     Const::ULong(i) => *i as usize,
                     Const::UInt(i) => *i as usize,
+                    Const::Double(i) => *i as usize,
                 };
                 Operand::Imm(imm)
             }

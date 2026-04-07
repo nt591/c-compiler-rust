@@ -54,6 +54,7 @@ pub fn backend_symbol_table_from_symbol_table(symtable: SymbolTable) -> BackendS
                 ty: AssemblyType::Quadword,
                 is_static: false,
             },
+            (CType::Double, _) => todo!(),
             (CType::FunType { .. }, IdentifierAttrs::StaticAttr { .. })
             | (CType::FunType { .. }, IdentifierAttrs::LocalAttr) => unreachable!(),
         };

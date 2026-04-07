@@ -98,6 +98,13 @@ impl<'a> Parser<'a> {
             // got duplicates
             return Err(ParserError::InvalidTypeSpecifier);
         }
+        // can't combine double with any other specifier
+        if set.contains(&Token::Double) {
+            if set.len() == 1 {
+                return Ok(CType::Double);
+            }
+            return Err(ParserError::InvalidTypeSpecifier);
+        }
         if set.contains(&Token::Unsigned) {
             if set.contains(&Token::Signed) {
                 return Err(ParserError::InvalidTypeSpecifier);
@@ -126,6 +133,7 @@ impl<'a> Parser<'a> {
                 Some(Token::Long) => types.push(Token::Long),
                 Some(Token::Signed) => types.push(Token::Signed),
                 Some(Token::Unsigned) => types.push(Token::Unsigned),
+                Some(Token::Double) => types.push(Token::Double),
                 Some(Token::Static) => classes.push(StorageClass::Static),
                 Some(Token::Extern) => classes.push(StorageClass::Extern),
                 _ => break,
@@ -593,6 +601,13 @@ impl<'a> Parser<'a> {
                     ParserError::IntegerTooLargeToFitInConstant
                 })?))
             }
+            Token::FloatingPointConstant(s) => {
+                // s is some string that could be scientific notation, or just a normal decimal.
+                let c: f64 = s
+                    .parse::<f64>()
+                    .expect("Should get a float64 from a FloatingPointConstant");
+                Ok(Const::Double(c))
+            }
             _ => panic!("Somehow tried to parse a token that isn't a constant, got {tok:?}"),
         }
     }
@@ -603,7 +618,8 @@ impl<'a> Parser<'a> {
                 t @ (Token::Constant(_)
                 | Token::LongConstant(_)
                 | Token::UnsignedLongConstant(_)
-                | Token::UnsignedIntConstant(_)),
+                | Token::UnsignedIntConstant(_)
+                | Token::FloatingPointConstant(_)),
             ) => {
                 let constant = Self::parse_constant(*t)?;
                 Ok(Expression::new(ExprKind::Constant(constant)))
@@ -751,7 +767,7 @@ fn token_is_valid_type_specifier(tok: Option<&Token>) -> bool {
     tok.map(|t| {
         matches!(
             t,
-            Token::Int | Token::Long | Token::Signed | Token::Unsigned
+            Token::Int | Token::Long | Token::Signed | Token::Unsigned | Token::Double
         )
     })
     .unwrap_or(false)
@@ -2368,5 +2384,140 @@ mod tests {
         assert!(c.is_ok());
         let const_ = c.unwrap();
         assert_eq!(const_, Const::ULong(u32::MAX as u64 + 1));
+    }
+
+    #[test]
+    fn invalid_double_type_specifier_combinations() {
+        // double cannot be combined with any other type specifier
+        for src in [
+            "int main(void) { double int x; return 0; }",
+            "int main(void) { double long x; return 0; }",
+            "int main(void) { double signed x; return 0; }",
+            "int main(void) { double unsigned x; return 0; }",
+            "int main(void) { double double x; return 0; }",
+        ] {
+            let lexer = crate::lexer::Lexer::lex(src).unwrap();
+            let tokens = lexer.as_syntactic_tokens();
+            let ast = Parser::new(&tokens).into_ast();
+            assert_eq!(
+                ast,
+                Err(ParserError::InvalidTypeSpecifier),
+                "should fail for: {src}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_function_with_double_return_and_param_type() {
+        // double foo(double d) { return d; }
+        let src = "double foo(double d) { return d; }";
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let ast = Parser::new(&tokens).into_ast();
+        assert!(ast.is_ok(), "failed to parse: {ast:?}");
+        let AST::Program(decls) = ast.unwrap();
+        let Declaration::FunDecl(f) = &decls[0] else {
+            panic!("expected FunDecl");
+        };
+        let CType::FunType { params, ret } = &f.ftype else {
+            panic!("expected FunType, got {:?}", f.ftype);
+        };
+        assert_eq!(**ret, CType::Double, "wrong return type");
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0], CType::Double, "wrong param type");
+    }
+
+    #[test]
+    fn parses_cast_to_double() {
+        // int main(void) { return (double) 5; }
+        let src = "int main(void) { return (double) 5; }";
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let ast = Parser::new(&tokens).into_ast();
+        assert!(ast.is_ok(), "failed to parse: {ast:?}");
+        let AST::Program(decls) = ast.unwrap();
+        let Declaration::FunDecl(main) = &decls[0] else {
+            panic!("expected FunDecl");
+        };
+        let crate::ast::Block(items) = main.block.as_ref().unwrap();
+        let BlockItem::Stmt(crate::ast::Statement::Return(expr)) = &items[0] else {
+            panic!("expected return stmt");
+        };
+        let ExprKind::Cast(target_type, _) = expr.kind.as_ref() else {
+            panic!("expected Cast expr, got {:?}", expr.kind);
+        };
+        assert_eq!(*target_type, CType::Double);
+    }
+
+    #[test]
+    fn parses_cast_from_double() {
+        // int main(void) { double d = 1.5; return (int) d; }
+        let src = "int main(void) { double d = 1.5; return (int) d; }";
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let ast = Parser::new(&tokens).into_ast();
+        assert!(ast.is_ok(), "failed to parse: {ast:?}");
+        let AST::Program(decls) = ast.unwrap();
+        let Declaration::FunDecl(main) = &decls[0] else {
+            panic!("expected FunDecl");
+        };
+        let crate::ast::Block(items) = main.block.as_ref().unwrap();
+        let BlockItem::Stmt(crate::ast::Statement::Return(expr)) = &items[1] else {
+            panic!("expected return stmt as second block item");
+        };
+        let ExprKind::Cast(target_type, _) = expr.kind.as_ref() else {
+            panic!("expected Cast expr, got {:?}", expr.kind);
+        };
+        assert_eq!(*target_type, CType::Int);
+    }
+
+    #[test]
+    fn parses_double_variable_declaration_with_float_initializer() {
+        // double x = 1.5; — check the var decl has Double type and a Double constant initializer
+        let src = "int main(void) { double x = 1.5; return 0; }";
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let ast = Parser::new(&tokens).into_ast();
+        assert!(ast.is_ok(), "failed to parse: {ast:?}");
+        let AST::Program(decls) = ast.unwrap();
+        let Declaration::FunDecl(main) = &decls[0] else {
+            panic!("expected FunDecl");
+        };
+        let crate::ast::Block(items) = main.block.as_ref().unwrap();
+        let BlockItem::Decl(Declaration::VarDecl(var)) = &items[0] else {
+            panic!("expected VarDecl as first block item");
+        };
+        assert_eq!(var.vtype, CType::Double, "wrong var type");
+        let Some(init_expr) = &var.init else {
+            panic!("expected initializer");
+        };
+        assert_eq!(
+            *init_expr.kind,
+            ExprKind::Constant(Const::Double(1.5)),
+            "wrong initializer value"
+        );
+    }
+
+    #[test]
+    fn parse_constant_works_with_doubles() {
+        let toks = [
+            ("1.", 1.0),
+            ("1.0", 1.0),
+            ("0.5", 0.5),
+            (".5", 0.5),
+            ("100e1", 1000.0),
+            ("1E+1", 10.0),
+            ("2e-1", 0.2),
+        ];
+        for (t, exp) in toks {
+            let tok = Token::FloatingPointConstant(t);
+            let c = Parser::parse_constant(tok);
+            assert!(c.is_ok());
+            let const_ = c.unwrap();
+            let Const::Double(s) = const_ else {
+                panic!();
+            };
+            assert_eq!(s, exp);
+        }
     }
 }

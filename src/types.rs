@@ -5,6 +5,7 @@ pub enum CType {
     Long,
     UInt,
     ULong,
+    Double,
     FunType {
         params: Vec<CType>,
         ret: Box<CType>, // TODO: intern CType and carry a u32 everywhere.
@@ -68,14 +69,14 @@ impl CType {
     pub fn size(&self) -> usize {
         match self {
             CType::Int | CType::UInt => 32,
-            CType::Long | CType::ULong => 64,
+            CType::Long | CType::ULong | CType::Double => 64,
             CType::FunType { .. } => todo!(), // not sure what goes here.
         }
     }
 
     pub fn signed(&self) -> bool {
         match self {
-            CType::Int | CType::Long => true,
+            CType::Int | CType::Long | CType::Double => true,
             CType::UInt | CType::ULong | CType::FunType { .. } => false,
         }
     }

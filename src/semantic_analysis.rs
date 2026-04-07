@@ -676,6 +676,7 @@ fn typecheck_expr(
         ExprKind::Constant(c @ Const::UInt(_)) => (TypedExprKind::Constant(c.clone()), CType::UInt),
         ExprKind::Constant(c @ Const::Int(_)) => (TypedExprKind::Constant(c.clone()), CType::Int),
         ExprKind::Constant(c @ Const::Long(_)) => (TypedExprKind::Constant(c.clone()), CType::Long),
+        ExprKind::Constant(Const::Double(_)) => todo!(),
         ExprKind::Unary(op, expr) => {
             let inner = typecheck_expr(expr, ctx)?;
             let inner_ty = inner.get_type(); // todo: make sure we only clone when we need
