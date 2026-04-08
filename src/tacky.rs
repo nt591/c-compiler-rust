@@ -94,6 +94,23 @@ pub enum Instruction {
         src: Val,
         dst: Val,
     },
+    // ch 13: conversions
+    IntToDouble {
+        src: Val,
+        dst: Val,
+    },
+    UIntToDouble {
+        src: Val,
+        dst: Val,
+    },
+    DoubleToInt {
+        src: Val,
+        dst: Val,
+    },
+    DoubleToUInt {
+        src: Val,
+        dst: Val,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -225,7 +242,7 @@ impl<'a> Tacky {
                             CType::Long => StaticInit::LongInit(0),
                             CType::ULong => StaticInit::ULongInit(0),
                             CType::UInt => StaticInit::UIntInit(0),
-                            CType::Double => todo!(),
+                            CType::Double => StaticInit::DoubleInit(0.0),
                         };
                         defs.push(TopLevel::StaticVariable {
                             identifier: name.clone(),
@@ -372,6 +389,42 @@ impl<'a> Tacky {
                     Instruction::Copy {
                         src: result,
                         dst: dst.clone(),
+                    }
+                } else if t == &CType::Double {
+                    // casting to a double, we'll emit specialized instructions
+                    match inner_ty {
+                        CType::Int | CType::Long => Instruction::IntToDouble {
+                            src: result,
+                            dst: dst.clone(),
+                        },
+                        CType::UInt | CType::ULong => Instruction::UIntToDouble {
+                            src: result,
+                            dst: dst.clone(),
+                        },
+                        CType::Double => unreachable!(
+                            "Handled double to double cast via check if types are same"
+                        ),
+                        CType::FunType { .. } => {
+                            unreachable!("Should never cast a double to a funtype")
+                        }
+                    }
+                } else if inner_ty == CType::Double {
+                    // casting a double to something else, use specialized instructions
+                    match t {
+                        CType::Int | CType::Long => Instruction::DoubleToInt {
+                            src: result,
+                            dst: dst.clone(),
+                        },
+                        CType::UInt | CType::ULong => Instruction::DoubleToUInt {
+                            src: result,
+                            dst: dst.clone(),
+                        },
+                        CType::Double => unreachable!(
+                            "Handled double to double cast via check if types are same"
+                        ),
+                        CType::FunType { .. } => {
+                            unreachable!("Should never cast a funtype to a double")
+                        }
                     }
                 } else if target_size < expr_size {
                     Instruction::Truncate {
@@ -2479,6 +2532,66 @@ mod tests {
         assert!(
             instrs.iter().any(|i| matches!(i, Instruction::Copy { .. })),
             "Expected a Copy for int->unsigned int arg conversion, got: {instrs:?}"
+        );
+    }
+
+    #[test]
+    fn cast_emits_specialized_double_instructions() {
+        let src = r#"
+            int main(void) {
+                double x = (double)1;
+                return 0;
+            }
+        "#;
+        let instrs = tacky_instructions_for(src);
+        assert!(
+            instrs
+                .iter()
+                .any(|i| matches!(i, Instruction::IntToDouble { .. })),
+            "Expected IntToDouble, got: {instrs:?}"
+        );
+
+        let src = r#"
+            int main(void) {
+                int x = (double)1.0;
+                return 0;
+            }
+        "#;
+        let instrs = tacky_instructions_for(src);
+        assert!(
+            instrs
+                .iter()
+                .any(|i| matches!(i, Instruction::DoubleToInt { .. })),
+            "Expected DoubleToInt, got: {instrs:?}"
+        );
+
+        let src = r#"
+            int main(void) {
+                unsigned int x = (unsigned int)1.0;
+                return 0;
+            }
+        "#;
+        let instrs = tacky_instructions_for(src);
+        assert!(
+            instrs
+                .iter()
+                .any(|i| matches!(i, Instruction::DoubleToUInt { .. })),
+            "Expected DoubleToUInt, got: {instrs:?}"
+        );
+
+        let src = r#"
+            int main(void) {
+                unsigned int y = 1;
+                double x = (double)y;
+                return 0;
+            }
+        "#;
+        let instrs = tacky_instructions_for(src);
+        assert!(
+            instrs
+                .iter()
+                .any(|i| matches!(i, Instruction::UIntToDouble { .. })),
+            "Expected UIntToDouble, got: {instrs:?}"
         );
     }
 }

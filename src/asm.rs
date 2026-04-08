@@ -389,6 +389,10 @@ impl Asm {
                 TIns::ZeroExtend { src, dst } => {
                     vec![MovZeroExtend(src.into(), dst.into())]
                 }
+                TIns::DoubleToInt { .. }
+                | TIns::DoubleToUInt { .. }
+                | TIns::IntToDouble { .. }
+                | TIns::UIntToDouble { .. } => todo!(),
             })
             .collect::<Vec<_>>()
     }
@@ -2262,7 +2266,9 @@ impl From<tacky::UnaryOp> for UnaryOp {
         match op {
             tacky::UnaryOp::Complement => UnaryOp::Not,
             tacky::UnaryOp::Negate => UnaryOp::Neg,
-            tacky::UnaryOp::Not => unreachable!("tacky Not is lowered to Cmp+SetCC, never goes through From"),
+            tacky::UnaryOp::Not => {
+                unreachable!("tacky Not is lowered to Cmp+SetCC, never goes through From")
+            }
         }
     }
 }
@@ -2291,7 +2297,9 @@ impl From<&tacky::UnaryOp> for UnaryOp {
         match op {
             &tacky::UnaryOp::Complement => UnaryOp::Not,
             &tacky::UnaryOp::Negate => UnaryOp::Neg,
-            &tacky::UnaryOp::Not => unreachable!("tacky Not is lowered to Cmp+SetCC, never goes through From"),
+            &tacky::UnaryOp::Not => {
+                unreachable!("tacky Not is lowered to Cmp+SetCC, never goes through From")
+            }
         }
     }
 }
