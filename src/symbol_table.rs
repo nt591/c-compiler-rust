@@ -21,8 +21,14 @@ pub type SymbolTable = HashMap<String, (CType, IdentifierAttrs)>;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum BackendSymTableEntry {
-    ObjEntry { ty: AssemblyType, is_static: bool },
-    FunEntry { defined: bool },
+    ObjEntry {
+        ty: AssemblyType,
+        is_static: bool,
+        is_constant: bool,
+    },
+    FunEntry {
+        defined: bool,
+    },
 }
 
 pub type BackendSymbolTable = HashMap<String, BackendSymTableEntry>;
@@ -38,23 +44,37 @@ pub fn backend_symbol_table_from_symbol_table(symtable: SymbolTable) -> BackendS
                 BackendSymTableEntry::ObjEntry {
                     ty: AssemblyType::Longword,
                     is_static: true,
+                    is_constant: false,
                 }
             }
             (CType::Int | CType::UInt, _) => BackendSymTableEntry::ObjEntry {
                 ty: AssemblyType::Longword,
                 is_static: false,
+                is_constant: false,
             },
             (CType::Long | CType::ULong, IdentifierAttrs::StaticAttr { .. }) => {
                 BackendSymTableEntry::ObjEntry {
                     ty: AssemblyType::Quadword,
                     is_static: true,
+                    is_constant: false,
                 }
             }
             (CType::Long | CType::ULong, _) => BackendSymTableEntry::ObjEntry {
                 ty: AssemblyType::Quadword,
                 is_static: false,
+                is_constant: false,
             },
-            (CType::Double, _) => todo!(),
+            (CType::Double, IdentifierAttrs::StaticAttr { .. }) => BackendSymTableEntry::ObjEntry {
+                ty: AssemblyType::Double,
+                is_static: true,
+                is_constant: true,
+            },
+
+            (CType::Double, _) => BackendSymTableEntry::ObjEntry {
+                ty: AssemblyType::Double,
+                is_static: false,
+                is_constant: true,
+            },
             (CType::FunType { .. }, IdentifierAttrs::StaticAttr { .. })
             | (CType::FunType { .. }, IdentifierAttrs::LocalAttr) => unreachable!(),
         };

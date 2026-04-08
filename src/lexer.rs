@@ -1042,13 +1042,25 @@ bloop blorp */
             // non-sign, non-digit right after e/E
             ("2ex", "Expected +, - or digit after E/e, got x"),
             // outer guard: nothing at all after e (before get_valid_suffix_for_exponent_notation is called)
-            ("1e", "Need an integer after e for scientific notation, found end of file"),
+            (
+                "1e",
+                "Need an integer after e for scientific notation, found end of file",
+            ),
             // digits followed by trailing alphanumeric
-            ("1e1a", "Expected non-alphanumeric, non-period after decimal fractional part, got a"),
+            (
+                "1e1a",
+                "Expected non-alphanumeric, non-period after decimal fractional part, got a",
+            ),
             // digits followed by trailing period
-            ("1e1.", "Expected non-alphanumeric, non-period after decimal fractional part, got ."),
+            (
+                "1e1.",
+                "Expected non-alphanumeric, non-period after decimal fractional part, got .",
+            ),
             // sign followed by alphanumeric (no digits consumed before the letter)
-            ("1e+a", "Expected non-alphanumeric, non-period after decimal fractional part, got a"),
+            (
+                "1e+a",
+                "Expected non-alphanumeric, non-period after decimal fractional part, got a",
+            ),
             // sign with no digits — EOF after sign
             ("1e+", "Did not find digits after sign byte in token \"+\""),
             ("1e-", "Did not find digits after sign byte in token \"-\""),

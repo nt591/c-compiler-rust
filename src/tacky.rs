@@ -385,12 +385,7 @@ impl<'a> Tacky {
 
                 let target_size = t.size();
                 let expr_size = inner_ty.size();
-                let extension_instruction = if target_size == expr_size {
-                    Instruction::Copy {
-                        src: result,
-                        dst: dst.clone(),
-                    }
-                } else if t == &CType::Double {
+                let extension_instruction = if t == &CType::Double {
                     // casting to a double, we'll emit specialized instructions
                     match inner_ty {
                         CType::Int | CType::Long => Instruction::IntToDouble {
@@ -425,6 +420,11 @@ impl<'a> Tacky {
                         CType::FunType { .. } => {
                             unreachable!("Should never cast a funtype to a double")
                         }
+                    }
+                } else if target_size == expr_size {
+                    Instruction::Copy {
+                        src: result,
+                        dst: dst.clone(),
                     }
                 } else if target_size < expr_size {
                     Instruction::Truncate {

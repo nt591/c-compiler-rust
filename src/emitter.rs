@@ -36,6 +36,7 @@ impl Emitter {
                     init,
                     alignment,
                 } => Self::emit_static_variable(identifier, *global, *init, *alignment, output)?,
+                asm::TopLevel::StaticConstant { .. } => todo!(),
             }
         }
         Ok(())
@@ -109,6 +110,7 @@ impl Emitter {
                 match at {
                     types::AssemblyType::Longword => write!(output, "  movl   ")?,
                     types::AssemblyType::Quadword => write!(output, "  movq   ")?,
+                    types::AssemblyType::Double => todo!(),
                 }
                 Self::emit_op(src, at.into(), output)?;
                 write!(output, ", ")?;
@@ -155,10 +157,12 @@ impl Emitter {
             asm::Instruction::Cdq(types::AssemblyType::Quadword) => {
                 writeln!(output, "  cqo")?;
             }
+            asm::Instruction::Cdq(types::AssemblyType::Double) => todo!(),
             asm::Instruction::Idiv(at, operand) => {
                 match at {
                     types::AssemblyType::Quadword => write!(output, "  idivq  ")?,
                     types::AssemblyType::Longword => write!(output, "  idivl  ")?,
+                    types::AssemblyType::Double => todo!(),
                 }
                 Self::emit_op(operand, at.into(), output)?;
                 write!(output, "\n")?;
@@ -167,6 +171,7 @@ impl Emitter {
                 match at {
                     types::AssemblyType::Quadword => write!(output, "  divq   ")?,
                     types::AssemblyType::Longword => write!(output, "  divl   ")?,
+                    types::AssemblyType::Double => todo!(),
                 }
                 Self::emit_op(operand, at.into(), output)?;
                 write!(output, "\n")?;
@@ -175,6 +180,7 @@ impl Emitter {
                 match at {
                     types::AssemblyType::Longword => write!(output, "  cmpl   ")?,
                     types::AssemblyType::Quadword => write!(output, "  cmpq   ")?,
+                    types::AssemblyType::Double => todo!(),
                 }
                 Self::emit_op(op1, at.into(), output)?;
                 write!(output, ", ")?;
@@ -213,6 +219,8 @@ impl Emitter {
             asm::Instruction::MovZeroExtend { .. } => {
                 unreachable!("MovZeroExtend is rewritten to Mov instructions after fixups")
             }
+            asm::Instruction::Cvttsd2si { .. } => todo!(),
+            asm::Instruction::Cvtsi2sd { .. } => todo!(),
         }
         Ok(())
     }
@@ -249,10 +257,12 @@ impl Emitter {
         let instruction = match uop {
             asm::UnaryOp::Not => "not",
             asm::UnaryOp::Neg => "neg",
+            asm::UnaryOp::Shr => todo!(),
         };
         let suffix = match assembly_type {
             types::AssemblyType::Longword => "l",
             types::AssemblyType::Quadword => "q",
+            types::AssemblyType::Double => todo!(),
         };
         write!(output, "{instruction}{suffix}")?;
         Ok(())
@@ -273,10 +283,12 @@ impl Emitter {
             asm::BinaryOp::Xor => "xor",
             asm::BinaryOp::ShiftLeft => "shl",
             asm::BinaryOp::ShiftRight => "sar",
+            asm::BinaryOp::DivDouble => todo!(),
         };
         let suffix = match assembly_type {
             types::AssemblyType::Longword => "l",
             types::AssemblyType::Quadword => "q",
+            types::AssemblyType::Double => todo!(),
         };
         let padding = 7 - instruction.len() - suffix.len();
         write!(output, "{instruction}{suffix}{}", " ".repeat(padding))?;
@@ -295,6 +307,16 @@ impl Emitter {
             Register::R9 => write!(output, "{}", "%r9d"),
             Register::R10 => write!(output, "{}", "%r10d"),
             Register::R11 => write!(output, "{}", "%r11d"),
+            Register::XMM0
+            | Register::XMM1
+            | Register::XMM2
+            | Register::XMM3
+            | Register::XMM4
+            | Register::XMM5
+            | Register::XMM6
+            | Register::XMM7
+            | Register::XMM14
+            | Register::XMM15 => todo!(),
             Register::SP => unreachable!(),
         }
     }
@@ -314,6 +336,17 @@ impl Emitter {
             Register::R9 => write!(output, "{}", "%r9b"),
             Register::R10 => write!(output, "{}", "%r10b"),
             Register::R11 => write!(output, "{}", "%r11b"),
+            Register::XMM0
+            | Register::XMM1
+            | Register::XMM2
+            | Register::XMM3
+            | Register::XMM4
+            | Register::XMM5
+            | Register::XMM6
+            | Register::XMM7
+            | Register::XMM14
+            | Register::XMM15 => todo!(),
+
             Register::SP => unreachable!(),
         }
     }
@@ -334,6 +367,16 @@ impl Emitter {
             Register::R10 => write!(output, "{}", "%r10"),
             Register::R11 => write!(output, "{}", "%r11"),
             Register::SP => write!(output, "{}", "%rsp"),
+            Register::XMM0
+            | Register::XMM1
+            | Register::XMM2
+            | Register::XMM3
+            | Register::XMM4
+            | Register::XMM5
+            | Register::XMM6
+            | Register::XMM7
+            | Register::XMM14
+            | Register::XMM15 => todo!(),
         }
     }
 
@@ -382,6 +425,7 @@ impl From<&types::AssemblyType> for RegisterSize {
         match o {
             types::AssemblyType::Longword => RegisterSize::FourByte,
             types::AssemblyType::Quadword => RegisterSize::EightByte,
+            types::AssemblyType::Double => todo!(),
         }
     }
 }

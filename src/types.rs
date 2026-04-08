@@ -86,6 +86,10 @@ impl CType {
             CType::UInt | CType::ULong | CType::FunType { .. } => false,
         }
     }
+
+    pub fn is_double(&self) -> bool {
+        self == &CType::Double
+    }
 }
 
 pub fn static_init_as_usize(si: &StaticInit) -> usize {
@@ -102,4 +106,5 @@ pub fn static_init_as_usize(si: &StaticInit) -> usize {
 pub enum AssemblyType {
     Longword,
     Quadword,
+    Double,
 }
