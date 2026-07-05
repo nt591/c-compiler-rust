@@ -145,12 +145,12 @@ fn process_file(input: PathBuf, stage: ProcessingStage) -> anyhow::Result<Option
     if stage == ProcessingStage::Tacky {
         return Ok(None);
     }
-    let asm = Asm::from_tacky(tacky_ast, symbol_table);
+    let (asm, backend_symbol_table) = Asm::from_tacky(tacky_ast, symbol_table);
     if stage == ProcessingStage::Codegen {
         return Ok(None);
     };
 
-    let emitter = Emitter::new(asm);
+    let emitter = Emitter::new(asm, backend_symbol_table);
     let output_path = input.with_extension("S");
     let output_file = File::create(&output_path)?;
     let mut writer = BufWriter::new(output_file);

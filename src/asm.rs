@@ -77,7 +77,7 @@ pub enum CondCode {
     BE, // Below or equal, CF set or ZF set
 }
 
-const MAGIC_16_BYTE_ALIGNMENT: usize = 16;
+pub const MAGIC_16_BYTE_ALIGNMENT: usize = 16;
 
 #[derive(Debug, PartialEq)]
 pub enum Instruction {
@@ -234,13 +234,16 @@ impl AsmGenerator {
 }
 
 impl Asm {
-    pub fn from_tacky(tacky: tacky::AST, symbol_table: semantic_analysis::SymbolTable) -> Asm {
+    pub fn from_tacky(
+        tacky: tacky::AST,
+        symbol_table: semantic_analysis::SymbolTable,
+    ) -> (Asm, BackendSymbolTable) {
         let mut generator = AsmGenerator::default();
         let mut asm = Self::parse_program(&tacky, &mut generator, &symbol_table);
         let mut symbol_table = symbol_table::backend_symbol_table_from_symbol_table(symbol_table);
         Self::take_static_constants_into_toplevel(&mut generator, &mut asm, &mut symbol_table);
-        Self::fixup(&mut asm, &mut generator, symbol_table);
-        asm
+        Self::fixup(&mut asm, &mut generator, &symbol_table);
+        (asm, symbol_table)
     }
 
     fn parse_program(
@@ -1018,7 +1021,7 @@ impl Asm {
         ]
     }
 
-    fn fixup(asm: &mut Asm, generator: &mut AsmGenerator, symbol_table: BackendSymbolTable) {
+    fn fixup(asm: &mut Asm, generator: &mut AsmGenerator, symbol_table: &BackendSymbolTable) {
         match asm {
             Asm::Program(funcs) => {
                 for func in funcs {
@@ -1027,7 +1030,7 @@ impl Asm {
                     }
                 }
             }
-        };
+        }
     }
     fn fixup_function(
         func: &mut Function,
@@ -1649,7 +1652,8 @@ mod tests {
         let Ok(tacky_ast) = tacky else {
             panic!("tacky generation failed for: {src}");
         };
-        Asm::from_tacky(tacky_ast, symbol_table)
+        let (asm, _) = Asm::from_tacky(tacky_ast, symbol_table);
+        asm
     }
 
     fn func_instructions<'a>(asm: &'a Asm, name: &str) -> &'a [Instruction] {
@@ -1694,7 +1698,7 @@ mod tests {
             ],
         })]);
 
-        let assembly = Asm::from_tacky(ast, int_sym_table(&[]));
+        let (assembly, _) = Asm::from_tacky(ast, int_sym_table(&[]));
         assert_eq!(assembly, expected);
     }
 
@@ -1739,7 +1743,7 @@ mod tests {
             ],
         })]);
 
-        let assembly = Asm::from_tacky(ast, int_sym_table(&["tmp.0"]));
+        let (assembly, _) = Asm::from_tacky(ast, int_sym_table(&["tmp.0"]));
         assert_eq!(assembly, expected);
     }
 
@@ -1816,7 +1820,7 @@ mod tests {
             ],
         })]);
 
-        let assembly = Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1", "tmp.2"]));
+        let (assembly, _) = Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1", "tmp.2"]));
         assert_eq!(assembly, expected);
     }
 
@@ -1926,7 +1930,8 @@ mod tests {
             ],
         })]);
 
-        let assembly = Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1", "tmp.2", "tmp.3"]));
+        let (assembly, _) =
+            Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1", "tmp.2", "tmp.3"]));
         assert_eq!(assembly, expected);
     }
 
@@ -2070,7 +2075,7 @@ mod tests {
             ],
         })]);
 
-        let assembly = Asm::from_tacky(
+        let (assembly, _) = Asm::from_tacky(
             ast,
             int_sym_table(&["tmp.0", "tmp.1", "tmp.2", "tmp.3", "tmp.4"]),
         );
@@ -2195,7 +2200,8 @@ mod tests {
                 Instruction::Ret,
             ],
         })]);
-        let assembly = Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1", "tmp.2", "tmp.3"]));
+        let (assembly, _) =
+            Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1", "tmp.2", "tmp.3"]));
         assert_eq!(assembly, expected);
     }
 
@@ -2277,7 +2283,7 @@ mod tests {
                 Instruction::Ret,
             ],
         })]);
-        let assembly = Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1"]));
+        let (assembly, _) = Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1"]));
         assert_eq!(assembly, expected);
     }
 
@@ -2341,7 +2347,7 @@ mod tests {
                 Instruction::Ret,
             ],
         })]);
-        let assembly = Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1"]));
+        let (assembly, _) = Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1"]));
         assert_eq!(assembly, expected);
     }
 
@@ -2407,7 +2413,7 @@ mod tests {
                 Instruction::Ret,
             ],
         })]);
-        let assembly = Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1"]));
+        let (assembly, _) = Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1"]));
         assert_eq!(assembly, expected);
     }
 
@@ -2461,7 +2467,7 @@ mod tests {
                 Instruction::Ret,
             ],
         })]);
-        let assembly = Asm::from_tacky(ast, int_sym_table(&["tmp.0"]));
+        let (assembly, _) = Asm::from_tacky(ast, int_sym_table(&["tmp.0"]));
         assert_eq!(assembly, expected);
     }
 
@@ -2502,7 +2508,7 @@ mod tests {
                 Instruction::Ret,
             ],
         })]);
-        let assembly = Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1"]));
+        let (assembly, _) = Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1"]));
         assert_eq!(assembly, expected);
     }
 
@@ -2595,7 +2601,8 @@ mod tests {
                 Instruction::Ret,
             ],
         })]);
-        let assembly = Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1", "tmp.2", "tmp.3"]));
+        let (assembly, _) =
+            Asm::from_tacky(ast, int_sym_table(&["tmp.0", "tmp.1", "tmp.2", "tmp.3"]));
         assert_eq!(assembly, expected);
     }
 
@@ -2623,7 +2630,7 @@ mod tests {
         let Ok(tacky_ast) = tacky else {
             panic!();
         };
-        let actual = Asm::from_tacky(tacky_ast, symbol_table);
+        let (actual, _) = Asm::from_tacky(tacky_ast, symbol_table);
         let expected = Asm::Program(vec![
             TopLevel::Func(Function {
                 name: "foo".into(),
@@ -2836,7 +2843,7 @@ mod tests {
             ("b.1", CType::UInt),
             ("tmp.2", CType::Int), // comparison result is always int
         ]);
-        let asm = Asm::from_tacky(ast, table);
+        let (asm, _) = Asm::from_tacky(ast, table);
         let Asm::Program(ref tops) = asm;
         let TopLevel::Func(ref func) = tops[0] else {
             panic!()
@@ -2879,7 +2886,7 @@ mod tests {
             ("b.1", CType::UInt),
             ("tmp.2", CType::UInt),
         ]);
-        let asm = Asm::from_tacky(ast, table);
+        let (asm, _) = Asm::from_tacky(ast, table);
         let Asm::Program(ref tops) = asm;
         let TopLevel::Func(ref func) = tops[0] else {
             panic!()

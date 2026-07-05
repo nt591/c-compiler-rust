@@ -102,6 +102,10 @@ pub fn static_init_as_usize(si: &StaticInit) -> usize {
     }
 }
 
+pub fn is_double(si: &StaticInit) -> bool {
+    matches!(si, StaticInit::DoubleInit(_))
+}
+
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum AssemblyType {
     Longword,

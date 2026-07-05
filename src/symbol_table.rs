@@ -67,13 +67,13 @@ pub fn backend_symbol_table_from_symbol_table(symtable: SymbolTable) -> BackendS
             (CType::Double, IdentifierAttrs::StaticAttr { .. }) => BackendSymTableEntry::ObjEntry {
                 ty: AssemblyType::Double,
                 is_static: true,
-                is_constant: true,
+                is_constant: false, // tweak this in asm.rs
             },
 
             (CType::Double, _) => BackendSymTableEntry::ObjEntry {
                 ty: AssemblyType::Double,
                 is_static: false,
-                is_constant: true,
+                is_constant: false, // tweak this in asm.rs
             },
             (CType::FunType { .. }, IdentifierAttrs::StaticAttr { .. })
             | (CType::FunType { .. }, IdentifierAttrs::LocalAttr) => unreachable!(),

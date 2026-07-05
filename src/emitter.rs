@@ -3,11 +3,13 @@
 
 use crate::Asm;
 use crate::asm;
+use crate::symbol_table::BackendSymTableEntry;
+use crate::symbol_table::BackendSymbolTable;
 use crate::types;
 use crate::types::StaticInit;
 use std::io::Write;
 
-pub struct Emitter(Asm);
+pub struct Emitter(Asm, BackendSymbolTable);
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 enum RegisterSize {
@@ -17,36 +19,40 @@ enum RegisterSize {
 }
 
 impl Emitter {
-    pub fn new(asm: Asm) -> Self {
-        Self(asm)
+    pub fn new(asm: Asm, symbol_table: BackendSymbolTable) -> Self {
+        Self(asm, symbol_table)
     }
 
     pub fn emit<W: Write>(self, output: &mut W) -> std::io::Result<()> {
-        Self::emit_code(&self.0, output)
+        self.emit_code(output)
     }
 
-    fn emit_code<W: Write>(asm: &Asm, output: &mut W) -> std::io::Result<()> {
-        let Asm::Program(toplevel) = asm;
+    fn emit_code<W: Write>(&self, output: &mut W) -> std::io::Result<()> {
+        let Asm::Program(ref toplevel) = self.0;
         for directive in toplevel {
             match directive {
-                asm::TopLevel::Func(func) => Self::emit_function(func, output)?,
+                asm::TopLevel::Func(func) => self.emit_function(func, output)?,
                 asm::TopLevel::StaticVariable {
                     identifier,
                     global,
                     init,
                     alignment,
-                } => Self::emit_static_variable(identifier, *global, *init, *alignment, output)?,
-                asm::TopLevel::StaticConstant { .. } => todo!(),
+                } => self.emit_static_variable(identifier, *global, *init, *alignment, output)?,
+                asm::TopLevel::StaticConstant {
+                    identifier,
+                    alignment,
+                    init,
+                } => self.emit_static_constant(identifier, *init, *alignment, output)?,
             }
         }
         Ok(())
     }
 
-    fn emit_comment<W: Write>(comment: &str, output: &mut W) -> std::io::Result<()> {
+    fn emit_comment<W: Write>(&self, comment: &str, output: &mut W) -> std::io::Result<()> {
         writeln!(output, "                       # {}", comment)
     }
 
-    fn emit_function<W: Write>(func: &asm::Function, output: &mut W) -> std::io::Result<()> {
+    fn emit_function<W: Write>(&self, func: &asm::Function, output: &mut W) -> std::io::Result<()> {
         let asm::Function {
             name,
             instructions,
@@ -57,16 +63,17 @@ impl Emitter {
         }
         writeln!(output, "  .text")?;
         writeln!(output, "_{}:", name)?;
-        Self::emit_comment("FUNCTION PROLOGUE", output)?;
+        self.emit_comment("FUNCTION PROLOGUE", output)?;
         writeln!(output, "{}", "  pushq  %rbp")?;
         writeln!(output, "{}", "  movq   %rsp, %rbp")?;
         for instruction in instructions {
-            Self::emit_instructions(instruction, output)?;
+            self.emit_instructions(instruction, output)?;
         }
         Ok(())
     }
 
     fn emit_static_variable<W: Write>(
+        &self,
         identifier: &str,
         global: bool,
         init: StaticInit,
@@ -76,12 +83,23 @@ impl Emitter {
         if global {
             writeln!(output, "  .globl _{}", identifier)?;
         }
-        if types::static_init_as_usize(&init) == 0 {
-            writeln!(output, "  .bss")?;
-        } else {
+
+        if types::is_double(&init) || types::static_init_as_usize(&init) != 0 {
+            // all doubles and every non-zero initializer gets written into .data
             writeln!(output, "  .data")?;
+        } else {
+            writeln!(output, "  .bss")?;
         }
         writeln!(output, "  .balign {alignment}")?;
+        // Note: Not sure this can ever hit at time of writing, but
+        // seems resaonable to handle this here.
+        let symtable = &self.1;
+        let Some(BackendSymTableEntry::ObjEntry {
+            is_constant: false, ..
+        }) = symtable.get(identifier)
+        else {
+            panic!("Found constant {:?} in emit_static_variable", identifier);
+        };
         writeln!(output, "_{}:", identifier)?;
         match init {
             StaticInit::IntInit(0) | StaticInit::UIntInit(0) => writeln!(output, "  .zero 4")?,
@@ -90,18 +108,61 @@ impl Emitter {
             StaticInit::LongInit(0) | StaticInit::ULongInit(0) => writeln!(output, "  .zero 8")?,
             StaticInit::LongInit(i) => writeln!(output, "  .quad {}", i)?,
             StaticInit::ULongInit(i) => writeln!(output, "  .quad {}", i)?,
-            StaticInit::DoubleInit(_) => todo!(),
+            StaticInit::DoubleInit(i) => writeln!(output, "  .double {}", i)?,
+        }
+        Ok(())
+    }
+
+    fn emit_static_constant<W: Write>(
+        &self,
+        identifier: &str,
+        init: StaticInit,
+        alignment: usize,
+        output: &mut W,
+    ) -> std::io::Result<()> {
+        // only MacOS directives right now, maybe one day we'll support
+        // linux
+        let is_16_byte_aligned = alignment == asm::MAGIC_16_BYTE_ALIGNMENT;
+        if is_16_byte_aligned {
+            // all doubles and every non-zero initializer gets written into .data
+            writeln!(output, "  .literal16")?;
+        } else {
+            writeln!(output, "  .literal8")?;
+        }
+        writeln!(output, "  .balign {alignment}")?;
+        // Pretty sure this MUST be is_constant but we can be explicit
+        let symtable = &self.1;
+        let Some(BackendSymTableEntry::ObjEntry {
+            is_constant: true, ..
+        }) = symtable.get(identifier)
+        else {
+            panic!(
+                "Found a non-constant {:?} in emit_static_constant",
+                identifier
+            );
+        };
+        writeln!(output, "L_{}:", identifier)?;
+        let StaticInit::DoubleInit(initializer) = init else {
+            panic!(
+                "Got a non-double {:?} when emitting a static constant",
+                init
+            );
+        };
+        writeln!(output, "  .double {}", initializer)?;
+        if is_16_byte_aligned {
+            writeln!(output, "  .quad 0")?;
         }
         Ok(())
     }
 
     fn emit_instructions<W: Write>(
+        &self,
         instruction: &asm::Instruction,
         output: &mut W,
     ) -> std::io::Result<()> {
         match instruction {
             asm::Instruction::Ret => {
-                Self::emit_comment("RESET REGISTERS", output)?;
+                self.emit_comment("RESET REGISTERS", output)?;
                 writeln!(output, "  movq   %rbp, %rsp")?;
                 writeln!(output, "  popq   %rbp")?;
                 writeln!(output, "  ret")?;
@@ -110,25 +171,25 @@ impl Emitter {
                 match at {
                     types::AssemblyType::Longword => write!(output, "  movl   ")?,
                     types::AssemblyType::Quadword => write!(output, "  movq   ")?,
-                    types::AssemblyType::Double => todo!(),
+                    types::AssemblyType::Double => write!(output, "  movsd  ")?,
                 }
-                Self::emit_op(src, at.into(), output)?;
+                self.emit_op(src, at.into(), output)?;
                 write!(output, ", ")?;
-                Self::emit_op(dst, at.into(), output)?;
+                self.emit_op(dst, at.into(), output)?;
                 write!(output, "\n")?;
             }
             asm::Instruction::Movsx(src, dst) => {
                 write!(output, "  movslq ")?;
-                Self::emit_op(src, RegisterSize::FourByte, output)?;
+                self.emit_op(src, RegisterSize::FourByte, output)?;
                 write!(output, ", ")?;
-                Self::emit_op(dst, RegisterSize::EightByte, output)?;
+                self.emit_op(dst, RegisterSize::EightByte, output)?;
                 write!(output, "\n")?;
             }
             asm::Instruction::Unary(unary, at, operand) => {
                 write!(output, "  ")?;
                 Self::emit_unary(unary, at, output)?;
                 write!(output, "   ")?;
-                Self::emit_op(operand, at.into(), output)?;
+                self.emit_op(operand, at.into(), output)?;
                 write!(output, "\n")?;
             }
             asm::Instruction::Binary(binop @ asm::BinaryOp::ShiftLeft, at, src, dst)
@@ -137,18 +198,18 @@ impl Emitter {
                 write!(output, "  ")?;
                 Self::emit_binary(binop, at, output)?;
                 // assume emit_binary handles proper space formatting!
-                Self::emit_op(src, RegisterSize::OneByte, output)?;
+                self.emit_op(src, RegisterSize::OneByte, output)?;
                 write!(output, ", ")?;
-                Self::emit_op(dst, at.into(), output)?;
+                self.emit_op(dst, at.into(), output)?;
                 write!(output, "\n")?;
             }
             asm::Instruction::Binary(binop, at, src, dst) => {
                 write!(output, "  ")?;
                 Self::emit_binary(binop, at, output)?;
                 // assume emit_binary handles proper space formatting!
-                Self::emit_op(src, at.into(), output)?;
+                self.emit_op(src, at.into(), output)?;
                 write!(output, ", ")?;
-                Self::emit_op(dst, at.into(), output)?;
+                self.emit_op(dst, at.into(), output)?;
                 write!(output, "\n")?;
             }
             asm::Instruction::Cdq(types::AssemblyType::Longword) => {
@@ -164,7 +225,7 @@ impl Emitter {
                     types::AssemblyType::Longword => write!(output, "  idivl  ")?,
                     types::AssemblyType::Double => todo!(),
                 }
-                Self::emit_op(operand, at.into(), output)?;
+                self.emit_op(operand, at.into(), output)?;
                 write!(output, "\n")?;
             }
             asm::Instruction::Div(at, operand) => {
@@ -173,18 +234,18 @@ impl Emitter {
                     types::AssemblyType::Longword => write!(output, "  divl   ")?,
                     types::AssemblyType::Double => todo!(),
                 }
-                Self::emit_op(operand, at.into(), output)?;
+                self.emit_op(operand, at.into(), output)?;
                 write!(output, "\n")?;
             }
             asm::Instruction::Cmp(at, op1, op2) => {
                 match at {
                     types::AssemblyType::Longword => write!(output, "  cmpl   ")?,
                     types::AssemblyType::Quadword => write!(output, "  cmpq   ")?,
-                    types::AssemblyType::Double => todo!(),
+                    types::AssemblyType::Double => write!(output, "  comisd ")?,
                 }
-                Self::emit_op(op1, at.into(), output)?;
+                self.emit_op(op1, at.into(), output)?;
                 write!(output, ", ")?;
-                Self::emit_op(op2, at.into(), output)?;
+                self.emit_op(op2, at.into(), output)?;
                 write!(output, "\n")?;
             }
             asm::Instruction::Jmp(label) => {
@@ -205,12 +266,12 @@ impl Emitter {
             asm::Instruction::SetCC(cond, operand) => {
                 write!(output, "  ")?;
                 Self::emit_cond_set(*cond, output)?;
-                Self::emit_op(operand, RegisterSize::OneByte, output)?;
+                self.emit_op(operand, RegisterSize::OneByte, output)?;
                 write!(output, "\n")?;
             }
             asm::Instruction::Push(op) => {
                 write!(output, "  pushq  ")?;
-                Self::emit_op(op, RegisterSize::EightByte, output)?;
+                self.emit_op(op, RegisterSize::EightByte, output)?;
                 write!(output, "\n")?;
             }
             asm::Instruction::Call(lbl) => {
@@ -219,13 +280,38 @@ impl Emitter {
             asm::Instruction::MovZeroExtend { .. } => {
                 unreachable!("MovZeroExtend is rewritten to Mov instructions after fixups")
             }
-            asm::Instruction::Cvttsd2si { .. } => todo!(),
-            asm::Instruction::Cvtsi2sd { .. } => todo!(),
+            asm::Instruction::Cvttsd2si(at, src, dst) => {
+                match at {
+                    types::AssemblyType::Quadword => write!(output, "  cvttsd2siq ")?,
+                    types::AssemblyType::Longword => write!(output, "  cvttsd2sil ")?,
+                    types::AssemblyType::Double => {
+                        unreachable!("cvttsd2si destination should never be a double")
+                    }
+                }
+                self.emit_op(src, at.into(), output)?;
+                write!(output, ", ")?;
+                self.emit_op(dst, at.into(), output)?;
+                write!(output, "\n")?;
+            }
+            asm::Instruction::Cvtsi2sd(at, src, dst) => {
+                match at {
+                    types::AssemblyType::Quadword => write!(output, "  cvtsi2sdq  ")?,
+                    types::AssemblyType::Longword => write!(output, "  cvtsi2sdl  ")?,
+                    types::AssemblyType::Double => {
+                        unreachable!("cvtsi2sd source should never be a double")
+                    }
+                }
+                self.emit_op(src, at.into(), output)?;
+                write!(output, ", ")?;
+                self.emit_op(dst, at.into(), output)?;
+                write!(output, "\n")?;
+            }
         }
         Ok(())
     }
 
     fn emit_op<W: Write>(
+        &self,
         op: &asm::Operand,
         regsize: RegisterSize,
         output: &mut W,
@@ -242,7 +328,19 @@ impl Emitter {
             }
             asm::Operand::Imm(imm) => write!(output, "${}", imm)?,
             asm::Operand::Stack(n) => write!(output, "{}(%rbp)", n)?,
-            asm::Operand::Data(var) => write!(output, "_{}(%rip)", var)?,
+            asm::Operand::Data(var) => {
+                // if we've defined this as a constant, we'll use a local label prefix. Otherwise,
+                // we'll use standard RIP-relative addressing
+                let symtable = &self.1;
+                if let Some(BackendSymTableEntry::ObjEntry {
+                    is_constant: true, ..
+                }) = symtable.get(var)
+                {
+                    write!(output, "L_{}(%rip)", var)?
+                } else {
+                    write!(output, "_{}(%rip)", var)?
+                }
+            }
             asm::Operand::Pseudo(p) => panic!("Unexpected Pseudo {} when emitting op", p),
         }
 
@@ -257,12 +355,12 @@ impl Emitter {
         let instruction = match uop {
             asm::UnaryOp::Not => "not",
             asm::UnaryOp::Neg => "neg",
-            asm::UnaryOp::Shr => todo!(),
+            asm::UnaryOp::Shr => "shr",
         };
         let suffix = match assembly_type {
             types::AssemblyType::Longword => "l",
             types::AssemblyType::Quadword => "q",
-            types::AssemblyType::Double => todo!(),
+            types::AssemblyType::Double => "sd",
         };
         write!(output, "{instruction}{suffix}")?;
         Ok(())
@@ -276,6 +374,8 @@ impl Emitter {
         // involves an allocation but we can forgive me.
         let instruction = match binop {
             asm::BinaryOp::Add => "add",
+            // multiplying doubles needs mulsd, so special case
+            asm::BinaryOp::Mult if assembly_type == &types::AssemblyType::Double => "mul",
             asm::BinaryOp::Mult => "imul",
             asm::BinaryOp::Sub => "sub",
             asm::BinaryOp::BitwiseAnd => "and",
@@ -283,12 +383,14 @@ impl Emitter {
             asm::BinaryOp::Xor => "xor",
             asm::BinaryOp::ShiftLeft => "shl",
             asm::BinaryOp::ShiftRight => "sar",
-            asm::BinaryOp::DivDouble => todo!(),
+            asm::BinaryOp::DivDouble => "div",
         };
         let suffix = match assembly_type {
             types::AssemblyType::Longword => "l",
             types::AssemblyType::Quadword => "q",
-            types::AssemblyType::Double => todo!(),
+            // xorpd is a packed instruction, so special case it
+            types::AssemblyType::Double if binop == &asm::BinaryOp::Xor => "pd",
+            types::AssemblyType::Double => "sd",
         };
         let padding = 7 - instruction.len() - suffix.len();
         write!(output, "{instruction}{suffix}{}", " ".repeat(padding))?;
@@ -307,16 +409,16 @@ impl Emitter {
             Register::R9 => write!(output, "{}", "%r9d"),
             Register::R10 => write!(output, "{}", "%r10d"),
             Register::R11 => write!(output, "{}", "%r11d"),
-            Register::XMM0
-            | Register::XMM1
-            | Register::XMM2
-            | Register::XMM3
-            | Register::XMM4
-            | Register::XMM5
-            | Register::XMM6
-            | Register::XMM7
-            | Register::XMM14
-            | Register::XMM15 => todo!(),
+            Register::XMM0 => write!(output, "{}", "%xmm0"),
+            Register::XMM1 => write!(output, "{}", "%xmm1"),
+            Register::XMM2 => write!(output, "{}", "%xmm2"),
+            Register::XMM3 => write!(output, "{}", "%xmm3"),
+            Register::XMM4 => write!(output, "{}", "%xmm4"),
+            Register::XMM5 => write!(output, "{}", "%xmm5"),
+            Register::XMM6 => write!(output, "{}", "%xmm6"),
+            Register::XMM7 => write!(output, "{}", "%xmm7"),
+            Register::XMM14 => write!(output, "{}", "%xmm14"),
+            Register::XMM15 => write!(output, "{}", "%xmm15"),
             Register::SP => unreachable!(),
         }
     }
@@ -336,17 +438,16 @@ impl Emitter {
             Register::R9 => write!(output, "{}", "%r9b"),
             Register::R10 => write!(output, "{}", "%r10b"),
             Register::R11 => write!(output, "{}", "%r11b"),
-            Register::XMM0
-            | Register::XMM1
-            | Register::XMM2
-            | Register::XMM3
-            | Register::XMM4
-            | Register::XMM5
-            | Register::XMM6
-            | Register::XMM7
-            | Register::XMM14
-            | Register::XMM15 => todo!(),
-
+            Register::XMM0 => write!(output, "{}", "%xmm0"),
+            Register::XMM1 => write!(output, "{}", "%xmm1"),
+            Register::XMM2 => write!(output, "{}", "%xmm2"),
+            Register::XMM3 => write!(output, "{}", "%xmm3"),
+            Register::XMM4 => write!(output, "{}", "%xmm4"),
+            Register::XMM5 => write!(output, "{}", "%xmm5"),
+            Register::XMM6 => write!(output, "{}", "%xmm6"),
+            Register::XMM7 => write!(output, "{}", "%xmm7"),
+            Register::XMM14 => write!(output, "{}", "%xmm14"),
+            Register::XMM15 => write!(output, "{}", "%xmm15"),
             Register::SP => unreachable!(),
         }
     }
@@ -367,16 +468,16 @@ impl Emitter {
             Register::R10 => write!(output, "{}", "%r10"),
             Register::R11 => write!(output, "{}", "%r11"),
             Register::SP => write!(output, "{}", "%rsp"),
-            Register::XMM0
-            | Register::XMM1
-            | Register::XMM2
-            | Register::XMM3
-            | Register::XMM4
-            | Register::XMM5
-            | Register::XMM6
-            | Register::XMM7
-            | Register::XMM14
-            | Register::XMM15 => todo!(),
+            Register::XMM0 => write!(output, "{}", "%xmm0"),
+            Register::XMM1 => write!(output, "{}", "%xmm1"),
+            Register::XMM2 => write!(output, "{}", "%xmm2"),
+            Register::XMM3 => write!(output, "{}", "%xmm3"),
+            Register::XMM4 => write!(output, "{}", "%xmm4"),
+            Register::XMM5 => write!(output, "{}", "%xmm5"),
+            Register::XMM6 => write!(output, "{}", "%xmm6"),
+            Register::XMM7 => write!(output, "{}", "%xmm7"),
+            Register::XMM14 => write!(output, "{}", "%xmm14"),
+            Register::XMM15 => write!(output, "{}", "%xmm15"),
         }
     }
 
@@ -425,7 +526,7 @@ impl From<&types::AssemblyType> for RegisterSize {
         match o {
             types::AssemblyType::Longword => RegisterSize::FourByte,
             types::AssemblyType::Quadword => RegisterSize::EightByte,
-            types::AssemblyType::Double => todo!(),
+            types::AssemblyType::Double => RegisterSize::EightByte,
         }
     }
 }
@@ -435,6 +536,28 @@ mod tests {
     use super::*;
     use crate::types::AssemblyType;
     use asm::*;
+
+    // runs source text through lex -> parse -> semantic analysis -> tacky -> asm -> emitter,
+    // returning the final assembly text so callers can assert on it directly.
+    fn compile_to_asm_string(src: &str) -> String {
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parser = crate::parser::Parser::new(&tokens);
+        let mut ast = parser.into_ast().unwrap();
+        let (mut symbol_table, ast) = crate::semantic_analysis::resolve(&mut ast).unwrap();
+        let tacky = crate::tacky::Tacky::new(ast);
+        let tacky = tacky.into_ast(&mut symbol_table);
+        let Ok(tacky_ast) = tacky else {
+            panic!("tacky generation failed for: {src}");
+        };
+        let (asm, backend_symbol_table) = Asm::from_tacky(tacky_ast, symbol_table);
+        let emitter = Emitter::new(asm, backend_symbol_table);
+        let mut buf = Vec::new();
+        emitter
+            .emit(&mut buf)
+            .expect("emitter failed to write assembly");
+        String::from_utf8(buf).expect("emitter produced invalid UTF-8")
+    }
 
     #[test]
     fn basic_emit() {
@@ -464,7 +587,7 @@ _main:
   ret
 "#;
 
-        let emitter = Emitter::new(ast);
+        let emitter = Emitter::new(ast, BackendSymbolTable::new());
         let mut vec = Vec::new();
         emitter.emit(&mut vec).expect("Could not write to string");
         let actual = String::from_utf8(vec).expect("Got invalid UTF-8");
@@ -554,7 +677,7 @@ _main:
   popq   %rbp
   ret
 "#;
-        let emitter = Emitter::new(ast);
+        let emitter = Emitter::new(ast, BackendSymbolTable::new());
         let mut vec = Vec::new();
         emitter.emit(&mut vec).expect("Could not write to string");
         let actual = String::from_utf8(vec).expect("Got invalid UTF-8");
@@ -671,7 +794,7 @@ _main:
   popq   %rbp
   ret
 "#;
-        let emitter = Emitter::new(ast);
+        let emitter = Emitter::new(ast, BackendSymbolTable::new());
         let mut vec = Vec::new();
         emitter.emit(&mut vec).expect("Could not write to string");
         let actual = String::from_utf8(vec).expect("Got invalid UTF-8");
@@ -800,7 +923,7 @@ _main:
   popq   %rbp
   ret
 "#;
-        let emitter = Emitter::new(ast);
+        let emitter = Emitter::new(ast, BackendSymbolTable::new());
         let mut vec = Vec::new();
         emitter.emit(&mut vec).expect("Could not write to string");
         let actual = String::from_utf8(vec).expect("Got invalid UTF-8");
@@ -889,7 +1012,7 @@ _main:
   popq   %rbp
   ret
 "#;
-        let emitter = Emitter::new(ast);
+        let emitter = Emitter::new(ast, BackendSymbolTable::new());
         let mut vec = Vec::new();
         emitter.emit(&mut vec).expect("Could not write to string");
         let actual = String::from_utf8(vec).expect("Got invalid UTF-8");
@@ -971,11 +1094,422 @@ Land_expr_end.1:
   popq   %rbp
   ret
 "#;
-        let emitter = Emitter::new(ast);
+        let emitter = Emitter::new(ast, BackendSymbolTable::new());
         let mut vec = Vec::new();
         emitter.emit(&mut vec).expect("Could not write to string");
         let actual = String::from_utf8(vec).expect("Got invalid UTF-8");
 
         assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn double_addition_emits_addsd() {
+        let src = r#"
+            double add_d(double a, double b) {
+                return a + b;
+            }
+        "#;
+        let expected = r#"  .globl _add_d
+  .text
+_add_d:
+                       # FUNCTION PROLOGUE
+  pushq  %rbp
+  movq   %rsp, %rbp
+  subq   $32, %rsp
+  movsd  %xmm0, -8(%rbp)
+  movsd  %xmm1, -16(%rbp)
+  movsd  -8(%rbp), %xmm14
+  movsd  %xmm14, -24(%rbp)
+  movsd  -24(%rbp), %xmm15
+  addsd  -16(%rbp), %xmm15
+  movsd  %xmm15, -24(%rbp)
+  movsd  -24(%rbp), %xmm0
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+  movl   $0, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+"#;
+        assert_eq!(expected, compile_to_asm_string(src));
+    }
+
+    #[test]
+    fn double_subtraction_emits_subsd() {
+        let src = r#"
+            double sub_d(double a, double b) {
+                return a - b;
+            }
+        "#;
+        let expected = r#"  .globl _sub_d
+  .text
+_sub_d:
+                       # FUNCTION PROLOGUE
+  pushq  %rbp
+  movq   %rsp, %rbp
+  subq   $32, %rsp
+  movsd  %xmm0, -8(%rbp)
+  movsd  %xmm1, -16(%rbp)
+  movsd  -8(%rbp), %xmm14
+  movsd  %xmm14, -24(%rbp)
+  movsd  -24(%rbp), %xmm15
+  subsd  -16(%rbp), %xmm15
+  movsd  %xmm15, -24(%rbp)
+  movsd  -24(%rbp), %xmm0
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+  movl   $0, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+"#;
+        assert_eq!(expected, compile_to_asm_string(src));
+    }
+
+    #[test]
+    fn double_multiplication_emits_mulsd_not_imul() {
+        let src = r#"
+            double mul_d(double a, double b) {
+                return a * b;
+            }
+        "#;
+        let expected = r#"  .globl _mul_d
+  .text
+_mul_d:
+                       # FUNCTION PROLOGUE
+  pushq  %rbp
+  movq   %rsp, %rbp
+  subq   $32, %rsp
+  movsd  %xmm0, -8(%rbp)
+  movsd  %xmm1, -16(%rbp)
+  movsd  -8(%rbp), %xmm14
+  movsd  %xmm14, -24(%rbp)
+  movsd  -24(%rbp), %xmm15
+  mulsd  -16(%rbp), %xmm15
+  movsd  %xmm15, -24(%rbp)
+  movsd  -24(%rbp), %xmm0
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+  movl   $0, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+"#;
+        assert_eq!(expected, compile_to_asm_string(src));
+    }
+
+    #[test]
+    fn double_division_emits_divsd_not_idiv() {
+        let src = r#"
+            double div_d(double a, double b) {
+                return a / b;
+            }
+        "#;
+        let expected = r#"  .globl _div_d
+  .text
+_div_d:
+                       # FUNCTION PROLOGUE
+  pushq  %rbp
+  movq   %rsp, %rbp
+  subq   $32, %rsp
+  movsd  %xmm0, -8(%rbp)
+  movsd  %xmm1, -16(%rbp)
+  movsd  -8(%rbp), %xmm14
+  movsd  %xmm14, -24(%rbp)
+  movsd  -24(%rbp), %xmm15
+  divsd  -16(%rbp), %xmm15
+  movsd  %xmm15, -24(%rbp)
+  movsd  -24(%rbp), %xmm0
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+  movl   $0, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+"#;
+        assert_eq!(expected, compile_to_asm_string(src));
+    }
+
+    #[test]
+    fn double_greater_than_emits_comisd_and_seta() {
+        let src = r#"
+            int cmp_d(double a, double b) {
+                return a > b;
+            }
+        "#;
+        let expected = r#"  .globl _cmp_d
+  .text
+_cmp_d:
+                       # FUNCTION PROLOGUE
+  pushq  %rbp
+  movq   %rsp, %rbp
+  subq   $32, %rsp
+  movsd  %xmm0, -8(%rbp)
+  movsd  %xmm1, -16(%rbp)
+  movsd  -8(%rbp), %xmm15
+  comisd -16(%rbp), %xmm15
+  movl   $0, -20(%rbp)
+  seta       -20(%rbp)
+  movl   -20(%rbp), %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+  movl   $0, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+"#;
+        assert_eq!(expected, compile_to_asm_string(src));
+    }
+
+    #[test]
+    fn double_negation_emits_xorpd_and_16byte_static_constant() {
+        let src = r#"
+            double neg_d(double x) {
+                return -x;
+            }
+        "#;
+        let expected = r#"  .globl _neg_d
+  .text
+_neg_d:
+                       # FUNCTION PROLOGUE
+  pushq  %rbp
+  movq   %rsp, %rbp
+  subq   $16, %rsp
+  movsd  %xmm0, -8(%rbp)
+  movsd  -8(%rbp), %xmm14
+  movsd  %xmm14, -16(%rbp)
+  movsd  -16(%rbp), %xmm15
+  xorpd  L_const_label_16byte_neg_0_float.9223372036854775808(%rip), %xmm15
+  movsd  %xmm15, -16(%rbp)
+  movsd  -16(%rbp), %xmm0
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+  movl   $0, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+  .literal16
+  .balign 16
+L_const_label_16byte_neg_0_float.9223372036854775808:
+  .double -0
+  .quad 0
+"#;
+        assert_eq!(expected, compile_to_asm_string(src));
+    }
+
+    #[test]
+    fn double_literal_return_emits_8byte_static_constant_with_local_label() {
+        let src = r#"
+            double half(void) {
+                return 0.5;
+            }
+        "#;
+        let expected = r#"  .globl _half
+  .text
+_half:
+                       # FUNCTION PROLOGUE
+  pushq  %rbp
+  movq   %rsp, %rbp
+  subq   $0, %rsp
+  movsd  L_const_label.4602678819172646912(%rip), %xmm0
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+  movl   $0, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+  .literal8
+  .balign 8
+L_const_label.4602678819172646912:
+  .double 0.5
+"#;
+        assert_eq!(expected, compile_to_asm_string(src));
+    }
+
+    // These are split into two single-variable tests rather than one file declaring both:
+    // static top-level entries appear to be emitted via a HashMap-ordered pass somewhere in
+    // tacky/codegen, so a file with two static variables doesn't have a guaranteed relative
+    // order between them (confirmed by observing it flip between two separate runs). Keeping
+    // exactly one static variable per test sidesteps that ordering question entirely.
+    #[test]
+    fn static_variable_with_nonzero_initializer_uses_data_section() {
+        let src = r#"
+            int counter = 5;
+            int get_counter(void) {
+                return counter;
+            }
+        "#;
+        let expected = r#"  .globl _get_counter
+  .text
+_get_counter:
+                       # FUNCTION PROLOGUE
+  pushq  %rbp
+  movq   %rsp, %rbp
+  subq   $0, %rsp
+  movl   _counter(%rip), %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+  movl   $0, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+  .globl _counter
+  .data
+  .balign 4
+_counter:
+  .long 5
+"#;
+        assert_eq!(expected, compile_to_asm_string(src));
+    }
+
+    #[test]
+    fn tentative_static_variable_uses_bss_section() {
+        let src = r#"
+            int zeroed;
+            int get_zeroed(void) {
+                return zeroed;
+            }
+        "#;
+        let expected = r#"  .globl _get_zeroed
+  .text
+_get_zeroed:
+                       # FUNCTION PROLOGUE
+  pushq  %rbp
+  movq   %rsp, %rbp
+  subq   $0, %rsp
+  movl   _zeroed(%rip), %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+  movl   $0, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+  .globl _zeroed
+  .bss
+  .balign 4
+_zeroed:
+  .zero 4
+"#;
+        assert_eq!(expected, compile_to_asm_string(src));
+    }
+
+    #[test]
+    fn double_to_int_cast_emits_cvttsd2si() {
+        let src = r#"
+            int double_to_int(double x) {
+                return (int) x;
+            }
+        "#;
+        let expected = r#"  .globl _double_to_int
+  .text
+_double_to_int:
+                       # FUNCTION PROLOGUE
+  pushq  %rbp
+  movq   %rsp, %rbp
+  subq   $16, %rsp
+  movsd  %xmm0, -8(%rbp)
+  cvttsd2sil -8(%rbp), %r11d
+  movl   %r11d, -12(%rbp)
+  movl   -12(%rbp), %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+  movl   $0, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+"#;
+        assert_eq!(expected, compile_to_asm_string(src));
+    }
+
+    #[test]
+    fn int_to_double_cast_uses_32bit_qualified_cvtsi2sdl() {
+        let src = r#"
+            double int_to_double(int x) {
+                return (double) x;
+            }
+        "#;
+        let expected = r#"  .globl _int_to_double
+  .text
+_int_to_double:
+                       # FUNCTION PROLOGUE
+  pushq  %rbp
+  movq   %rsp, %rbp
+  subq   $16, %rsp
+  movl   %edi, -4(%rbp)
+  cvtsi2sdl  -4(%rbp), %xmm15
+  movsd  %xmm15, -16(%rbp)
+  movsd  -16(%rbp), %xmm0
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+  movl   $0, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+"#;
+        assert_eq!(expected, compile_to_asm_string(src));
+    }
+
+    #[test]
+    fn long_to_double_cast_uses_64bit_qualified_cvtsi2sdq() {
+        let src = r#"
+            double long_to_double(long x) {
+                return (double) x;
+            }
+        "#;
+        let expected = r#"  .globl _long_to_double
+  .text
+_long_to_double:
+                       # FUNCTION PROLOGUE
+  pushq  %rbp
+  movq   %rsp, %rbp
+  subq   $16, %rsp
+  movq   %rdi, -8(%rbp)
+  cvtsi2sdq  -8(%rbp), %xmm15
+  movsd  %xmm15, -16(%rbp)
+  movsd  -16(%rbp), %xmm0
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+  movl   $0, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+"#;
+        assert_eq!(expected, compile_to_asm_string(src));
     }
 }
