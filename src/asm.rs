@@ -75,6 +75,8 @@ pub enum CondCode {
     AE, // Above or equal, CF not set (if equal, ZF set)
     B,  // Below, CF set (a < b)
     BE, // Below or equal, CF set or ZF set
+    P,  // Parity flag, used for NaN handling
+    NP, // opposite of P
 }
 
 pub const MAGIC_16_BYTE_ALIGNMENT: usize = 16;
@@ -393,9 +395,11 @@ impl Asm {
                         if get_ctype_for_val(src, symbol_table).is_double() {
                             let a1 = get_assembly_type_from_val(src, symbol_table);
                             let a2 = get_assembly_type_from_val(dst, symbol_table);
-                            // we need to make sure that our cmp uses comisd which
-                            // requires the src operand to be an xmm register.
-                            // move zero into xmm0 and cmp that way
+                            // sete is true if ZF = 1
+                            // setnp is true if PF is 0
+                            // therefore, if sete is true AND setnp is true,
+                            // then we have a successful NOT comparison. NaN != 0, so
+                            // we need that setnp check
                             vec![
                                 Binary(
                                     BinaryOp::Xor,
@@ -407,9 +411,22 @@ impl Asm {
                                     a1,
                                     Operand::Reg(Register::XMM0),
                                     generator.val_to_operand(src),
+                                ), // compares src to 0
+                                Mov(a2, Operand::Imm(0), Operand::Reg(Register::R10)),
+                                Mov(a2, Operand::Imm(0), Operand::Reg(Register::R11)),
+                                SetCC(CondCode::E, Operand::Reg(Register::R10)),
+                                SetCC(CondCode::NP, Operand::Reg(Register::R11)),
+                                Binary(
+                                    BinaryOp::BitwiseAnd,
+                                    a2,
+                                    Operand::Reg(Register::R10),
+                                    Operand::Reg(Register::R11),
                                 ),
-                                Mov(a2, Operand::Imm(0), generator.val_to_operand(dst)),
-                                SetCC(CondCode::E, generator.val_to_operand(dst)),
+                                Mov(
+                                    a2,
+                                    Operand::Reg(Register::R11),
+                                    generator.val_to_operand(dst),
+                                ),
                             ]
                         } else {
                             let a1 = get_assembly_type_from_val(src, symbol_table);
@@ -622,6 +639,13 @@ impl Asm {
                     if get_ctype_for_val(cond, symbol_table).is_double() {
                         // we need to work with SSE registers, so zero out XMM0
                         // and compare.
+                        // to avoid a jump, we need to do something semi-smart here.
+                        // We first write to one register a sete - is the cond equal to zero?
+                        // we write to another register a setnp - is the cond NOT NaN?
+                        // we then AND those two registers: equal to zero and NOT NaN.
+                        // If both are true, then the AND returns 1 which sets the zero flag
+                        // to 0 (because zero flag is 1 IFF the setting instruction returned zero).
+                        // So then we can setne, which checks "is ZF == 0"
                         vec![
                             Binary(
                                 BinaryOp::Xor,
@@ -634,7 +658,25 @@ impl Asm {
                                 generator.val_to_operand(cond),
                                 Operand::Reg(Register::XMM0),
                             ),
-                            JmpCC(CondCode::E, target.clone()),
+                            Mov(
+                                AssemblyType::Longword,
+                                Operand::Imm(0),
+                                Operand::Reg(Register::R10),
+                            ),
+                            Mov(
+                                AssemblyType::Longword,
+                                Operand::Imm(0),
+                                Operand::Reg(Register::R11),
+                            ),
+                            SetCC(CondCode::E, Operand::Reg(Register::R10)),
+                            SetCC(CondCode::NP, Operand::Reg(Register::R11)),
+                            Binary(
+                                BinaryOp::BitwiseAnd,
+                                AssemblyType::Longword,
+                                Operand::Reg(Register::R10),
+                                Operand::Reg(Register::R11),
+                            ),
+                            JmpCC(CondCode::NE, target.clone()),
                         ]
                     } else {
                         // comp condition to 0, then jump if equal to target
@@ -653,6 +695,8 @@ impl Asm {
                     if get_ctype_for_val(cond, symbol_table).is_double() {
                         // we need to work with SSE registers, so zero out XMM0
                         // and compare.
+                        // Quiet NaN: unordered is not zero, so jump
+                        // with the same codepath as JNZ
                         vec![
                             Binary(
                                 BinaryOp::Xor,
@@ -665,6 +709,7 @@ impl Asm {
                                 generator.val_to_operand(cond),
                                 Operand::Reg(Register::XMM0),
                             ),
+                            JmpCC(CondCode::P, target.clone()),
                             JmpCC(CondCode::NE, target.clone()),
                         ]
                     } else {
@@ -1004,23 +1049,141 @@ impl Asm {
         symbol_table: &SymbolTable,
         generator: &mut AsmGenerator,
     ) -> Vec<Instruction> {
+        let ctype = get_ctype_for_val(src1, symbol_table);
+        if ctype.is_double() {
+            Self::parse_binary_relational_ops_for_doubles(
+                op,
+                ctype,
+                src1,
+                src2,
+                dst,
+                symbol_table,
+                generator,
+            )
+        } else {
+            Self::parse_binary_relational_ops_for_nondoubles(
+                op,
+                ctype,
+                src1,
+                src2,
+                dst,
+                symbol_table,
+                generator,
+            )
+        }
+    }
+
+    fn parse_binary_relational_ops_for_doubles(
+        op: &tacky::BinaryOp,
+        ctype: CType,
+        src1: &tacky::Val,
+        src2: &tacky::Val,
+        dst: &tacky::Val,
+        symbol_table: &SymbolTable,
+        generator: &mut AsmGenerator,
+    ) -> Vec<Instruction> {
+        debug_assert!(ctype.is_double());
         use Instruction::*;
         use tacky::BinaryOp as TBO;
-        let ctype = get_ctype_for_val(src1, symbol_table);
         // treats doubles as unsigned ints for cond codes
         let cond_code = match op {
             TBO::Equal => CondCode::E,
             TBO::NotEqual => CondCode::NE,
-            TBO::GreaterThan if ctype.is_double() => CondCode::A,
+            TBO::GreaterThan => CondCode::A,
+            TBO::GreaterOrEqual => CondCode::AE,
+            TBO::LessThan => CondCode::B,
+            TBO::LessOrEqual => CondCode::BE,
+            _ => {
+                panic!("Unexpected tacky BinaryOp {op:?} when constructing relational instruction")
+            }
+        };
+        let a1 = get_assembly_type_from_val(src1, symbol_table);
+        let a2 = get_assembly_type_from_val(dst, symbol_table);
+        // we have curious challenges right now. The parity flag is true
+        // when handling NaN so we need to inject a jump
+        // because NaN is unordered and cannot be <, > or == to a value.
+        // The tricky bit is NE - NaN is never equal to anything,
+        // including NaN. We'll need to special case just that condcode.
+        if cond_code == CondCode::NE {
+            vec![
+                Cmp(
+                    a1,
+                    generator.val_to_operand(src2),
+                    generator.val_to_operand(src1),
+                ),
+                // set one scratch register for NE (zero flag = 0)
+                // set one scratch register for parity flag
+                // if not equal OR parity flag, its truthy so set
+                // dst operand to the output of the or
+                Mov(a2, Operand::Imm(0), Operand::Reg(Register::R10)),
+                Mov(a2, Operand::Imm(0), Operand::Reg(Register::R11)),
+                SetCC(cond_code, Operand::Reg(Register::R10)),
+                SetCC(CondCode::P, Operand::Reg(Register::R11)),
+                Binary(
+                    BinaryOp::BitwiseOr,
+                    a2,
+                    Operand::Reg(Register::R10),
+                    Operand::Reg(Register::R11),
+                ),
+                Mov(
+                    a2,
+                    Operand::Reg(Register::R11),
+                    generator.val_to_operand(dst),
+                ),
+            ]
+        } else {
+            // opposite of the NE cond code
+            // we'll set one scratch register to the codecode
+            // we'll set another not parity flag set
+            // Then we AND them. That is,
+            // the comparison is true IF the cond code holds
+            // AND neither value is a NaN.
+            vec![
+                Cmp(
+                    a1,
+                    generator.val_to_operand(src2),
+                    generator.val_to_operand(src1),
+                ),
+                Mov(a2, Operand::Imm(0), Operand::Reg(Register::R10)),
+                Mov(a2, Operand::Imm(0), Operand::Reg(Register::R11)),
+                SetCC(cond_code, Operand::Reg(Register::R10)),
+                SetCC(CondCode::NP, Operand::Reg(Register::R11)), // note: NP
+                Binary(
+                    BinaryOp::BitwiseAnd,
+                    a2,
+                    Operand::Reg(Register::R10),
+                    Operand::Reg(Register::R11),
+                ),
+                Mov(
+                    a2,
+                    Operand::Reg(Register::R11),
+                    generator.val_to_operand(dst),
+                ),
+            ]
+        }
+    }
+
+    fn parse_binary_relational_ops_for_nondoubles(
+        op: &tacky::BinaryOp,
+        ctype: CType,
+        src1: &tacky::Val,
+        src2: &tacky::Val,
+        dst: &tacky::Val,
+        symbol_table: &SymbolTable,
+        generator: &mut AsmGenerator,
+    ) -> Vec<Instruction> {
+        debug_assert!(!ctype.is_double());
+        use Instruction::*;
+        use tacky::BinaryOp as TBO;
+        let cond_code = match op {
+            TBO::Equal => CondCode::E,
+            TBO::NotEqual => CondCode::NE,
             TBO::GreaterThan if ctype.signed() => CondCode::G,
             TBO::GreaterThan => CondCode::A,
-            TBO::GreaterOrEqual if ctype.is_double() => CondCode::AE,
             TBO::GreaterOrEqual if ctype.signed() => CondCode::GE,
             TBO::GreaterOrEqual => CondCode::AE,
-            TBO::LessThan if ctype.is_double() => CondCode::B,
             TBO::LessThan if ctype.signed() => CondCode::L,
             TBO::LessThan => CondCode::B,
-            TBO::LessOrEqual if ctype.is_double() => CondCode::BE,
             TBO::LessOrEqual if ctype.signed() => CondCode::LE,
             TBO::LessOrEqual => CondCode::BE,
             _ => {
@@ -1429,7 +1592,7 @@ impl Asm {
                     src,
                     dst @ (Operand::Stack(_) | Operand::Data(_)),
                 ) => {
-                    // comisd requires dst is in a register, so we shuffle
+                    // comisd requires dst is in a register, so we shuffle.
                     v.extend(vec![
                         Instruction::Mov(at, dst, Operand::Reg(Register::XMM15)),
                         Instruction::Cmp(at, src, Operand::Reg(Register::XMM15)),

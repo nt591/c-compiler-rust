@@ -499,6 +499,8 @@ impl Emitter {
             AE => write!(output, "jae         ")?,
             B => write!(output, "jb          ")?,
             BE => write!(output, "jbe         ")?,
+            P => write!(output, "jp          ")?,
+            NP => write!(output, "jnp         ")?,
         }
         Ok(())
     }
@@ -516,6 +518,8 @@ impl Emitter {
             AE => write!(output, "setae      ")?,
             B => write!(output, "setb       ")?,
             BE => write!(output, "setbe      ")?,
+            P => write!(output, "setp       ")?,
+            NP => write!(output, "setnp      ")?,
         }
         Ok(())
     }
@@ -1260,8 +1264,12 @@ _cmp_d:
   movsd  %xmm1, -16(%rbp)
   movsd  -8(%rbp), %xmm15
   comisd -16(%rbp), %xmm15
-  movl   $0, -20(%rbp)
-  seta       -20(%rbp)
+  movl   $0, %r10d
+  movl   $0, %r11d
+  seta       %r10b
+  setnp      %r11b
+  andl   %r10d, %r11d
+  movl   %r11d, -20(%rbp)
   movl   -20(%rbp), %eax
                        # RESET REGISTERS
   movq   %rbp, %rsp
