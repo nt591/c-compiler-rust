@@ -219,11 +219,11 @@ impl AsmGenerator {
     }
 
     pub fn generate_out_of_range_label(&mut self) -> String {
-        self.generate_label("out_of_range_____internal.{}")
+        self.generate_label("out_of_range_____internal")
     }
 
     pub fn get_label_for_end_of_uint_double_conv_comp(&mut self) -> String {
-        self.generate_label("end_____internal.{}")
+        self.generate_label("end_____internal")
     }
 
     fn generate_label(&mut self, prefix: &str) -> String {
@@ -390,15 +390,38 @@ impl Asm {
                 }
                 TIns::Unary { op, src, dst } => match op {
                     TUnaryOp::Not => {
-                        let a1 = get_assembly_type_from_val(src, symbol_table);
-                        let a2 = get_assembly_type_from_val(dst, symbol_table);
-                        // !x is the same as x==0, so compare
-                        // then zero out dest addr and check if cmp returned equal
-                        vec![
-                            Cmp(a1, Operand::Imm(0), generator.val_to_operand(src)),
-                            Mov(a2, Operand::Imm(0), generator.val_to_operand(dst)),
-                            SetCC(CondCode::E, generator.val_to_operand(dst)),
-                        ]
+                        if get_ctype_for_val(src, symbol_table).is_double() {
+                            let a1 = get_assembly_type_from_val(src, symbol_table);
+                            let a2 = get_assembly_type_from_val(dst, symbol_table);
+                            // we need to make sure that our cmp uses comisd which
+                            // requires the src operand to be an xmm register.
+                            // move zero into xmm0 and cmp that way
+                            vec![
+                                Binary(
+                                    BinaryOp::Xor,
+                                    a1,
+                                    Operand::Reg(Register::XMM0),
+                                    Operand::Reg(Register::XMM0),
+                                ),
+                                Cmp(
+                                    a1,
+                                    Operand::Reg(Register::XMM0),
+                                    generator.val_to_operand(src),
+                                ),
+                                Mov(a2, Operand::Imm(0), generator.val_to_operand(dst)),
+                                SetCC(CondCode::E, generator.val_to_operand(dst)),
+                            ]
+                        } else {
+                            let a1 = get_assembly_type_from_val(src, symbol_table);
+                            let a2 = get_assembly_type_from_val(dst, symbol_table);
+                            // !x is the same as x==0, so compare
+                            // then zero out dest addr and check if cmp returned equal
+                            vec![
+                                Cmp(a1, Operand::Imm(0), generator.val_to_operand(src)),
+                                Mov(a2, Operand::Imm(0), generator.val_to_operand(dst)),
+                                SetCC(CondCode::E, generator.val_to_operand(dst)),
+                            ]
+                        }
                     }
                     TUnaryOp::Negate if get_ctype_for_val(src, symbol_table).is_double() => {
                         // special case: handle negation of doubles by XOR with -0.0

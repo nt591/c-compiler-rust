@@ -303,7 +303,7 @@ impl<'a> Tacky {
             TypedExprKind::Constant(c) => Ok(Val::Constant(*c)),
             TypedExprKind::Unary(op, exp) => {
                 let src = self.parse_expression(exp, ctx)?;
-                let dst = self.make_tacky_variable(ctx, exp.get_type())?;
+                let dst = self.make_tacky_variable(ctx, ty)?;
                 let unary_op = match op {
                     ParserUnaryOp::Negate => UnaryOp::Negate,
                     ParserUnaryOp::Complement => UnaryOp::Complement,
@@ -536,7 +536,7 @@ impl<'a> Tacky {
         let end_label = self.make_label("and_expr_end");
         let src1 = self.parse_expression(left, ctx)?;
         // move src1 into a tmp
-        let dst1 = self.make_tacky_variable(ctx, CType::Int)?;
+        let dst1 = self.make_tacky_variable(ctx, left.get_type())?;
         ctx.push(Instruction::Copy {
             src: src1,
             dst: dst1.clone(),
@@ -547,7 +547,7 @@ impl<'a> Tacky {
         });
         let src2 = self.parse_expression(right, ctx)?;
         // move src2 into a tmp
-        let dst2 = self.make_tacky_variable(ctx, CType::Int)?;
+        let dst2 = self.make_tacky_variable(ctx, right.get_type())?;
         ctx.push(Instruction::Copy {
             src: src2,
             dst: dst2.clone(),
@@ -605,7 +605,7 @@ impl<'a> Tacky {
         let end_label = self.make_label("or_expr_end");
         let src1 = self.parse_expression(left, ctx)?;
         // move src1 into a tmp
-        let dst1 = self.make_tacky_variable(ctx, CType::Int)?;
+        let dst1 = self.make_tacky_variable(ctx, left.get_type())?;
         ctx.push(Instruction::Copy {
             src: src1,
             dst: dst1.clone(),
@@ -616,7 +616,7 @@ impl<'a> Tacky {
         });
         let src2 = self.parse_expression(right, ctx)?;
         // move src2 into a tmp
-        let dst2 = self.make_tacky_variable(ctx, CType::Int)?;
+        let dst2 = self.make_tacky_variable(ctx, right.get_type())?;
 
         ctx.push(Instruction::Copy {
             src: src2,

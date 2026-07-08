@@ -108,7 +108,7 @@ impl Emitter {
             StaticInit::LongInit(0) | StaticInit::ULongInit(0) => writeln!(output, "  .zero 8")?,
             StaticInit::LongInit(i) => writeln!(output, "  .quad {}", i)?,
             StaticInit::ULongInit(i) => writeln!(output, "  .quad {}", i)?,
-            StaticInit::DoubleInit(i) => writeln!(output, "  .double {}", i)?,
+            StaticInit::DoubleInit(i) => writeln!(output, "  .double {:?}", i)?,
         }
         Ok(())
     }
@@ -148,7 +148,7 @@ impl Emitter {
                 init
             );
         };
-        writeln!(output, "  .double {}", initializer)?;
+        writeln!(output, "  .double {:?}", initializer)?;
         if is_16_byte_aligned {
             writeln!(output, "  .quad 0")?;
         }
@@ -1309,7 +1309,7 @@ _neg_d:
   .literal16
   .balign 16
 L_const_label_16byte_neg_0_float.9223372036854775808:
-  .double -0
+  .double -0.0
   .quad 0
 "#;
         assert_eq!(expected, compile_to_asm_string(src));
