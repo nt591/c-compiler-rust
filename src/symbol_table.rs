@@ -77,6 +77,7 @@ pub fn backend_symbol_table_from_symbol_table(symtable: SymbolTable) -> BackendS
             },
             (CType::FunType { .. }, IdentifierAttrs::StaticAttr { .. })
             | (CType::FunType { .. }, IdentifierAttrs::LocalAttr) => unreachable!(),
+            (CType::Pointer(_), _) => todo!(),
         };
         new_table.insert(name, entry);
     }

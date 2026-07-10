@@ -10,6 +10,7 @@ pub enum CType {
         params: Vec<CType>,
         ret: Box<CType>, // TODO: intern CType and carry a u32 everywhere.
     },
+    Pointer(Box<CType>),
 }
 
 #[derive(PartialEq, Debug, Copy, Clone)]
@@ -77,6 +78,7 @@ impl CType {
             CType::Int | CType::UInt => 32,
             CType::Long | CType::ULong | CType::Double => 64,
             CType::FunType { .. } => todo!(), // not sure what goes here.
+            CType::Pointer(_) => todo!(),
         }
     }
 
@@ -84,6 +86,7 @@ impl CType {
         match self {
             CType::Int | CType::Long | CType::Double => true,
             CType::UInt | CType::ULong | CType::FunType { .. } => false,
+            CType::Pointer(_) => false,
         }
     }
 

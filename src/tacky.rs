@@ -247,6 +247,7 @@ impl<'a> Tacky {
                             CType::ULong => StaticInit::ULongInit(0),
                             CType::UInt => StaticInit::UIntInit(0),
                             CType::Double => StaticInit::DoubleInit(0.0),
+                            CType::Pointer(_) => todo!(),
                         };
                         defs.push(TopLevel::StaticVariable {
                             identifier: name.clone(),
@@ -406,6 +407,7 @@ impl<'a> Tacky {
                         CType::FunType { .. } => {
                             unreachable!("Should never cast a double to a funtype")
                         }
+                        CType::Pointer(_) => todo!(),
                     }
                 } else if inner_ty == CType::Double {
                     // casting a double to something else, use specialized instructions
@@ -424,6 +426,7 @@ impl<'a> Tacky {
                         CType::FunType { .. } => {
                             unreachable!("Should never cast a funtype to a double")
                         }
+                        CType::Pointer(_) => todo!(),
                     }
                 } else if target_size == expr_size {
                     Instruction::Copy {
@@ -452,6 +455,7 @@ impl<'a> Tacky {
                 ctx.push(extension_instruction);
                 Ok(dst)
             }
+            TypedExprKind::AddressOf(_) | TypedExprKind::Dereference(_) => todo!(),
         }
     }
 

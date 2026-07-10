@@ -11,6 +11,24 @@ pub enum Declaration<T> {
     FunDecl(FunctionDeclaration<T>),
 }
 
+// used for cast expressions, ex
+// int *casted_expr = (int *) expr;
+#[derive(Debug, PartialEq, Clone)]
+pub enum AbstractDeclarator {
+    Base,
+    Pointer(Box<AbstractDeclarator>),
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum Declarator {
+    Ident(String),
+    Pointer(Box<Declarator>), // int *x -> ptr("x")
+    Func(Vec<ParamInfo>, Box<Declarator>),
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct ParamInfo(pub CType, pub Declarator);
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct FunctionDeclaration<T> {
     pub name: String,
@@ -20,6 +38,7 @@ pub struct FunctionDeclaration<T> {
     pub ftype: CType,
 }
 
+#[cfg(test)] // todo, maybe just delete?
 impl<T> FunctionDeclaration<T> {
     pub fn new(
         name: String,
@@ -146,6 +165,8 @@ pub enum ExprKind<T> {
         args: Vec<Expression<T>>,
     },
     Cast(CType, Box<Expression<T>>),
+    Dereference(Box<Expression<T>>), // *x
+    AddressOf(Box<Expression<T>>),   // &x
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]

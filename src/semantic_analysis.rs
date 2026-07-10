@@ -806,6 +806,7 @@ fn typecheck_expr(
                 ret.as_ref().clone(),
             )
         }
+        ExprKind::AddressOf(_) | ExprKind::Dereference(_) => todo!(),
     };
     Ok(TypedExpression {
         kind: Box::new(expr_kind),
@@ -1069,6 +1070,7 @@ fn resolve_expr(
             }
         }
         ExprKind::Cast(_, expr) => resolve_expr(expr, resolver)?,
+        ExprKind::AddressOf(_) | ExprKind::Dereference(_) => todo!(),
     };
     Ok(())
 }

@@ -15,6 +15,9 @@ pub type VariableDeclaration = crate::ast::VariableDeclaration<()>;
 pub type ForInit = crate::ast::ForInit<()>;
 pub type BlockItem = crate::ast::BlockItem<()>;
 pub type Block = crate::ast::Block<()>;
+pub type Declarator = crate::ast::Declarator;
+pub type AbstractDeclarator = crate::ast::AbstractDeclarator;
+pub use crate::ast::ParamInfo;
 
 #[derive(Debug, Error, PartialEq)]
 pub enum ParserError {
@@ -36,14 +39,16 @@ pub enum ParserError {
     UnexpectedTokenInConditional,
     #[error("Found a non-variable declaration in a For loop initializer")]
     WrongDeclarationInForInit,
-    #[error("Expected an identifier name after a type in a function parameter list")]
-    ExpectedIdentifierAfterType,
     #[error("Invalid type specifier")]
     InvalidTypeSpecifier,
     #[error("Invalid storage class")]
     InvalidStorageClass,
     #[error("Integer too large to fit in a C int or long")]
     IntegerTooLargeToFitInConstant,
+    #[error("Can't apply additional type derivations to function types")]
+    ExtraTypeDerivationInFunctionDeclarator,
+    #[error("Function pointer in parameter lists are not allowed")]
+    FunctionPointerInParamList,
 }
 
 pub struct Parser<'a> {
@@ -145,60 +150,6 @@ impl<'a> Parser<'a> {
         Ok((type_, storage_class))
     }
 
-    /*
-     * <function-declaration> ::= { <specifier> }+ <identifier> "(" <param-list> ")" ( <block> | ";")
-     * <param-list> ::= "void"
-     *                | { <type-specifier> }+ <identifier> { "," { <type-specifier> }+ <identifier> }
-     */
-    fn parse_function(
-        &mut self,
-        name: String,
-        storage_class: Option<StorageClass>,
-        return_type: CType,
-    ) -> Result<FunctionDeclaration, ParserError> {
-        self.expect(Token::LeftParen)?;
-        // check if we're void, or taking a param list
-        // Should we store Void in the identifier list?
-        // Emptiness is a way of knowing it's a void function.
-        let mut params: Vec<(String, CType)> = vec![];
-        if let Some(Token::Void) = self.tokens.peek() {
-            self.expect(Token::Void)?;
-            self.expect(Token::RightParen)?;
-        } else {
-            loop {
-                // collect token until we see an identifier, then
-                // we'll parse a CType
-                let (ty_, storage_class) = self.parse_type_and_storage_class()?;
-                if storage_class.is_some() {
-                    return Err(ParserError::InvalidStorageClass);
-                }
-                let Some(Token::Identifier(ident)) = self.tokens.next() else {
-                    return Err(ParserError::ExpectedIdentifierAfterType);
-                };
-                params.push((ident.to_string(), ty_));
-                if let Some(Token::RightParen) = self.tokens.peek() {
-                    // consume the right paren
-                    self.tokens.next();
-                    break;
-                };
-                self.expect(Token::Comma)?;
-            }
-        }
-        let block = match self.tokens.peek() {
-            Some(Token::Semicolon) => {
-                self.tokens.next();
-                None
-            }
-            _ => {
-                let block = self.parse_block()?;
-                Some(block)
-            }
-        };
-
-        let decl = FunctionDeclaration::new(name, params, block, storage_class, return_type);
-        Ok(decl)
-    }
-
     fn parse_block(&mut self) -> Result<Block, ParserError> {
         self.expect(Token::LeftBrace)?;
         let mut body = vec![];
@@ -261,6 +212,97 @@ impl<'a> Parser<'a> {
         }
     }
 
+    // A declarator can be an identifier, a ptr declarator, or a fun declarator
+    // starting basics: if we see a star, recur inside and wrap as a ptr declarator.
+    // if not a star, fall to a direct declarator: parse an identifier. If we
+    // see an open paren next, we must have a function declarator. Else we have a simple
+    // identifier.
+    // ex, *foo = ptr(identifier("foo"))
+    // **func(void) =ptr(ptr(func([], identifier("func"))))
+    // foo -> identifier("foo")
+    // (*foo) -> also ptr(identifier("foo"))
+    // ((foo))(void) -> valid function declarator
+    // We then wrap our Declarator with a Declaration (including type specifiers and initializers)
+    fn parse_declarator(&mut self) -> Result<Declarator, ParserError> {
+        if let Some(Token::Star) = self.tokens.peek() {
+            self.tokens.next(); // throw away star
+            let inner = self.parse_declarator()?;
+            Ok(Declarator::Pointer(Box::new(inner)))
+        } else {
+            let simple_declarator = if let Some(Token::LeftParen) = self.tokens.peek() {
+                // parenthesized declarators are valid
+                self.tokens.next(); // throw out left paren
+                let inner = self.parse_declarator()?;
+                self.expect(Token::RightParen)?;
+                inner
+            } else {
+                Declarator::Ident(self.parse_identifier()?)
+            };
+            if let Some(Token::LeftParen) = self.tokens.peek() {
+                let func = self.parse_function_declarator(simple_declarator)?;
+                Ok(func)
+            } else {
+                Ok(simple_declarator)
+            }
+        }
+    }
+
+    // Ok(None) defines a nonexisting abstract declarator
+    // returning one to parse_factor indicates no declarator,
+    // handling one inside the recursion should be mapped to a base.
+    fn parse_abstract_declarator(&mut self) -> Result<Option<AbstractDeclarator>, ParserError> {
+        if let Some(Token::Star) = self.tokens.peek() {
+            self.tokens.next(); // throw away star
+            let inner = self.parse_abstract_declarator()?;
+            let declarator = inner.unwrap_or(AbstractDeclarator::Base);
+            Ok(Some(AbstractDeclarator::Pointer(Box::new(declarator))))
+        } else if let Some(Token::LeftParen) = self.tokens.peek() {
+            self.tokens.next(); // throw away parens
+            let inner = self.parse_abstract_declarator()?;
+            self.expect(Token::RightParen)?;
+            Ok(inner)
+        } else {
+            // we let parse_factor handle errors for malformed tokens
+            Ok(None)
+        }
+    }
+
+    // takes the identifier right before open paren for function declarator
+    fn parse_function_declarator(
+        &mut self,
+        declarator: Declarator,
+    ) -> Result<Declarator, ParserError> {
+        self.expect(Token::LeftParen)?;
+        let mut params: Vec<ParamInfo> = vec![];
+        if let Some(Token::Void) = self.tokens.peek() {
+            self.expect(Token::Void)?;
+            self.expect(Token::RightParen)?;
+        } else {
+            loop {
+                // collect token until we see an identifier, then
+                // we'll parse a CType
+                let (ty, storage_class) = self.parse_type_and_storage_class()?;
+                if storage_class.is_some() {
+                    return Err(ParserError::InvalidStorageClass);
+                }
+                let param_declarator = self.parse_declarator()?;
+                params.push(ParamInfo(ty, param_declarator));
+                if let Some(Token::RightParen) = self.tokens.peek() {
+                    // consume the right paren
+                    self.tokens.next();
+                    break;
+                };
+                self.expect(Token::Comma)?;
+            }
+        }
+
+        Ok(Declarator::Func(
+            params,
+            // need to ensure this is the only valid type
+            Box::new(declarator),
+        ))
+    }
+
     fn parse_identifier(&mut self) -> Result<String, ParserError> {
         match self.tokens.next() {
             Some(Token::Main) => Ok("main".into()),
@@ -270,11 +312,6 @@ impl<'a> Parser<'a> {
     }
 
     /*
-     * var-decl ::= { <specifier> }+ <identifier> [ '=' <expr>] ';'
-     * fun-decl::= { <specifier> }+ <identifier> '(' <param-list> ')' ( <block> | ';' )
-     * param-list ::= "void" | "int" <identifier> { ',' "int" identifier }
-     * <specifier> ::= <type-specifier> | "static" | "extern"
-     *
      * since vardecl and fundecl start the same, but differ
      * when we see a paren or not, let's grab all specifiers,
      * then the identifier, then based on what we see we'll parse accordingly but
@@ -282,10 +319,27 @@ impl<'a> Parser<'a> {
      */
     fn parse_declaration(&mut self) -> Result<Declaration, ParserError> {
         let (ctype, storage_class) = self.parse_type_and_storage_class()?;
-        let identifier = self.parse_identifier()?;
-        if let Some(Token::LeftParen) = self.tokens.peek() {
-            let func = self.parse_function(identifier, storage_class, ctype)?;
-            Ok(Declaration::FunDecl(func))
+        let declarator = self.parse_declarator()?;
+        let (name, decl_type, params) = process_declarator(declarator, ctype)?;
+        let is_fun_decl = matches!(decl_type, CType::FunType { .. });
+        if is_fun_decl {
+            let block = match self.tokens.peek() {
+                Some(Token::Semicolon) => {
+                    self.tokens.next();
+                    None
+                }
+                _ => {
+                    let block = self.parse_block()?;
+                    Some(block)
+                }
+            };
+            Ok(Declaration::FunDecl(FunctionDeclaration {
+                name,
+                params,
+                block,
+                storage_class,
+                ftype: decl_type,
+            }))
         } else {
             let init = if let Some(Token::Equal) = self.tokens.peek() {
                 self.tokens.next();
@@ -298,10 +352,10 @@ impl<'a> Parser<'a> {
             };
 
             Ok(Declaration::VarDecl(VariableDeclaration {
-                name: identifier.into(),
+                name,
                 init,
                 storage_class,
-                vtype: ctype,
+                vtype: decl_type,
             }))
         }
     }
@@ -645,6 +699,14 @@ impl<'a> Parser<'a> {
                     Box::new(inner_exp),
                 )))
             }
+            Some(Token::Ampersand) => {
+                let inner_exp = self.parse_factor()?;
+                Ok(Expression::new(ExprKind::AddressOf(Box::new(inner_exp))))
+            }
+            Some(Token::Star) => {
+                let inner_exp = self.parse_factor()?;
+                Ok(Expression::new(ExprKind::Dereference(Box::new(inner_exp))))
+            }
             Some(Token::LeftParen) => {
                 // if the inside is a valid type specifier, we'll scoop up
                 // specifiers and turn this into a Cast expression. Else,
@@ -654,9 +716,14 @@ impl<'a> Parser<'a> {
                     if storage_class.is_some() {
                         return Err(ParserError::InvalidStorageClass);
                     }
+                    let optional_abstract_declarator = self.parse_abstract_declarator()?;
                     self.expect(Token::RightParen)?;
                     let expr = self.parse_factor()?;
-                    Ok(Expression::new(ExprKind::Cast(type_, Box::new(expr))))
+                    let casted_type = match optional_abstract_declarator {
+                        Some(abstract_decl) => process_abstract_declarator(abstract_decl, type_),
+                        None => type_,
+                    };
+                    Ok(Expression::new(ExprKind::Cast(casted_type, Box::new(expr))))
                 } else {
                     let inner_expr = self.parse_expression(0)?;
                     self.expect(Token::RightParen)?;
@@ -776,6 +843,51 @@ fn token_is_valid_type_specifier(tok: Option<&Token>) -> bool {
 fn token_is_valid_storage_class(tok: Option<&Token>) -> bool {
     tok.map(|t| matches!(t, Token::Static | Token::Extern))
         .unwrap_or(false)
+}
+
+// returns the name, derived type, and any parameter names if a func
+fn process_declarator(
+    declarator: Declarator,
+    base_type: CType,
+) -> Result<(String, CType, Vec<String>), ParserError> {
+    // Ideally rewrite iteratively here.
+    match declarator {
+        Declarator::Ident(ident) => Ok((ident.to_owned(), base_type, vec![])),
+        Declarator::Pointer(decl) => process_declarator(*decl, CType::Pointer(Box::new(base_type))),
+        Declarator::Func(params, decl) => {
+            let Declarator::Ident(name) = *decl else {
+                return Err(ParserError::ExtraTypeDerivationInFunctionDeclarator);
+            };
+            // for all params in a function declarator, we recursively handle (failing on funcs,
+            // just base types and pointers allowed). Collect the names and wrap in a derived
+            // FunType
+            let mut names = Vec::with_capacity(params.len());
+            let mut types = Vec::with_capacity(params.len());
+            for ParamInfo(type_, decl) in params {
+                let (param_name, param_ty, _) = process_declarator(decl, type_)?;
+                if let CType::FunType { .. } = param_ty {
+                    return Err(ParserError::FunctionPointerInParamList);
+                };
+                names.push(param_name);
+                types.push(param_ty);
+            }
+
+            let derived_ty = CType::FunType {
+                params: types,
+                ret: Box::new(base_type),
+            };
+            Ok((name, derived_ty, names))
+        }
+    }
+}
+
+fn process_abstract_declarator(declarator: AbstractDeclarator, base_type: CType) -> CType {
+    match declarator {
+        AbstractDeclarator::Base => base_type,
+        AbstractDeclarator::Pointer(decl) => {
+            process_abstract_declarator(*decl, CType::Pointer(Box::new(base_type)))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2535,5 +2647,262 @@ mod tests {
             };
             assert_eq!(s, exp);
         }
+    }
+
+    #[test]
+    fn failing_declarator_test() {
+        let src = r#"
+        int((return_3))(void)
+{
+    return 3;
+}"#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let ast = Parser::new(&tokens).into_ast();
+        assert!(ast.is_ok(), "failed to parse: {ast:?}");
+        let AST::Program(decls) = ast.unwrap();
+        // the parens around `return_3` are just declarator grouping -- they
+        // don't change the structure. `int ((return_3))(void)` means the
+        // same thing as `int return_3(void)`: a function named "return_3"
+        // taking no params and returning int.
+        assert_eq!(
+            decls,
+            vec![Declaration::FunDecl(FunctionDeclaration::new(
+                "return_3".into(),
+                vec![],
+                Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                    Expression::new(ExprKind::Constant(Const::Int(3)))
+                ))])),
+                None,
+                CType::Int,
+            ))]
+        )
+    }
+
+    // from manual_tests/declarators.c: `int(*i_ptr) = &i;` and
+    // `int(**ptr_to_iptr) = &i_ptr;` -- parenthesized pointer declarators,
+    // stacked to two levels for the second variable.
+    #[test]
+    fn parses_nested_pointer_declarators_with_parens() {
+        let src = r#"
+            int main(void) {
+                int i = 0;
+                int(*i_ptr) = &i;
+                int(**ptr_to_iptr) = &i_ptr;
+                return 0;
+            }
+        "#;
+        let AST::Program(decls) = parse_source(src);
+        let Declaration::FunDecl(main) = &decls[0] else {
+            panic!("expected FunDecl");
+        };
+        let crate::ast::Block(items) = main.block.as_ref().unwrap();
+
+        let BlockItem::Decl(Declaration::VarDecl(i_ptr)) = &items[1] else {
+            panic!("expected VarDecl for i_ptr, got {:?}", items[1]);
+        };
+        assert_eq!(i_ptr.vtype, CType::Pointer(Box::new(CType::Int)));
+        assert_eq!(
+            *i_ptr.init.as_ref().unwrap().kind,
+            ExprKind::AddressOf(Box::new(Expression::new(ExprKind::Var("i".into()))))
+        );
+
+        let BlockItem::Decl(Declaration::VarDecl(ptr_to_iptr)) = &items[2] else {
+            panic!("expected VarDecl for ptr_to_iptr, got {:?}", items[2]);
+        };
+        assert_eq!(
+            ptr_to_iptr.vtype,
+            CType::Pointer(Box::new(CType::Pointer(Box::new(CType::Int))))
+        );
+        assert_eq!(
+            *ptr_to_iptr.init.as_ref().unwrap().kind,
+            ExprKind::AddressOf(Box::new(Expression::new(ExprKind::Var("i_ptr".into()))))
+        );
+    }
+
+    // from manual_tests/declarators.c: two equivalent spellings of a function
+    // returning `long *` and taking (double, double *) should resolve to the
+    // identical ftype, regardless of where the declarator parens/stars land.
+    #[test]
+    fn equivalent_function_declarator_spellings_resolve_to_same_ftype() {
+        let plain = "long *two_pointers(double val, double *ptr);";
+        let parenthesized = "long(*two_pointers(double val, double(*d)));";
+
+        let expected_ftype = CType::FunType {
+            params: vec![CType::Double, CType::Pointer(Box::new(CType::Double))],
+            ret: Box::new(CType::Pointer(Box::new(CType::Long))),
+        };
+
+        for src in [plain, parenthesized] {
+            let AST::Program(decls) = parse_source(src);
+            let Declaration::FunDecl(fd) = &decls[0] else {
+                panic!("expected FunDecl for {src:?}, got {decls:?}");
+            };
+            assert_eq!(fd.name, "two_pointers");
+            assert_eq!(fd.ftype, expected_ftype, "mismatch for {src:?}");
+            assert!(fd.block.is_none(), "expected prototype (no body) for {src:?}");
+        }
+    }
+
+    // from manual_tests/declarators.c: a much more heavily parenthesized
+    // spelling of `unsigned **pointers_to_pointers(int **p)` should resolve
+    // to the same ftype as the plain spelling.
+    #[test]
+    fn deeply_parenthesized_function_declarator_resolves_to_same_ftype() {
+        let plain = "unsigned **pointers_to_pointers(int **p);";
+        let nested = "unsigned(**(pointers_to_pointers(int *(*p))));";
+
+        let expected_ftype = CType::FunType {
+            params: vec![CType::Pointer(Box::new(CType::Pointer(Box::new(CType::Int))))],
+            ret: Box::new(CType::Pointer(Box::new(CType::Pointer(Box::new(
+                CType::UInt,
+            ))))),
+        };
+
+        for src in [plain, nested] {
+            let AST::Program(decls) = parse_source(src);
+            let Declaration::FunDecl(fd) = &decls[0] else {
+                panic!("expected FunDecl for {src:?}, got {decls:?}");
+            };
+            assert_eq!(fd.name, "pointers_to_pointers");
+            assert_eq!(fd.ftype, expected_ftype, "mismatch for {src:?}");
+        }
+    }
+
+    // from chapter_14/valid/declarators/abstract_declarators.c: several
+    // differently-parenthesized abstract declarators casting to the same
+    // pointer-to-unsigned-long type.
+    #[test]
+    fn equivalent_abstract_declarators_cast_to_same_pointer_type() {
+        let srcs = [
+            "int main(void) { return (unsigned long (*)) 0; }",
+            "int main(void) { return (long unsigned int ((((*))))) 0; }",
+        ];
+        let expected = CType::Pointer(Box::new(CType::ULong));
+
+        for src in srcs {
+            let AST::Program(decls) = parse_source(src);
+            let Declaration::FunDecl(main) = &decls[0] else {
+                panic!("expected FunDecl");
+            };
+            let crate::ast::Block(items) = main.block.as_ref().unwrap();
+            let BlockItem::Stmt(Statement::Return(expr)) = &items[0] else {
+                panic!("expected return stmt, got {:?}", items[0]);
+            };
+            let ExprKind::Cast(target_type, _) = expr.kind.as_ref() else {
+                panic!("expected Cast expr for {src:?}, got {:?}", expr.kind);
+            };
+            assert_eq!(*target_type, expected, "mismatch for {src:?}");
+        }
+    }
+
+    // from chapter_14/valid/declarators/abstract_declarators.c: three
+    // differently-parenthesized abstract declarators, all casting to
+    // triple-pointer-to-double.
+    #[test]
+    fn equivalent_triple_pointer_abstract_declarators_cast_to_same_type() {
+        let srcs = [
+            "int main(void) { return (double *(**)) 0; }",
+            "int main(void) { return (double (***)) 0; }",
+            "int main(void) { return (double (*(*(*)))) 0; }",
+        ];
+        let expected = CType::Pointer(Box::new(CType::Pointer(Box::new(CType::Pointer(
+            Box::new(CType::Double),
+        )))));
+
+        for src in srcs {
+            let AST::Program(decls) = parse_source(src);
+            let Declaration::FunDecl(main) = &decls[0] else {
+                panic!("expected FunDecl");
+            };
+            let crate::ast::Block(items) = main.block.as_ref().unwrap();
+            let BlockItem::Stmt(Statement::Return(expr)) = &items[0] else {
+                panic!("expected return stmt, got {:?}", items[0]);
+            };
+            let ExprKind::Cast(target_type, _) = expr.kind.as_ref() else {
+                panic!("expected Cast expr for {src:?}, got {:?}", expr.kind);
+            };
+            assert_eq!(*target_type, expected, "mismatch for {src:?}");
+        }
+    }
+
+    // from chapter_14/invalid_parse/malformed_declarator.c: a pointer
+    // declarator can't follow a parenthesized declarator group.
+    #[test]
+    fn rejects_pointer_declarator_after_parenthesized_group() {
+        let src = "int main(void) { int (*)* y; return 0; }";
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let ast = Parser::new(&tokens).into_ast();
+        assert_eq!(ast, Err(ParserError::UnexpectedName));
+    }
+
+    // from chapter_14/invalid_parse/malformed_function_declarator.c: a
+    // function can't return a function type (only a pointer to one).
+    #[test]
+    fn rejects_function_returning_function() {
+        let src = "int (foo(void))(void); int main(void) { return 0; }";
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let ast = Parser::new(&tokens).into_ast();
+        assert_eq!(ast, Err(ParserError::ExtraTypeDerivationInFunctionDeclarator));
+    }
+
+    // from chapter_14/invalid_parse/malformed_function_declarator_2.c: a
+    // parameter list can't be wrapped in an extra set of parens.
+    #[test]
+    fn rejects_double_parenthesized_param_list() {
+        let src = "int foo((void)); int main(void) { return 0; }";
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let ast = Parser::new(&tokens).into_ast();
+        assert_eq!(ast, Err(ParserError::InvalidTypeSpecifier));
+    }
+
+    // from chapter_14/invalid_parse/malformed_abstract_declarator.c: same
+    // rule as rejects_pointer_declarator_after_parenthesized_group, but for
+    // an abstract declarator inside a cast.
+    #[test]
+    fn rejects_pointer_after_parenthesized_abstract_declarator() {
+        let src = "int main(void) { (int (*)*) 10; return 0; }";
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let ast = Parser::new(&tokens).into_ast();
+        assert_eq!(
+            ast,
+            Err(ParserError::UnexpectedToken("RightParen".into(), "Star".into()))
+        );
+    }
+
+    // from chapter_14/invalid_parse/abstract_function_declarator.c: you
+    // can't cast to a function type, so abstract function declarators like
+    // `(void)` aren't allowed inside a cast's parens.
+    #[test]
+    fn rejects_abstract_function_declarator_in_cast() {
+        let src = "int main(void) { (int (void)) 0; return 0; }";
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let ast = Parser::new(&tokens).into_ast();
+        assert_eq!(
+            ast,
+            Err(ParserError::UnexpectedToken("RightParen".into(), "Void".into()))
+        );
+    }
+
+    // from chapter_14/invalid_parse/cast_to_declarator.c: casts only accept
+    // abstract declarators (no identifier), not full declarators.
+    #[test]
+    fn rejects_named_declarator_in_cast() {
+        let src = "int main(void) { return (int **a)(10); }";
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let ast = Parser::new(&tokens).into_ast();
+        assert_eq!(
+            ast,
+            Err(ParserError::UnexpectedToken(
+                "RightParen".into(),
+                "Identifier a".into()
+            ))
+        );
     }
 }
