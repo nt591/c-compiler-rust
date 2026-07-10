@@ -564,6 +564,12 @@ mod tests {
     }
 
     #[test]
+    fn comparisons_fixture_emits() {
+        let src = include_str!("../fixtures/comparisons.c");
+        insta::assert_snapshot!(compile_to_asm_string(src));
+    }
+
+    #[test]
     fn basic_emit() {
         let ast = Asm::Program(vec![asm::TopLevel::Func(asm::Function {
             name: "main".into(),
@@ -1248,40 +1254,8 @@ _div_d:
 
     #[test]
     fn double_greater_than_emits_comisd_and_seta() {
-        let src = r#"
-            int cmp_d(double a, double b) {
-                return a > b;
-            }
-        "#;
-        let expected = r#"  .globl _cmp_d
-  .text
-_cmp_d:
-                       # FUNCTION PROLOGUE
-  pushq  %rbp
-  movq   %rsp, %rbp
-  subq   $32, %rsp
-  movsd  %xmm0, -8(%rbp)
-  movsd  %xmm1, -16(%rbp)
-  movsd  -8(%rbp), %xmm15
-  comisd -16(%rbp), %xmm15
-  movl   $0, %r10d
-  movl   $0, %r11d
-  seta       %r10b
-  setnp      %r11b
-  andl   %r10d, %r11d
-  movl   %r11d, -20(%rbp)
-  movl   -20(%rbp), %eax
-                       # RESET REGISTERS
-  movq   %rbp, %rsp
-  popq   %rbp
-  ret
-  movl   $0, %eax
-                       # RESET REGISTERS
-  movq   %rbp, %rsp
-  popq   %rbp
-  ret
-"#;
-        assert_eq!(expected, compile_to_asm_string(src));
+        let src = include_str!("../fixtures/double_compare.c");
+        insta::assert_snapshot!(compile_to_asm_string(src));
     }
 
     #[test]

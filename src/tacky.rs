@@ -224,7 +224,11 @@ impl<'a> Tacky {
     fn convert_symbols_to_tacky_defs(symbol_table: &SymbolTable) -> Vec<TopLevel> {
         use crate::semantic_analysis::{IdentifierAttrs, InitialValue};
         let mut defs = vec![];
-        for (name, entry) in symbol_table {
+        // HashMap iteration order is randomized per-process; sort by name so
+        // static top-levels are emitted in a stable, reproducible order.
+        let mut entries: Vec<_> = symbol_table.iter().collect();
+        entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+        for (name, entry) in entries {
             if let (ctype, IdentifierAttrs::StaticAttr { init, global }) = entry {
                 match init {
                     InitialValue::Initial(i) => defs.push(TopLevel::StaticVariable {

@@ -1,0 +1,585 @@
+---
+source: src/parser.rs
+expression: parse_source(src)
+---
+Program(
+    [
+        FunDecl(
+            FunctionDeclaration {
+                name: "is_valid",
+                params: [
+                    "x",
+                    "y",
+                ],
+                block: Some(
+                    Block(
+                        [
+                            Stmt(
+                                Return(
+                                    Expression {
+                                        ty: (),
+                                        kind: Binary(
+                                            BinAnd,
+                                            Expression {
+                                                ty: (),
+                                                kind: Binary(
+                                                    GreaterThan,
+                                                    Expression {
+                                                        ty: (),
+                                                        kind: Var(
+                                                            "x",
+                                                        ),
+                                                    },
+                                                    Expression {
+                                                        ty: (),
+                                                        kind: Constant(
+                                                            Int(
+                                                                0,
+                                                            ),
+                                                        ),
+                                                    },
+                                                ),
+                                            },
+                                            Expression {
+                                                ty: (),
+                                                kind: Binary(
+                                                    GreaterThan,
+                                                    Expression {
+                                                        ty: (),
+                                                        kind: Var(
+                                                            "y",
+                                                        ),
+                                                    },
+                                                    Expression {
+                                                        ty: (),
+                                                        kind: Constant(
+                                                            Int(
+                                                                0,
+                                                            ),
+                                                        ),
+                                                    },
+                                                ),
+                                            },
+                                        ),
+                                    },
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+                storage_class: None,
+                ftype: FunType {
+                    params: [
+                        Int,
+                        Int,
+                    ],
+                    ret: Int,
+                },
+            },
+        ),
+        FunDecl(
+            FunctionDeclaration {
+                name: "classify",
+                params: [
+                    "x",
+                    "y",
+                ],
+                block: Some(
+                    Block(
+                        [
+                            Decl(
+                                VarDecl(
+                                    VariableDeclaration {
+                                        name: "total",
+                                        init: Some(
+                                            Expression {
+                                                ty: (),
+                                                kind: Constant(
+                                                    Int(
+                                                        0,
+                                                    ),
+                                                ),
+                                            },
+                                        ),
+                                        storage_class: None,
+                                        vtype: Int,
+                                    },
+                                ),
+                            ),
+                            Decl(
+                                VarDecl(
+                                    VariableDeclaration {
+                                        name: "i",
+                                        init: Some(
+                                            Expression {
+                                                ty: (),
+                                                kind: Constant(
+                                                    Int(
+                                                        0,
+                                                    ),
+                                                ),
+                                            },
+                                        ),
+                                        storage_class: None,
+                                        vtype: Int,
+                                    },
+                                ),
+                            ),
+                            Stmt(
+                                If {
+                                    condition: Expression {
+                                        ty: (),
+                                        kind: Unary(
+                                            Not,
+                                            Expression {
+                                                ty: (),
+                                                kind: FunctionCall {
+                                                    name: "is_valid",
+                                                    args: [
+                                                        Expression {
+                                                            ty: (),
+                                                            kind: Var(
+                                                                "x",
+                                                            ),
+                                                        },
+                                                        Expression {
+                                                            ty: (),
+                                                            kind: Var(
+                                                                "y",
+                                                            ),
+                                                        },
+                                                    ],
+                                                },
+                                            },
+                                        ),
+                                    },
+                                    then: Compound(
+                                        Block(
+                                            [
+                                                Stmt(
+                                                    Return(
+                                                        Expression {
+                                                            ty: (),
+                                                            kind: Unary(
+                                                                Negate,
+                                                                Expression {
+                                                                    ty: (),
+                                                                    kind: Constant(
+                                                                        Int(
+                                                                            1,
+                                                                        ),
+                                                                    ),
+                                                                },
+                                                            ),
+                                                        },
+                                                    ),
+                                                ),
+                                            ],
+                                        ),
+                                    ),
+                                    else_: None,
+                                },
+                            ),
+                            Stmt(
+                                While {
+                                    condition: Expression {
+                                        ty: (),
+                                        kind: Binary(
+                                            LessThan,
+                                            Expression {
+                                                ty: (),
+                                                kind: Var(
+                                                    "i",
+                                                ),
+                                            },
+                                            Expression {
+                                                ty: (),
+                                                kind: Var(
+                                                    "x",
+                                                ),
+                                            },
+                                        ),
+                                    },
+                                    body: Compound(
+                                        Block(
+                                            [
+                                                Stmt(
+                                                    If {
+                                                        condition: Expression {
+                                                            ty: (),
+                                                            kind: Binary(
+                                                                Equal,
+                                                                Expression {
+                                                                    ty: (),
+                                                                    kind: Binary(
+                                                                        Remainder,
+                                                                        Expression {
+                                                                            ty: (),
+                                                                            kind: Var(
+                                                                                "i",
+                                                                            ),
+                                                                        },
+                                                                        Expression {
+                                                                            ty: (),
+                                                                            kind: Constant(
+                                                                                Int(
+                                                                                    2,
+                                                                                ),
+                                                                            ),
+                                                                        },
+                                                                    ),
+                                                                },
+                                                                Expression {
+                                                                    ty: (),
+                                                                    kind: Constant(
+                                                                        Int(
+                                                                            0,
+                                                                        ),
+                                                                    ),
+                                                                },
+                                                            ),
+                                                        },
+                                                        then: Compound(
+                                                            Block(
+                                                                [
+                                                                    Stmt(
+                                                                        Expr(
+                                                                            Expression {
+                                                                                ty: (),
+                                                                                kind: Assignment(
+                                                                                    Expression {
+                                                                                        ty: (),
+                                                                                        kind: Var(
+                                                                                            "total",
+                                                                                        ),
+                                                                                    },
+                                                                                    Expression {
+                                                                                        ty: (),
+                                                                                        kind: Binary(
+                                                                                            Add,
+                                                                                            Expression {
+                                                                                                ty: (),
+                                                                                                kind: Var(
+                                                                                                    "total",
+                                                                                                ),
+                                                                                            },
+                                                                                            Expression {
+                                                                                                ty: (),
+                                                                                                kind: Var(
+                                                                                                    "i",
+                                                                                                ),
+                                                                                            },
+                                                                                        ),
+                                                                                    },
+                                                                                ),
+                                                                            },
+                                                                        ),
+                                                                    ),
+                                                                ],
+                                                            ),
+                                                        ),
+                                                        else_: Some(
+                                                            Compound(
+                                                                Block(
+                                                                    [
+                                                                        Stmt(
+                                                                            Expr(
+                                                                                Expression {
+                                                                                    ty: (),
+                                                                                    kind: Assignment(
+                                                                                        Expression {
+                                                                                            ty: (),
+                                                                                            kind: Var(
+                                                                                                "total",
+                                                                                            ),
+                                                                                        },
+                                                                                        Expression {
+                                                                                            ty: (),
+                                                                                            kind: Binary(
+                                                                                                Subtract,
+                                                                                                Expression {
+                                                                                                    ty: (),
+                                                                                                    kind: Var(
+                                                                                                        "total",
+                                                                                                    ),
+                                                                                                },
+                                                                                                Expression {
+                                                                                                    ty: (),
+                                                                                                    kind: Var(
+                                                                                                        "i",
+                                                                                                    ),
+                                                                                                },
+                                                                                            ),
+                                                                                        },
+                                                                                    ),
+                                                                                },
+                                                                            ),
+                                                                        ),
+                                                                    ],
+                                                                ),
+                                                            ),
+                                                        ),
+                                                    },
+                                                ),
+                                                Stmt(
+                                                    Expr(
+                                                        Expression {
+                                                            ty: (),
+                                                            kind: Assignment(
+                                                                Expression {
+                                                                    ty: (),
+                                                                    kind: Var(
+                                                                        "i",
+                                                                    ),
+                                                                },
+                                                                Expression {
+                                                                    ty: (),
+                                                                    kind: Binary(
+                                                                        Add,
+                                                                        Expression {
+                                                                            ty: (),
+                                                                            kind: Var(
+                                                                                "i",
+                                                                            ),
+                                                                        },
+                                                                        Expression {
+                                                                            ty: (),
+                                                                            kind: Constant(
+                                                                                Int(
+                                                                                    1,
+                                                                                ),
+                                                                            ),
+                                                                        },
+                                                                    ),
+                                                                },
+                                                            ),
+                                                        },
+                                                    ),
+                                                ),
+                                            ],
+                                        ),
+                                    ),
+                                    label: "",
+                                },
+                            ),
+                            Stmt(
+                                For {
+                                    init: InitDecl(
+                                        VariableDeclaration {
+                                            name: "j",
+                                            init: Some(
+                                                Expression {
+                                                    ty: (),
+                                                    kind: Constant(
+                                                        Int(
+                                                            0,
+                                                        ),
+                                                    ),
+                                                },
+                                            ),
+                                            storage_class: None,
+                                            vtype: Int,
+                                        },
+                                    ),
+                                    condition: Some(
+                                        Expression {
+                                            ty: (),
+                                            kind: Binary(
+                                                LessThan,
+                                                Expression {
+                                                    ty: (),
+                                                    kind: Var(
+                                                        "j",
+                                                    ),
+                                                },
+                                                Expression {
+                                                    ty: (),
+                                                    kind: Var(
+                                                        "y",
+                                                    ),
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                    post: Some(
+                                        Expression {
+                                            ty: (),
+                                            kind: Assignment(
+                                                Expression {
+                                                    ty: (),
+                                                    kind: Var(
+                                                        "j",
+                                                    ),
+                                                },
+                                                Expression {
+                                                    ty: (),
+                                                    kind: Binary(
+                                                        Add,
+                                                        Expression {
+                                                            ty: (),
+                                                            kind: Var(
+                                                                "j",
+                                                            ),
+                                                        },
+                                                        Expression {
+                                                            ty: (),
+                                                            kind: Constant(
+                                                                Int(
+                                                                    1,
+                                                                ),
+                                                            ),
+                                                        },
+                                                    ),
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                    body: Compound(
+                                        Block(
+                                            [
+                                                Stmt(
+                                                    Expr(
+                                                        Expression {
+                                                            ty: (),
+                                                            kind: Assignment(
+                                                                Expression {
+                                                                    ty: (),
+                                                                    kind: Var(
+                                                                        "total",
+                                                                    ),
+                                                                },
+                                                                Expression {
+                                                                    ty: (),
+                                                                    kind: Binary(
+                                                                        Add,
+                                                                        Expression {
+                                                                            ty: (),
+                                                                            kind: Var(
+                                                                                "total",
+                                                                            ),
+                                                                        },
+                                                                        Expression {
+                                                                            ty: (),
+                                                                            kind: Var(
+                                                                                "j",
+                                                                            ),
+                                                                        },
+                                                                    ),
+                                                                },
+                                                            ),
+                                                        },
+                                                    ),
+                                                ),
+                                                Stmt(
+                                                    If {
+                                                        condition: Expression {
+                                                            ty: (),
+                                                            kind: Binary(
+                                                                GreaterThan,
+                                                                Expression {
+                                                                    ty: (),
+                                                                    kind: Var(
+                                                                        "total",
+                                                                    ),
+                                                                },
+                                                                Expression {
+                                                                    ty: (),
+                                                                    kind: Constant(
+                                                                        Int(
+                                                                            100,
+                                                                        ),
+                                                                    ),
+                                                                },
+                                                            ),
+                                                        },
+                                                        then: Compound(
+                                                            Block(
+                                                                [
+                                                                    Stmt(
+                                                                        Break(
+                                                                            "",
+                                                                        ),
+                                                                    ),
+                                                                ],
+                                                            ),
+                                                        ),
+                                                        else_: None,
+                                                    },
+                                                ),
+                                            ],
+                                        ),
+                                    ),
+                                    label: "",
+                                },
+                            ),
+                            Stmt(
+                                Return(
+                                    Expression {
+                                        ty: (),
+                                        kind: Binary(
+                                            BinOr,
+                                            Expression {
+                                                ty: (),
+                                                kind: Binary(
+                                                    GreaterOrEqual,
+                                                    Expression {
+                                                        ty: (),
+                                                        kind: Var(
+                                                            "total",
+                                                        ),
+                                                    },
+                                                    Expression {
+                                                        ty: (),
+                                                        kind: Constant(
+                                                            Int(
+                                                                0,
+                                                            ),
+                                                        ),
+                                                    },
+                                                ),
+                                            },
+                                            Expression {
+                                                ty: (),
+                                                kind: Binary(
+                                                    Equal,
+                                                    Expression {
+                                                        ty: (),
+                                                        kind: Var(
+                                                            "total",
+                                                        ),
+                                                    },
+                                                    Expression {
+                                                        ty: (),
+                                                        kind: Unary(
+                                                            Negate,
+                                                            Expression {
+                                                                ty: (),
+                                                                kind: Constant(
+                                                                    Int(
+                                                                        1,
+                                                                    ),
+                                                                ),
+                                                            },
+                                                        ),
+                                                    },
+                                                ),
+                                            },
+                                        ),
+                                    },
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+                storage_class: None,
+                ftype: FunType {
+                    params: [
+                        Int,
+                        Int,
+                    ],
+                    ret: Int,
+                },
+            },
+        ),
+    ],
+)

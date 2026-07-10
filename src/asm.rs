@@ -1708,7 +1708,12 @@ impl Asm {
         use crate::symbol_table::BackendSymTableEntry;
         // generator no longer needs the top levels so to avoid refs, we'll just
         // take them directoy and keep owned values in asm
-        let const_labels = std::mem::take(&mut generator.const_labels);
+        let mut const_labels: Vec<_> = std::mem::take(&mut generator.const_labels)
+            .into_iter()
+            .collect();
+        // sorting here because hashmap insertion is not guaranteed, and I need
+        // reproduceability for tests. Could also use a BTreeMap if I cared.
+        const_labels.sort_by(|(a, _), (b, _)| a.cmp(b));
         let Asm::Program(toplevels) = asm;
         toplevels.reserve(const_labels.len());
         symtable.reserve(const_labels.len());
@@ -1852,6 +1857,12 @@ mod tests {
             }
         }
         panic!("no function named {name} found in {tops:?}");
+    }
+
+    #[test]
+    fn double_and_int_parameters_fixture_codegens() {
+        let src = include_str!("../fixtures/double_and_int_parameters.c");
+        insta::assert_debug_snapshot!(compile(src));
     }
 
     #[test]

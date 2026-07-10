@@ -1,0 +1,127 @@
+---
+source: src/semantic_analysis.rs
+expression: symbol_table
+---
+[
+    (
+        "d1",
+        (
+            Double,
+            StaticAttr {
+                init: Initial(
+                    DoubleInit(
+                        2147483647.0,
+                    ),
+                ),
+                global: true,
+            },
+        ),
+    ),
+    (
+        "d2",
+        (
+            Double,
+            StaticAttr {
+                init: Initial(
+                    DoubleInit(
+                        4294967295.0,
+                    ),
+                ),
+                global: true,
+            },
+        ),
+    ),
+    (
+        "d3",
+        (
+            Double,
+            StaticAttr {
+                init: Initial(
+                    DoubleInit(
+                        4.61168601842739e18,
+                    ),
+                ),
+                global: true,
+            },
+        ),
+    ),
+    (
+        "i",
+        (
+            Int,
+            StaticAttr {
+                init: Initial(
+                    IntInit(
+                        4,
+                    ),
+                ),
+                global: false,
+            },
+        ),
+    ),
+    (
+        "l",
+        (
+            Long,
+            StaticAttr {
+                init: Initial(
+                    LongInit(
+                        4611686018427389952,
+                    ),
+                ),
+                global: true,
+            },
+        ),
+    ),
+    (
+        "main",
+        (
+            FunType {
+                params: [],
+                ret: Int,
+            },
+            FunAttr {
+                defined: true,
+                global: true,
+            },
+        ),
+    ),
+    (
+        "u",
+        (
+            UInt,
+            StaticAttr {
+                init: Initial(
+                    UIntInit(
+                        4294967292,
+                    ),
+                ),
+                global: true,
+            },
+        ),
+    ),
+    (
+        "ul",
+        (
+            ULong,
+            StaticAttr {
+                init: Initial(
+                    ULongInit(
+                        18446744073709549568,
+                    ),
+                ),
+                global: true,
+            },
+        ),
+    ),
+    (
+        "uninitialized",
+        (
+            Double,
+            StaticAttr {
+                init: Tentative,
+                global: true,
+            },
+        ),
+    ),
+]

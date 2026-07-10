@@ -1212,6 +1212,29 @@ mod tests {
     use crate::parser::Statement;
     use crate::types::CType;
 
+    // lexes, parses, and resolves real source text, mirroring how main.rs
+    // drives the pipeline up through the validate stage. The symbol table is
+    // sorted by identifier before returning since HashMap iteration order is
+    // randomized per-process and would make a snapshot flaky otherwise.
+    fn resolve_source(src: &str) -> (TypedAST, Vec<(String, (CType, IdentifierAttrs))>) {
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parser = crate::parser::Parser::new(&tokens);
+        let mut ast = parser.into_ast().unwrap();
+        let (symbol_table, typed_ast) = resolve(&mut ast).unwrap();
+        let mut sorted: Vec<_> = symbol_table.into_iter().collect();
+        sorted.sort_by(|(a, _), (b, _)| a.cmp(b));
+        (typed_ast, sorted)
+    }
+
+    #[test]
+    fn static_initializers_fixture_resolves() {
+        let src = include_str!("../fixtures/static_initializers.c");
+        let (typed_ast, symbol_table) = resolve_source(src);
+        insta::assert_debug_snapshot!("static_initializers_typed_ast", typed_ast);
+        insta::assert_debug_snapshot!("static_initializers_symbol_table", symbol_table);
+    }
+
     #[test]
     fn basic_resolve_repeated_variable() {
         let mut before = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {

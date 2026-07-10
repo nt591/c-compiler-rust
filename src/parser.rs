@@ -782,6 +782,22 @@ fn token_is_valid_storage_class(tok: Option<&Token>) -> bool {
 mod tests {
     use super::*;
     use crate::lexer::Token;
+
+    // lexes and parses real source text, mirroring how main.rs drives the
+    // pipeline up through the parse stage.
+    fn parse_source(src: &str) -> AST {
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let parser = Parser::new(&tokens);
+        parser.into_ast().unwrap()
+    }
+
+    #[test]
+    fn control_flow_fixture_parses() {
+        let src = include_str!("../fixtures/control_flow.c");
+        insta::assert_debug_snapshot!(parse_source(src));
+    }
+
     #[test]
     fn basic_parse() {
         /*

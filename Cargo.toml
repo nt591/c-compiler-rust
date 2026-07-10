@@ -11,3 +11,6 @@ clap = { version = "4.5.16", features = ["derive"] }
 multipeek = "0.1.2"
 regex = "1.12.3"
 thiserror = "1.0.63"
+
+[dev-dependencies]
+insta = "1.48.0"

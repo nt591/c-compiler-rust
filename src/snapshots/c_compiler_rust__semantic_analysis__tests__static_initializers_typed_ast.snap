@@ -1,0 +1,293 @@
+---
+source: src/semantic_analysis.rs
+assertion_line: 1234
+expression: typed_ast
+---
+Program(
+    [
+        VarDecl(
+            VariableDeclaration {
+                name: "d1",
+                init: Some(
+                    Expression {
+                        ty: Double,
+                        kind: Constant(
+                            Double(
+                                2147483647.0,
+                            ),
+                        ),
+                    },
+                ),
+                storage_class: None,
+                vtype: Double,
+            },
+        ),
+        VarDecl(
+            VariableDeclaration {
+                name: "d2",
+                init: Some(
+                    Expression {
+                        ty: Double,
+                        kind: Constant(
+                            Double(
+                                4294967295.0,
+                            ),
+                        ),
+                    },
+                ),
+                storage_class: None,
+                vtype: Double,
+            },
+        ),
+        VarDecl(
+            VariableDeclaration {
+                name: "d3",
+                init: Some(
+                    Expression {
+                        ty: Double,
+                        kind: Constant(
+                            Double(
+                                4.61168601842739e18,
+                            ),
+                        ),
+                    },
+                ),
+                storage_class: None,
+                vtype: Double,
+            },
+        ),
+        VarDecl(
+            VariableDeclaration {
+                name: "uninitialized",
+                init: None,
+                storage_class: None,
+                vtype: Double,
+            },
+        ),
+        VarDecl(
+            VariableDeclaration {
+                name: "i",
+                init: Some(
+                    Expression {
+                        ty: Int,
+                        kind: Constant(
+                            Int(
+                                4,
+                            ),
+                        ),
+                    },
+                ),
+                storage_class: Some(
+                    Static,
+                ),
+                vtype: Int,
+            },
+        ),
+        VarDecl(
+            VariableDeclaration {
+                name: "u",
+                init: Some(
+                    Expression {
+                        ty: UInt,
+                        kind: Constant(
+                            UInt(
+                                4294967292,
+                            ),
+                        ),
+                    },
+                ),
+                storage_class: None,
+                vtype: UInt,
+            },
+        ),
+        VarDecl(
+            VariableDeclaration {
+                name: "l",
+                init: Some(
+                    Expression {
+                        ty: Long,
+                        kind: Constant(
+                            Long(
+                                4611686018427389952,
+                            ),
+                        ),
+                    },
+                ),
+                storage_class: None,
+                vtype: Long,
+            },
+        ),
+        VarDecl(
+            VariableDeclaration {
+                name: "ul",
+                init: Some(
+                    Expression {
+                        ty: ULong,
+                        kind: Constant(
+                            ULong(
+                                18446744073709549568,
+                            ),
+                        ),
+                    },
+                ),
+                storage_class: None,
+                vtype: ULong,
+            },
+        ),
+        FunDecl(
+            FunctionDeclaration {
+                name: "main",
+                params: [],
+                block: Some(
+                    Block(
+                        [
+                            Stmt(
+                                Return(
+                                    Expression {
+                                        ty: Int,
+                                        kind: Binary(
+                                            GreaterThan,
+                                            Expression {
+                                                ty: Double,
+                                                kind: Binary(
+                                                    Add,
+                                                    Expression {
+                                                        ty: Double,
+                                                        kind: Binary(
+                                                            Add,
+                                                            Expression {
+                                                                ty: Double,
+                                                                kind: Binary(
+                                                                    Add,
+                                                                    Expression {
+                                                                        ty: Double,
+                                                                        kind: Binary(
+                                                                            Add,
+                                                                            Expression {
+                                                                                ty: Double,
+                                                                                kind: Binary(
+                                                                                    Add,
+                                                                                    Expression {
+                                                                                        ty: Double,
+                                                                                        kind: Binary(
+                                                                                            Add,
+                                                                                            Expression {
+                                                                                                ty: Double,
+                                                                                                kind: Binary(
+                                                                                                    Add,
+                                                                                                    Expression {
+                                                                                                        ty: Double,
+                                                                                                        kind: Var(
+                                                                                                            "d1",
+                                                                                                        ),
+                                                                                                    },
+                                                                                                    Expression {
+                                                                                                        ty: Double,
+                                                                                                        kind: Var(
+                                                                                                            "d2",
+                                                                                                        ),
+                                                                                                    },
+                                                                                                ),
+                                                                                            },
+                                                                                            Expression {
+                                                                                                ty: Double,
+                                                                                                kind: Var(
+                                                                                                    "d3",
+                                                                                                ),
+                                                                                            },
+                                                                                        ),
+                                                                                    },
+                                                                                    Expression {
+                                                                                        ty: Double,
+                                                                                        kind: Var(
+                                                                                            "uninitialized",
+                                                                                        ),
+                                                                                    },
+                                                                                ),
+                                                                            },
+                                                                            Expression {
+                                                                                ty: Double,
+                                                                                kind: Cast(
+                                                                                    Double,
+                                                                                    Expression {
+                                                                                        ty: Int,
+                                                                                        kind: Var(
+                                                                                            "i",
+                                                                                        ),
+                                                                                    },
+                                                                                ),
+                                                                            },
+                                                                        ),
+                                                                    },
+                                                                    Expression {
+                                                                        ty: Double,
+                                                                        kind: Cast(
+                                                                            Double,
+                                                                            Expression {
+                                                                                ty: UInt,
+                                                                                kind: Var(
+                                                                                    "u",
+                                                                                ),
+                                                                            },
+                                                                        ),
+                                                                    },
+                                                                ),
+                                                            },
+                                                            Expression {
+                                                                ty: Double,
+                                                                kind: Cast(
+                                                                    Double,
+                                                                    Expression {
+                                                                        ty: Long,
+                                                                        kind: Var(
+                                                                            "l",
+                                                                        ),
+                                                                    },
+                                                                ),
+                                                            },
+                                                        ),
+                                                    },
+                                                    Expression {
+                                                        ty: Double,
+                                                        kind: Cast(
+                                                            Double,
+                                                            Expression {
+                                                                ty: ULong,
+                                                                kind: Var(
+                                                                    "ul",
+                                                                ),
+                                                            },
+                                                        ),
+                                                    },
+                                                ),
+                                            },
+                                            Expression {
+                                                ty: Double,
+                                                kind: Cast(
+                                                    Double,
+                                                    Expression {
+                                                        ty: Int,
+                                                        kind: Constant(
+                                                            Int(
+                                                                0,
+                                                            ),
+                                                        ),
+                                                    },
+                                                ),
+                                            },
+                                        ),
+                                    },
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+                storage_class: None,
+                ftype: FunType {
+                    params: [],
+                    ret: Int,
+                },
+            },
+        ),
+    ],
+)
