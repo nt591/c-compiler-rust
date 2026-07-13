@@ -30,7 +30,8 @@ pub fn convert_const(c: Const, target: &CType) -> StaticInit {
         CType::FunType { .. } => {
             unreachable!("Should never try to convert a const node to a function type")
         }
-        CType::Pointer(_) => todo!(),
+        // rely on semantic analysis to ensure we pass in a valid bits
+        CType::Pointer(_) => StaticInit::ULongInit(bits as u64),
     }
 }
 
@@ -55,7 +56,7 @@ fn double_to_const(c: Const, target: &CType) -> StaticInit {
         CType::ULong => StaticInit::ULongInit(bits as u64),
         CType::Double => StaticInit::DoubleInit(bits),
         CType::FunType { .. } => panic!("Cannot convert double to funtype"),
-        CType::Pointer(_) => todo!(),
+        CType::Pointer(_) => unreachable!(),
     }
 }
 

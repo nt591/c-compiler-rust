@@ -6,6 +6,7 @@ use crate::const_eval;
 pub use crate::symbol_table::IdentifierAttrs;
 pub use crate::symbol_table::InitialValue;
 pub use crate::symbol_table::SymbolTable;
+use crate::types;
 use crate::types::CType;
 use crate::types::StaticInit;
 use std::collections::HashMap;
@@ -88,6 +89,18 @@ pub enum SemanticAnalysisError {
     VariableDeclaredWithNewType(CType, CType),
     #[error("Invalid operator: {0:?}")]
     InvalidOperator(String),
+    #[error("Got unexpected expression {0:?} in AddressOf operator")]
+    UnexpectedExpressionInAddressOf(Expression),
+    #[error("Got unexpected type {0:?} in Dereference operator")]
+    UnexpectedTypeInDereference(CType),
+    #[error("Expressions have incompatible types: E1 {0:?}, E2 {1:?}")]
+    ExpressionsHaveIncompatibleTypes(TypedExpression, TypedExpression),
+    #[error("Cannot convert type for assignment")]
+    CannotConvertTypeForAssignment,
+    #[error("Tried to convert double to pointer or vice versa")]
+    InvalidConversionOfDoublesAndPtrs,
+    #[error("Non-zero pointer initializer")]
+    NonZeroPointerInitializer,
 }
 
 #[derive(Debug, Clone)]
@@ -360,6 +373,11 @@ fn typecheck_file_scope_variable_declaration(
         Some(expr) => match *expr.kind {
             ExprKind::Constant(c) => {
                 let converted = const_eval::convert_const(c, &var.vtype);
+                if matches!(&var.vtype, CType::Pointer(_))
+                    && !types::static_init_is_zeroed(&converted)
+                {
+                    return Err(SemanticAnalysisError::NonZeroPointerInitializer);
+                }
                 InitialValue::Initial(converted)
             }
             _ => return Err(SemanticAnalysisError::NonConstantInitializer),
@@ -508,6 +526,11 @@ fn typecheck_local_var_decl(
                 Some(expr) => match *expr.kind {
                     ExprKind::Constant(c) => {
                         let converted_const = const_eval::convert_const(c, &decl.vtype);
+                        if matches!(&decl.vtype, CType::Pointer(_))
+                            && !types::static_init_is_zeroed(&converted_const)
+                        {
+                            return Err(SemanticAnalysisError::NonZeroPointerInitializer);
+                        }
                         InitialValue::Initial(converted_const)
                     }
                     _ => return Err(SemanticAnalysisError::NonConstInitOnLocalStaticVar),
@@ -540,7 +563,8 @@ fn typecheck_local_var_decl(
             );
             let typed_init = if let Some(init) = init {
                 let e1 = typecheck_expr(init, ctx)?;
-                Some(convert_to(e1, decl.vtype.clone()))
+                let converted = convert_by_assignment(e1, decl.vtype.clone())?;
+                Some(converted)
             } else {
                 None
             };
@@ -569,7 +593,7 @@ fn typecheck_statement(
                     "Got a return statement without setting the enclosing function's return type"
                 );
             };
-            let converted_expr = convert_to(inner_expr, ret_ty.clone());
+            let converted_expr = convert_by_assignment(inner_expr, ret_ty.clone())?;
             TypedStatement::Return(converted_expr)
         }
         Statement::If {
@@ -690,6 +714,15 @@ fn typecheck_expr(
                     "Can't take bitwise complement of a double".to_string(),
                 ));
             }
+            // can't negate or complement a pointer
+            if matches!(inner_ty, CType::Pointer(_))
+                && matches!(op, UnaryOp::Complement | UnaryOp::Negate)
+            {
+                return Err(SemanticAnalysisError::InvalidOperator(format!(
+                    "Can't negate or complement a pointer but tried to use {:?}",
+                    op
+                )));
+            }
             let expr = TypedExprKind::Unary(*op, Box::new(inner));
             let ty = if *op == UnaryOp::Not {
                 CType::Int
@@ -717,7 +750,30 @@ fn typecheck_expr(
                     "Can't take remainder with doubles as operand, got {t1:?} % {t2:?}".to_string(),
                 ));
             }
-            let common_type = CType::get_common_type(t1, t2);
+            // Equal and not Equal require pointer casting
+            let common_type = if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
+                // if EITHER operand is a pointer we need to look for common ptr type
+                match (&t1, &t2) {
+                    (CType::Pointer(_), _) | (_, CType::Pointer(_)) => {
+                        get_common_pointer_type(&e1, &e2)?
+                    }
+                    _ => CType::get_common_type(t1, t2),
+                }
+            } else {
+                CType::get_common_type(t1, t2)
+            };
+            // multiply, divide and remainder don't make sense for pointers
+            if matches!(common_type, CType::Pointer(_))
+                && matches!(
+                    op,
+                    BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Remainder
+                )
+            {
+                return Err(SemanticAnalysisError::InvalidOperator(format!(
+                    "Can't multiple, divide or take remainder of a pointer but tried to use {:?}",
+                    op
+                )));
+            }
             // we now need to see if each expression needs to be potentially
             // cast to the common type
             let converted_e1 = convert_to(e1, common_type.clone());
@@ -736,10 +792,14 @@ fn typecheck_expr(
             (bin_expr, t)
         }
         ExprKind::Assignment(lhs, rhs) => {
+            if !is_lvalue(lhs.kind.as_ref()) {
+                return Err(SemanticAnalysisError::InvalidLhsAssignmentNode);
+            };
+
             let e1 = typecheck_expr(lhs, ctx)?;
             let e2 = typecheck_expr(rhs, ctx)?;
             let ty = e1.get_type();
-            let converted_rhs = convert_to(e2, ty.clone());
+            let converted_rhs = convert_by_assignment(e2, ty.clone())?;
             (
                 TypedExprKind::Assignment(Box::new(e1), Box::new(converted_rhs)),
                 ty,
@@ -755,7 +815,14 @@ fn typecheck_expr(
             let e2 = typecheck_expr(else_, ctx)?;
             let t1 = e1.get_type();
             let t2 = e2.get_type();
-            let common_type = CType::get_common_type(t1, t2);
+            // again, if either type is a pointer type: cast to common ptr
+            let common_type = match (&t1, &t2) {
+                (CType::Pointer(_), _) | (_, CType::Pointer(_)) => {
+                    get_common_pointer_type(&e1, &e2)?
+                }
+                _ => CType::get_common_type(t1, t2),
+            };
+
             // we now need to see if each expression needs to be potentially
             // cast to the common type
             let converted_e1 = convert_to(e1, common_type.clone());
@@ -772,7 +839,13 @@ fn typecheck_expr(
 
         ExprKind::Cast(ty, expr) => {
             let expr = typecheck_expr(expr, ctx)?;
-            (TypedExprKind::Cast(ty.clone(), Box::new(expr)), ty.clone())
+            // illegal to cast double-to-ptr or ptr-to-double
+            match (ty, expr.get_type()) {
+                (CType::Double, CType::Pointer(_)) | (CType::Pointer(_), CType::Double) => {
+                    return Err(SemanticAnalysisError::InvalidConversionOfDoublesAndPtrs);
+                }
+                _ => (TypedExprKind::Cast(ty.clone(), Box::new(expr)), ty.clone()),
+            }
         }
         ExprKind::FunctionCall { name, args } => {
             // stored type return type is our canonical return type.
@@ -796,7 +869,8 @@ fn typecheck_expr(
             let mut converted_args = vec![];
             for (arg, param_ty) in args.iter().zip(params) {
                 let expr = typecheck_expr(arg, ctx)?;
-                converted_args.push(convert_to(expr, param_ty.clone()));
+                let converted_expr = convert_by_assignment(expr, param_ty.clone())?;
+                converted_args.push(converted_expr);
             }
             (
                 TypedExprKind::FunctionCall {
@@ -806,7 +880,30 @@ fn typecheck_expr(
                 ret.as_ref().clone(),
             )
         }
-        ExprKind::AddressOf(_) | ExprKind::Dereference(_) => todo!(),
+        ExprKind::Dereference(expr) => {
+            // make sure inner type is a pointer, else type error.
+            let inner = typecheck_expr(expr, ctx)?;
+            let inner_ty = inner.get_type();
+            let CType::Pointer(referenced_ty) = inner_ty else {
+                return Err(SemanticAnalysisError::UnexpectedTypeInDereference(
+                    inner_ty.clone(),
+                ));
+            };
+            (TypedExprKind::Dereference(Box::new(inner)), *referenced_ty)
+        }
+        ExprKind::AddressOf(expr) => {
+            if !is_lvalue(expr.kind.as_ref()) {
+                return Err(SemanticAnalysisError::UnexpectedExpressionInAddressOf(
+                    *expr.clone(),
+                ));
+            };
+            let inner = typecheck_expr(expr, ctx)?;
+            let inner_ty = inner.get_type();
+            (
+                TypedExprKind::AddressOf(Box::new(inner)),
+                CType::Pointer(Box::new(inner_ty)),
+            )
+        }
     };
     Ok(TypedExpression {
         kind: Box::new(expr_kind),
@@ -1044,9 +1141,6 @@ fn resolve_expr(
             resolve_expr(&mut *rhs, resolver)?;
         }
         ExprKind::Assignment(lhs, rhs) => {
-            if !matches!(*lhs.kind, ExprKind::Var(_)) {
-                return Err(SemanticAnalysisError::InvalidLhsAssignmentNode);
-            }
             resolve_expr(&mut *lhs, resolver)?;
             resolve_expr(&mut *rhs, resolver)?;
         }
@@ -1070,7 +1164,8 @@ fn resolve_expr(
             }
         }
         ExprKind::Cast(_, expr) => resolve_expr(expr, resolver)?,
-        ExprKind::AddressOf(_) | ExprKind::Dereference(_) => todo!(),
+        ExprKind::AddressOf(expr) => resolve_expr(expr, resolver)?,
+        ExprKind::Dereference(expr) => resolve_expr(expr, resolver)?,
     };
     Ok(())
 }
@@ -1203,6 +1298,66 @@ fn typed_expr_for_initial_value(
     }
 }
 
+// we'll say that an lvalue can be anything assignable to, either
+// a variable or a deferenced pointer.
+fn is_lvalue(expr: &ExprKind) -> bool {
+    matches!(expr, ExprKind::Var(_) | ExprKind::Dereference(_))
+}
+
+// C standard also allows for an expression cast to void*
+fn is_null_pointer_constant(expr: &TypedExprKind) -> bool {
+    let TypedExprKind::Constant(c) = expr else {
+        return false;
+    };
+    matches!(
+        c,
+        Const::Int(0) | Const::Long(0) | Const::UInt(0) | Const::ULong(0)
+    )
+}
+
+fn convert_by_assignment(
+    expr: TypedExpression,
+    target: CType,
+) -> Result<TypedExpression, SemanticAnalysisError> {
+    // convert 'as if by assignment'
+    // https://en.cppreference.com/c/language/conversion
+    // During assignment, we ensure LHS is an lvalue and then
+    // see if we can convert the RHS to that type, if a common type exists
+    let expr_ty = expr.get_type();
+    if expr_ty == target {
+        return Ok(expr);
+    }
+    if expr_ty.is_arithmetic() && target.is_arithmetic() {
+        return Ok(convert_to(expr, target));
+    }
+    if is_null_pointer_constant(expr.kind.as_ref()) && target.is_pointer() {
+        return Ok(convert_to(expr, target));
+    }
+    Err(SemanticAnalysisError::CannotConvertTypeForAssignment)
+}
+
+// if an expression operates on pointers and expects them to be the same type
+// we resolve to some common pointer type if possible
+fn get_common_pointer_type(
+    e1: &TypedExpression,
+    e2: &TypedExpression,
+) -> Result<CType, SemanticAnalysisError> {
+    let t1 = e1.get_type();
+    let t2 = e2.get_type();
+    if t1 == t2 {
+        return Ok(t1);
+    }
+    if is_null_pointer_constant(e1.kind.as_ref()) {
+        return Ok(t2);
+    }
+    if is_null_pointer_constant(e2.kind.as_ref()) {
+        return Ok(t1);
+    }
+    Err(SemanticAnalysisError::ExpressionsHaveIncompatibleTypes(
+        e1.clone(),
+        e2.clone(),
+    ))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1782,5 +1937,215 @@ mod tests {
         let mut ast = parse.into_ast().unwrap();
         let analysis = resolve(&mut ast).map(|(t, _)| t);
         assert!(analysis.is_err());
+    }
+
+    #[test]
+    fn dereference_non_pointer_fails() {
+        let mut before = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
+            name: "main".into(),
+            block: Some(crate::ast::Block(vec![
+                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
+                    name: "a".into(),
+                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                    storage_class: None,
+                    vtype: CType::Int,
+                })),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Dereference(
+                    Box::new(Expression::new(ExprKind::Var("a".into()))),
+                )))),
+            ])),
+            params: vec![],
+            storage_class: None,
+            ftype: CType::FunType {
+                params: vec![],
+                ret: Box::new(CType::Int),
+            },
+        })]);
+
+        let actual = resolve(&mut before).map(|(t, _)| t);
+        assert_eq!(
+            actual,
+            Err(SemanticAnalysisError::UnexpectedTypeInDereference(
+                CType::Int
+            ))
+        );
+    }
+
+    #[test]
+    fn address_of_non_lvalue_fails() {
+        let non_lvalue = Expression::new(ExprKind::Constant(Const::Int(1)));
+        let mut before = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
+            name: "main".into(),
+            block: Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::new(ExprKind::AddressOf(Box::new(non_lvalue.clone()))),
+            ))])),
+            params: vec![],
+            storage_class: None,
+            ftype: CType::FunType {
+                params: vec![],
+                ret: Box::new(CType::Int),
+            },
+        })]);
+
+        let actual = resolve(&mut before).map(|(t, _)| t);
+        assert_eq!(
+            actual,
+            Err(SemanticAnalysisError::UnexpectedExpressionInAddressOf(
+                non_lvalue
+            ))
+        );
+    }
+
+    #[test]
+    fn assignment_to_non_lvalue_fails() {
+        let mut before = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
+            name: "main".into(),
+            block: Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::new(ExprKind::Assignment(
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                )),
+            ))])),
+            params: vec![],
+            storage_class: None,
+            ftype: CType::FunType {
+                params: vec![],
+                ret: Box::new(CType::Int),
+            },
+        })]);
+
+        let actual = resolve(&mut before).map(|(t, _)| t);
+        assert_eq!(actual, Err(SemanticAnalysisError::InvalidLhsAssignmentNode));
+    }
+
+    #[test]
+    fn negate_pointer_fails() {
+        let mut before = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
+            name: "main".into(),
+            block: Some(crate::ast::Block(vec![
+                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
+                    name: "p".into(),
+                    init: None,
+                    storage_class: None,
+                    vtype: CType::Pointer(Box::new(CType::Int)),
+                })),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Unary(
+                    UnaryOp::Negate,
+                    Box::new(Expression::new(ExprKind::Var("p".into()))),
+                )))),
+            ])),
+            params: vec![],
+            storage_class: None,
+            ftype: CType::FunType {
+                params: vec![],
+                ret: Box::new(CType::Int),
+            },
+        })]);
+
+        let actual = resolve(&mut before).map(|(t, _)| t);
+        assert!(matches!(
+            actual,
+            Err(SemanticAnalysisError::InvalidOperator(_))
+        ));
+    }
+
+    #[test]
+    fn multiply_pointers_fails() {
+        let mut before = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
+            name: "main".into(),
+            block: Some(crate::ast::Block(vec![
+                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
+                    name: "p".into(),
+                    init: None,
+                    storage_class: None,
+                    vtype: CType::Pointer(Box::new(CType::Int)),
+                })),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Binary(
+                    BinaryOp::Multiply,
+                    Box::new(Expression::new(ExprKind::Var("p".into()))),
+                    Box::new(Expression::new(ExprKind::Var("p".into()))),
+                )))),
+            ])),
+            params: vec![],
+            storage_class: None,
+            ftype: CType::FunType {
+                params: vec![],
+                ret: Box::new(CType::Int),
+            },
+        })]);
+
+        let actual = resolve(&mut before).map(|(t, _)| t);
+        assert!(matches!(
+            actual,
+            Err(SemanticAnalysisError::InvalidOperator(_))
+        ));
+    }
+
+    #[test]
+    fn cast_double_to_pointer_fails() {
+        let mut before = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
+            name: "main".into(),
+            block: Some(crate::ast::Block(vec![BlockItem::Stmt(Statement::Return(
+                Expression::new(ExprKind::Cast(
+                    CType::Pointer(Box::new(CType::Int)),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Double(2.0)))),
+                )),
+            ))])),
+            params: vec![],
+            storage_class: None,
+            ftype: CType::FunType {
+                params: vec![],
+                ret: Box::new(CType::Int),
+            },
+        })]);
+
+        let actual = resolve(&mut before).map(|(t, _)| t);
+        assert_eq!(
+            actual,
+            Err(SemanticAnalysisError::InvalidConversionOfDoublesAndPtrs)
+        );
+    }
+
+    #[test]
+    fn null_pointer_constant_assignable_to_pointer() {
+        let mut before = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration {
+            name: "main".into(),
+            block: Some(crate::ast::Block(vec![
+                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
+                    name: "p".into(),
+                    init: Some(Expression::new(ExprKind::Constant(Const::Int(0)))),
+                    storage_class: None,
+                    vtype: CType::Pointer(Box::new(CType::Int)),
+                })),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Constant(
+                    Const::Int(0),
+                )))),
+            ])),
+            params: vec![],
+            storage_class: None,
+            ftype: CType::FunType {
+                params: vec![],
+                ret: Box::new(CType::Int),
+            },
+        })]);
+
+        let actual = resolve(&mut before).map(|(t, _)| t);
+        assert!(actual.is_ok());
+    }
+
+    #[test]
+    fn non_zero_pointer_initializer_at_file_scope_fails() {
+        let mut before = AST::Program(vec![Declaration::VarDecl(VariableDeclaration {
+            name: "p".into(),
+            init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
+            storage_class: None,
+            vtype: CType::Pointer(Box::new(CType::Int)),
+        })]);
+
+        let actual = resolve(&mut before).map(|(t, _)| t);
+        assert_eq!(
+            actual,
+            Err(SemanticAnalysisError::NonZeroPointerInitializer)
+        );
     }
 }

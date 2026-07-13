@@ -2740,7 +2740,10 @@ mod tests {
             };
             assert_eq!(fd.name, "two_pointers");
             assert_eq!(fd.ftype, expected_ftype, "mismatch for {src:?}");
-            assert!(fd.block.is_none(), "expected prototype (no body) for {src:?}");
+            assert!(
+                fd.block.is_none(),
+                "expected prototype (no body) for {src:?}"
+            );
         }
     }
 
@@ -2753,7 +2756,9 @@ mod tests {
         let nested = "unsigned(**(pointers_to_pointers(int *(*p))));";
 
         let expected_ftype = CType::FunType {
-            params: vec![CType::Pointer(Box::new(CType::Pointer(Box::new(CType::Int))))],
+            params: vec![CType::Pointer(Box::new(CType::Pointer(Box::new(
+                CType::Int,
+            ))))],
             ret: Box::new(CType::Pointer(Box::new(CType::Pointer(Box::new(
                 CType::UInt,
             ))))),
@@ -2845,7 +2850,10 @@ mod tests {
         let lexer = crate::lexer::Lexer::lex(src).unwrap();
         let tokens = lexer.as_syntactic_tokens();
         let ast = Parser::new(&tokens).into_ast();
-        assert_eq!(ast, Err(ParserError::ExtraTypeDerivationInFunctionDeclarator));
+        assert_eq!(
+            ast,
+            Err(ParserError::ExtraTypeDerivationInFunctionDeclarator)
+        );
     }
 
     // from chapter_14/invalid_parse/malformed_function_declarator_2.c: a
@@ -2870,7 +2878,10 @@ mod tests {
         let ast = Parser::new(&tokens).into_ast();
         assert_eq!(
             ast,
-            Err(ParserError::UnexpectedToken("RightParen".into(), "Star".into()))
+            Err(ParserError::UnexpectedToken(
+                "RightParen".into(),
+                "Star".into()
+            ))
         );
     }
 
@@ -2885,7 +2896,10 @@ mod tests {
         let ast = Parser::new(&tokens).into_ast();
         assert_eq!(
             ast,
-            Err(ParserError::UnexpectedToken("RightParen".into(), "Void".into()))
+            Err(ParserError::UnexpectedToken(
+                "RightParen".into(),
+                "Void".into()
+            ))
         );
     }
 

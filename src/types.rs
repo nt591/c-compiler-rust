@@ -93,6 +93,17 @@ impl CType {
     pub fn is_double(&self) -> bool {
         self == &CType::Double
     }
+
+    pub fn is_arithmetic(&self) -> bool {
+        matches!(
+            &self,
+            CType::Int | CType::UInt | CType::Long | CType::ULong | CType::Double
+        )
+    }
+
+    pub fn is_pointer(&self) -> bool {
+        matches!(self, &CType::Pointer(_))
+    }
 }
 
 pub fn static_init_as_usize(si: &StaticInit) -> usize {
@@ -107,6 +118,10 @@ pub fn static_init_as_usize(si: &StaticInit) -> usize {
 
 pub fn is_double(si: &StaticInit) -> bool {
     matches!(si, StaticInit::DoubleInit(_))
+}
+
+pub fn static_init_is_zeroed(si: &StaticInit) -> bool {
+    static_init_as_usize(si) == 0usize
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]
