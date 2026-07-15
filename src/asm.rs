@@ -928,6 +928,7 @@ impl Asm {
                         ]
                     }
                 }
+                TIns::GetAddress { .. } | TIns::Load { .. } | TIns::Store { .. } => todo!(),
             })
             .collect::<Vec<_>>()
     }

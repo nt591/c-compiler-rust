@@ -111,12 +111,34 @@ pub enum Instruction {
         src: Val,
         dst: Val,
     },
+    // ch 14: pointer operations
+    GetAddress {
+        src: Val,
+        dst: Val,
+    },
+    Load {
+        src_ptr: Val,
+        dst: Val,
+    },
+    Store {
+        src: Val,
+        dst_ptr: Val,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Val {
     Constant(Const),
     Var(String), // temporary variable name
+}
+
+// something that has not yet been lvalue converted,
+// so we can lazily handle as needed on a per-expression basis
+// We can use this to deal with LHS of assignments, for example
+#[derive(Debug, PartialEq, Clone)]
+enum ExprResult {
+    PlainOperand(Val),
+    DereferencedPointer(Val),
 }
 
 #[derive(Debug, PartialEq)]
@@ -247,7 +269,7 @@ impl<'a> Tacky {
                             CType::ULong => StaticInit::ULongInit(0),
                             CType::UInt => StaticInit::UIntInit(0),
                             CType::Double => StaticInit::DoubleInit(0.0),
-                            CType::Pointer(_) => todo!(),
+                            CType::Pointer(_) => StaticInit::ULongInit(0),
                         };
                         defs.push(TopLevel::StaticVariable {
                             identifier: name.clone(),
@@ -298,16 +320,40 @@ impl<'a> Tacky {
         })
     }
 
-    fn parse_expression(
+    // Just unwraps ExprResult by adding a load instuction, so if
+    // we ever operate on ex, a binary op that has a deferenced ptr
+    // on the LHS, we create a temporary and load that object from
+    // the pointer into the temporary
+    fn parse_expression_and_convert(
         &mut self,
         expr: &TypedExpression,
         ctx: &mut TackyCtx,
     ) -> Result<Val, TackyError> {
+        use ExprResult::*;
+        let result = self.parse_expression(expr, ctx)?;
+        match result {
+            PlainOperand(v) => Ok(v),
+            ExprResult::DereferencedPointer(p) => {
+                let dst = self.make_tacky_variable(ctx, expr.get_type())?;
+                ctx.push(Instruction::Load {
+                    src_ptr: p,
+                    dst: dst.clone(),
+                });
+                Ok(dst)
+            }
+        }
+    }
+
+    fn parse_expression(
+        &mut self,
+        expr: &TypedExpression,
+        ctx: &mut TackyCtx,
+    ) -> Result<ExprResult, TackyError> {
         let ty = expr.get_type();
         match expr.kind.as_ref() {
-            TypedExprKind::Constant(c) => Ok(Val::Constant(*c)),
+            TypedExprKind::Constant(c) => Ok(ExprResult::PlainOperand(Val::Constant(*c))),
             TypedExprKind::Unary(op, exp) => {
-                let src = self.parse_expression(exp, ctx)?;
+                let src = self.parse_expression_and_convert(exp, ctx)?;
                 let dst = self.make_tacky_variable(ctx, ty)?;
                 let unary_op = match op {
                     ParserUnaryOp::Negate => UnaryOp::Negate,
@@ -319,7 +365,7 @@ impl<'a> Tacky {
                     src,
                     dst: dst.clone(),
                 });
-                Ok(dst)
+                Ok(ExprResult::PlainOperand(dst))
             }
             TypedExprKind::Binary(op @ ParserBinaryOp::BinAnd, left, right)
             | TypedExprKind::Binary(op @ ParserBinaryOp::BinOr, left, right) => {
@@ -342,18 +388,29 @@ impl<'a> Tacky {
                 // if we're in relational ops, so its just clumsy
                 self.parse_eager_binary_expression(op, left, right, ctx, ty)
             }
-            TypedExprKind::Var(ident) => Ok(Val::Var(ident.clone())),
+            TypedExprKind::Var(ident) => Ok(ExprResult::PlainOperand(Val::Var(ident.clone()))),
             TypedExprKind::Assignment(lhs, rhs) => {
-                let TypedExprKind::Var(ref ident) = *lhs.kind else {
-                    return Err(TackyError::InvalidLhsOfAssignment);
-                };
-                // emit instructions for rhs, then copy into lhs
-                let result = self.parse_expression(rhs, ctx)?;
-                ctx.push(Instruction::Copy {
-                    src: result,
-                    dst: Val::Var(ident.clone()),
-                });
-                Ok(Val::Var(ident.clone()))
+                let lhs = self.parse_expression(lhs, ctx)?;
+                let rhs = self.parse_expression_and_convert(rhs, ctx)?;
+                // if the lhs is a regular operand (a string variable, basically)
+                // then we're good to go, copy as normal. If it's actually a
+                // DereferencedPointer, then we Store into that ptr's address
+                match &lhs {
+                    ExprResult::PlainOperand(val) => {
+                        ctx.push(Instruction::Copy {
+                            src: rhs,
+                            dst: val.clone(),
+                        });
+                        Ok(lhs)
+                    }
+                    ExprResult::DereferencedPointer(ptr) => {
+                        ctx.push(Instruction::Store {
+                            src: rhs.clone(),
+                            dst_ptr: ptr.clone(),
+                        });
+                        Ok(ExprResult::PlainOperand(rhs))
+                    }
+                }
             }
             TypedExprKind::Conditional {
                 condition,
@@ -363,7 +420,7 @@ impl<'a> Tacky {
             TypedExprKind::FunctionCall { name, args } => {
                 let args = args
                     .iter()
-                    .map(|arg| self.parse_expression(arg, ctx))
+                    .map(|arg| self.parse_expression_and_convert(arg, ctx))
                     .collect::<Result<Vec<_>, _>>()?;
                 let dst = self.make_tacky_variable(ctx, ty)?;
 
@@ -372,14 +429,14 @@ impl<'a> Tacky {
                     args,
                     dst: dst.clone(),
                 });
-                Ok(dst)
+                Ok(ExprResult::PlainOperand(dst))
             }
             TypedExprKind::Cast(t, expr) => {
-                let result = self.parse_expression(expr, ctx)?;
+                let result = self.parse_expression_and_convert(expr, ctx)?;
                 // if we're casting to the same type, no need to emit extra instructions
                 let inner_ty = expr.get_type();
                 if *t == inner_ty {
-                    return Ok(result);
+                    return Ok(ExprResult::PlainOperand(result));
                 };
                 let dst = self.make_tacky_variable(ctx, t.clone())?;
                 // Following C Standard, if types are different
@@ -407,7 +464,7 @@ impl<'a> Tacky {
                         CType::FunType { .. } => {
                             unreachable!("Should never cast a double to a funtype")
                         }
-                        CType::Pointer(_) => todo!(),
+                        CType::Pointer(_) => unreachable!("Cannot cast double to a pointer type"),
                     }
                 } else if inner_ty == CType::Double {
                     // casting a double to something else, use specialized instructions
@@ -426,7 +483,7 @@ impl<'a> Tacky {
                         CType::FunType { .. } => {
                             unreachable!("Should never cast a funtype to a double")
                         }
-                        CType::Pointer(_) => todo!(),
+                        CType::Pointer(_) => unreachable!("Cannot cast pointer to a double"),
                     }
                 } else if target_size == expr_size {
                     Instruction::Copy {
@@ -453,9 +510,29 @@ impl<'a> Tacky {
                     }
                 };
                 ctx.push(extension_instruction);
-                Ok(dst)
+                Ok(ExprResult::PlainOperand(dst))
             }
-            TypedExprKind::AddressOf(_) | TypedExprKind::Dereference(_) => todo!(),
+            TypedExprKind::Dereference(expr) => {
+                // just wrap inner expr as a DereferencedPointer
+                // We lvalue convert to get the actual object the pointer refers to
+                let result = self.parse_expression_and_convert(expr, ctx)?;
+                Ok(ExprResult::DereferencedPointer(result))
+            }
+            TypedExprKind::AddressOf(inner) => {
+                let v = self.parse_expression(inner, ctx)?;
+                match v {
+                    ExprResult::PlainOperand(v) => {
+                        let dst = self.make_tacky_variable(ctx, ty)?;
+                        ctx.push(Instruction::GetAddress {
+                            src: v,
+                            dst: dst.clone(),
+                        });
+                        Ok(ExprResult::PlainOperand(dst))
+                    }
+                    // &*x is the same as x
+                    ExprResult::DereferencedPointer(obj) => Ok(ExprResult::PlainOperand(obj)),
+                }
+            }
         }
     }
 
@@ -465,7 +542,7 @@ impl<'a> Tacky {
         left: &TypedExpression,
         right: &TypedExpression,
         ctx: &mut TackyCtx,
-    ) -> Result<Val, TackyError> {
+    ) -> Result<ExprResult, TackyError> {
         use ParserBinaryOp as PBO;
         match op {
             PBO::BinAnd => self.parse_short_circuit_and_expression(BinaryOp::And, left, right, ctx),
@@ -480,10 +557,10 @@ impl<'a> Tacky {
         then: &TypedExpression,
         else_: &TypedExpression,
         ctx: &mut TackyCtx,
-    ) -> Result<Val, TackyError> {
+    ) -> Result<ExprResult, TackyError> {
         let else_label = self.make_label("else_label");
         let end_label = self.make_label("end_label");
-        let cond = self.parse_expression(condition, ctx)?;
+        let cond = self.parse_expression_and_convert(condition, ctx)?;
         // move cond into a tmp
         let dst1 = self.make_tacky_variable(ctx, condition.get_type())?;
 
@@ -499,7 +576,7 @@ impl<'a> Tacky {
         // result at the end
         let result = self.make_tacky_variable(ctx, then.get_type())?;
 
-        let v1 = self.parse_expression(then, ctx)?;
+        let v1 = self.parse_expression_and_convert(then, ctx)?;
         ctx.push(Instruction::Copy {
             src: v1,
             dst: result.clone(),
@@ -507,7 +584,7 @@ impl<'a> Tacky {
 
         ctx.push(Instruction::Jump(end_label.clone()));
         ctx.push(Instruction::Label(else_label));
-        let v2 = self.parse_expression(else_, ctx)?;
+        let v2 = self.parse_expression_and_convert(else_, ctx)?;
         ctx.push(Instruction::Copy {
             src: v2,
             dst: result.clone(),
@@ -515,7 +592,7 @@ impl<'a> Tacky {
 
         ctx.push(Instruction::Label(end_label));
 
-        Ok(result)
+        Ok(ExprResult::PlainOperand(result))
     }
 
     // short circuiting means that we first
@@ -534,7 +611,7 @@ impl<'a> Tacky {
         left: &TypedExpression,
         right: &TypedExpression,
         ctx: &mut TackyCtx,
-    ) -> Result<Val, TackyError> {
+    ) -> Result<ExprResult, TackyError> {
         assert_eq!(
             op,
             BinaryOp::And,
@@ -542,7 +619,7 @@ impl<'a> Tacky {
         );
         let jump_label = self.make_label("and_expr_false");
         let end_label = self.make_label("and_expr_end");
-        let src1 = self.parse_expression(left, ctx)?;
+        let src1 = self.parse_expression_and_convert(left, ctx)?;
         // move src1 into a tmp
         let dst1 = self.make_tacky_variable(ctx, left.get_type())?;
         ctx.push(Instruction::Copy {
@@ -553,7 +630,7 @@ impl<'a> Tacky {
             cond: dst1,
             target: jump_label.clone(),
         });
-        let src2 = self.parse_expression(right, ctx)?;
+        let src2 = self.parse_expression_and_convert(right, ctx)?;
         // move src2 into a tmp
         let dst2 = self.make_tacky_variable(ctx, right.get_type())?;
         ctx.push(Instruction::Copy {
@@ -584,7 +661,7 @@ impl<'a> Tacky {
             dst: result.clone(),
         });
         ctx.push(Instruction::Label(end_label));
-        Ok(result)
+        Ok(ExprResult::PlainOperand(result))
     }
 
     // short circuiting means that we first
@@ -603,7 +680,7 @@ impl<'a> Tacky {
         left: &TypedExpression,
         right: &TypedExpression,
         ctx: &mut TackyCtx,
-    ) -> Result<Val, TackyError> {
+    ) -> Result<ExprResult, TackyError> {
         assert_eq!(
             op,
             BinaryOp::Or,
@@ -611,7 +688,7 @@ impl<'a> Tacky {
         );
         let jump_label = self.make_label("or_expr_true");
         let end_label = self.make_label("or_expr_end");
-        let src1 = self.parse_expression(left, ctx)?;
+        let src1 = self.parse_expression_and_convert(left, ctx)?;
         // move src1 into a tmp
         let dst1 = self.make_tacky_variable(ctx, left.get_type())?;
         ctx.push(Instruction::Copy {
@@ -622,7 +699,7 @@ impl<'a> Tacky {
             cond: dst1,
             target: jump_label.clone(),
         });
-        let src2 = self.parse_expression(right, ctx)?;
+        let src2 = self.parse_expression_and_convert(right, ctx)?;
         // move src2 into a tmp
         let dst2 = self.make_tacky_variable(ctx, right.get_type())?;
 
@@ -654,7 +731,7 @@ impl<'a> Tacky {
             dst: result.clone(),
         });
         ctx.push(Instruction::Label(end_label));
-        Ok(result)
+        Ok(ExprResult::PlainOperand(result))
     }
 
     fn parse_if_then(
@@ -664,7 +741,7 @@ impl<'a> Tacky {
         ctx: &mut TackyCtx,
     ) -> Result<(), TackyError> {
         let label = self.make_label("end_label");
-        let cond = self.parse_expression(condition, ctx)?;
+        let cond = self.parse_expression_and_convert(condition, ctx)?;
         // move cond into a tmp
         let dst1 = self.make_tacky_variable(ctx, condition.get_type())?;
         ctx.push(Instruction::Copy {
@@ -698,7 +775,7 @@ impl<'a> Tacky {
     ) -> Result<(), TackyError> {
         let else_label = self.make_label("else_label");
         let end_label = self.make_label("end_label");
-        let cond = self.parse_expression(condition, ctx)?;
+        let cond = self.parse_expression_and_convert(condition, ctx)?;
         // move cond into a tmp
         let dst1 = self.make_tacky_variable(ctx, condition.get_type())?;
         ctx.push(Instruction::Copy {
@@ -724,21 +801,33 @@ impl<'a> Tacky {
         left: &TypedExpression,
         right: &TypedExpression,
         ctx: &mut TackyCtx,
-    ) -> Result<Val, TackyError> {
+    ) -> Result<ExprResult, TackyError> {
         use ParserBinaryOp as PBO;
         let src1 = self.parse_expression(left, ctx)?;
-        // if src1 is a temporary, it's an invalid lvalue.
-        // We should only allow variables. To do so, we check if we've emitted
-        // the identifier as a temporary.
-        let Val::Var(ref ident) = src1 else {
-            return Err(TackyError::InvalidLhsOfAssignment);
-        };
-        if self.created_label(ident) {
-            return Err(TackyError::InvalidLhsOfAssignment);
-        };
+        /*
+        let lhs = self.parse_expression(lhs, ctx)?;
+        let rhs = self.parse_expression_and_convert(rhs, ctx)?;
+        // if the lhs is a regular operand (a string variable, basically)
+        // then we're good to go, copy as normal. If it's actually a
+        // DereferencedPointer, then we Store into that ptr's address
+        match &lhs {
+            ExprResult::PlainOperand(val) => {
+                ctx.push(Instruction::Copy {
+                    src: rhs,
+                    dst: val.clone(),
+                });
+                Ok(lhs)
+            }
+            ExprResult::DereferencedPointer(ptr) => {
+                ctx.push(Instruction::Store {
+                    src: rhs.clone(),
+                    dst_ptr: ptr.clone(),
+                });
+                Ok(ExprResult::PlainOperand(rhs))
+            }
+        }
+        */
 
-        let src2 = self.parse_expression(right, ctx)?;
-        let dst = self.make_tacky_variable(ctx, left.get_type())?;
         let binop = match op {
             PBO::AddAssign => BinaryOp::Add,
             PBO::MinusAssign => BinaryOp::Subtract,
@@ -752,18 +841,61 @@ impl<'a> Tacky {
             PBO::ShiftRightAssign => BinaryOp::ShiftRight,
             _ => unreachable!("Unexpected compound binary operator"),
         };
+        let src2 = self.parse_expression_and_convert(right, ctx)?;
 
-        ctx.push(Instruction::Binary {
-            op: binop,
-            src1: src1.clone(),
-            src2,
-            dst: dst.clone(),
-        });
-        ctx.push(Instruction::Copy {
-            src: dst.clone(),
-            dst: src1.clone(),
-        });
-        Ok(dst)
+        // special handling time: What if LHS is a dereferenced pointer?
+        // Then we need to load into a temporary, use that temp for the binop,
+        // then store back into the original pointer.
+        // Otherwise, we just ensure we have a valid identifier to work with
+        // and emit a standard copy.
+        match src1 {
+            ExprResult::PlainOperand(v) => {
+                // if src1 is a temporary, it's an invalid lvalue.
+                // We should only allow variables. To do so, we check if we've emitted
+                // the identifier as a temporary.
+                let Val::Var(ref ident) = v else {
+                    return Err(TackyError::InvalidLhsOfAssignment);
+                };
+                if self.created_label(ident) {
+                    return Err(TackyError::InvalidLhsOfAssignment);
+                };
+                let dst = self.make_tacky_variable(ctx, left.get_type())?;
+                ctx.push(Instruction::Binary {
+                    op: binop,
+                    src1: v.clone(),
+                    src2,
+                    dst: dst.clone(),
+                });
+                ctx.push(Instruction::Copy {
+                    src: dst.clone(),
+                    dst: v,
+                });
+                Ok(ExprResult::PlainOperand(dst))
+            }
+            ExprResult::DereferencedPointer(ptr) => {
+                // load pointer object into a temporary
+                let dst = self.make_tacky_variable(ctx, left.get_type())?;
+                ctx.push(Instruction::Load {
+                    src_ptr: ptr.clone(),
+                    dst: dst.clone(),
+                });
+
+                // operate on the temporary and RHS
+                let dst2 = self.make_tacky_variable(ctx, left.get_type())?;
+                ctx.push(Instruction::Binary {
+                    op: binop,
+                    src1: dst.clone(),
+                    src2,
+                    dst: dst2.clone(),
+                });
+                // Write back into address of the object, original ptr
+                ctx.push(Instruction::Store {
+                    src: dst2.clone(),
+                    dst_ptr: ptr,
+                });
+                Ok(ExprResult::PlainOperand(dst2))
+            }
+        }
     }
 
     fn parse_eager_binary_expression(
@@ -773,10 +905,10 @@ impl<'a> Tacky {
         right: &TypedExpression,
         ctx: &mut TackyCtx,
         ty: CType,
-    ) -> Result<Val, TackyError> {
+    ) -> Result<ExprResult, TackyError> {
         use ParserBinaryOp as PBO;
-        let src1 = self.parse_expression(left, ctx)?;
-        let src2 = self.parse_expression(right, ctx)?;
+        let src1 = self.parse_expression_and_convert(left, ctx)?;
+        let src2 = self.parse_expression_and_convert(right, ctx)?;
         let dst = self.make_tacky_variable(ctx, ty)?;
         let binop = match op {
             PBO::Add => BinaryOp::Add,
@@ -819,7 +951,7 @@ impl<'a> Tacky {
             src2,
             dst: dst.clone(),
         });
-        Ok(dst)
+        Ok(ExprResult::PlainOperand(dst))
     }
 
     fn parse_statement(
@@ -829,7 +961,7 @@ impl<'a> Tacky {
     ) -> Result<(), TackyError> {
         match statement {
             TypedStatement::Return(body) => {
-                let val = self.parse_expression(body, ctx)?;
+                let val = self.parse_expression_and_convert(body, ctx)?;
                 ctx.push(Instruction::Ret(val.clone()));
                 Ok(())
             }
@@ -880,7 +1012,7 @@ impl<'a> Tacky {
                 ctx.push(Instruction::Label(label.into()));
                 self.parse_statement(body.as_ref(), ctx)?;
                 ctx.push(Instruction::Label(create_continue_label(&label)));
-                let v = self.parse_expression(condition, ctx)?;
+                let v = self.parse_expression_and_convert(condition, ctx)?;
                 ctx.push(Instruction::JumpIfNotZero {
                     cond: v,
                     target: label.into(),
@@ -903,7 +1035,7 @@ impl<'a> Tacky {
                 let cont_label = create_continue_label(&label);
                 let break_label = create_break_label(&label);
                 ctx.push(Instruction::Label(cont_label.clone()));
-                let v = self.parse_expression(condition, ctx)?;
+                let v = self.parse_expression_and_convert(condition, ctx)?;
                 ctx.push(Instruction::JumpIfZero {
                     cond: v,
                     target: break_label.clone(),
@@ -940,7 +1072,7 @@ impl<'a> Tacky {
                 };
                 ctx.push(Instruction::Label(label.clone()));
                 if let Some(expr) = condition {
-                    let v = self.parse_expression(expr, ctx)?;
+                    let v = self.parse_expression_and_convert(expr, ctx)?;
                     ctx.push(Instruction::JumpIfZero {
                         cond: v,
                         target: create_break_label(&label),
@@ -1002,7 +1134,7 @@ impl<'a> Tacky {
         } = decl
         {
             // emit instructions for rhs, then copy into lhs
-            let result = self.parse_expression(init, ctx)?;
+            let result = self.parse_expression_and_convert(init, ctx)?;
             ctx.push(Instruction::Copy {
                 src: result,
                 dst: Val::Var(name.clone()),
@@ -1907,6 +2039,101 @@ mod tests {
         let tacky = Tacky::new(ast);
         let assembly = tacky.into_ast(&mut main_symbol_table());
         assert!(assembly.is_err());
+    }
+
+    #[test]
+    fn compound_assignment_through_dereferenced_pointer_stores_to_memory() {
+        // int main(void) {
+        //     int a = 10;
+        //     int *p = &a;
+        //     *p += 5;
+        //     return a;
+        // }
+        let typed_ptr_int = CType::Pointer(Box::new(CType::Int));
+        let ast = TypedAST::Program(vec![TypedDeclaration::FunDecl(TypedFunctionDeclaration {
+            name: "main".into(),
+            block: Some(crate::ast::Block(vec![
+                TypedBlockItem::Decl(TypedDeclaration::VarDecl(TypedVariableDeclaration {
+                    name: "a".into(),
+                    init: Some(typed_int(TypedExprKind::Constant(Const::Int(10)))),
+                    storage_class: None,
+                    vtype: CType::Int,
+                })),
+                TypedBlockItem::Decl(TypedDeclaration::VarDecl(TypedVariableDeclaration {
+                    name: "p".into(),
+                    init: Some(TypedExpression {
+                        ty: typed_ptr_int.clone(),
+                        kind: Box::new(TypedExprKind::AddressOf(Box::new(typed_int(
+                            TypedExprKind::Var("a".into()),
+                        )))),
+                    }),
+                    storage_class: None,
+                    vtype: typed_ptr_int.clone(),
+                })),
+                TypedBlockItem::Stmt(TypedStatement::Expr(typed_int(TypedExprKind::Binary(
+                    ParserBinaryOp::AddAssign,
+                    Box::new(TypedExpression {
+                        ty: CType::Int,
+                        kind: Box::new(TypedExprKind::Dereference(Box::new(TypedExpression {
+                            ty: typed_ptr_int.clone(),
+                            kind: Box::new(TypedExprKind::Var("p".into())),
+                        }))),
+                    }),
+                    Box::new(typed_int(TypedExprKind::Constant(Const::Int(5)))),
+                )))),
+                TypedBlockItem::Stmt(TypedStatement::Return(typed_int(TypedExprKind::Var(
+                    "a".into(),
+                )))),
+            ])),
+            params: vec![],
+            storage_class: None,
+            ftype: CType::FunType {
+                params: vec![],
+                ret: Box::new(CType::Int),
+            },
+        })]);
+
+        let expected = AST::Program(vec![TopLevel::Function {
+            name: "main".into(),
+            params: vec![],
+            global: true,
+            instructions: vec![
+                Instruction::Copy {
+                    src: Val::Constant(Const::Int(10)),
+                    dst: Val::Var("a".into()),
+                },
+                Instruction::GetAddress {
+                    src: Val::Var("a".into()),
+                    dst: Val::Var("tmp.0".into()),
+                },
+                Instruction::Copy {
+                    src: Val::Var("tmp.0".into()),
+                    dst: Val::Var("p".into()),
+                },
+                Instruction::Load {
+                    src_ptr: Val::Var("p".into()),
+                    dst: Val::Var("tmp.1".into()),
+                },
+                Instruction::Binary {
+                    op: BinaryOp::Add,
+                    src1: Val::Var("tmp.1".into()),
+                    src2: Val::Constant(Const::Int(5)),
+                    dst: Val::Var("tmp.2".into()),
+                },
+                Instruction::Store {
+                    src: Val::Var("tmp.2".into()),
+                    dst_ptr: Val::Var("p".into()),
+                },
+                Instruction::Ret(Val::Var("a".into())),
+                Instruction::Ret(Val::Constant(Const::Int(0))),
+            ],
+        }]);
+
+        let tacky = Tacky::new(ast);
+        let assembly = tacky.into_ast(&mut main_symbol_table());
+        assert!(assembly.is_ok(), "expected Ok, got {assembly:?}");
+        let assembly = assembly.unwrap();
+        assert_eq!(assembly, expected);
     }
 
     #[test]

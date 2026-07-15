@@ -78,7 +78,7 @@ impl CType {
             CType::Int | CType::UInt => 32,
             CType::Long | CType::ULong | CType::Double => 64,
             CType::FunType { .. } => todo!(), // not sure what goes here.
-            CType::Pointer(_) => todo!(),
+            CType::Pointer(_) => 64,          // generally treat as unsigned long
         }
     }
 
