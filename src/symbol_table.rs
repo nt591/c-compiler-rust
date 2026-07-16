@@ -52,14 +52,15 @@ pub fn backend_symbol_table_from_symbol_table(symtable: SymbolTable) -> BackendS
                 is_static: false,
                 is_constant: false,
             },
-            (CType::Long | CType::ULong, IdentifierAttrs::StaticAttr { .. }) => {
-                BackendSymTableEntry::ObjEntry {
-                    ty: AssemblyType::Quadword,
-                    is_static: true,
-                    is_constant: false,
-                }
-            }
-            (CType::Long | CType::ULong, _) => BackendSymTableEntry::ObjEntry {
+            (
+                CType::Long | CType::ULong | CType::Pointer(_),
+                IdentifierAttrs::StaticAttr { .. },
+            ) => BackendSymTableEntry::ObjEntry {
+                ty: AssemblyType::Quadword,
+                is_static: true,
+                is_constant: false,
+            },
+            (CType::Long | CType::ULong | CType::Pointer(_), _) => BackendSymTableEntry::ObjEntry {
                 ty: AssemblyType::Quadword,
                 is_static: false,
                 is_constant: false,
@@ -77,7 +78,6 @@ pub fn backend_symbol_table_from_symbol_table(symtable: SymbolTable) -> BackendS
             },
             (CType::FunType { .. }, IdentifierAttrs::StaticAttr { .. })
             | (CType::FunType { .. }, IdentifierAttrs::LocalAttr) => unreachable!(),
-            (CType::Pointer(_), _) => todo!(),
         };
         new_table.insert(name, entry);
     }

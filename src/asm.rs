@@ -106,6 +106,8 @@ pub enum Instruction {
     Cvttsd2si(AssemblyType, Operand, Operand), // src, dst
     // convert scalar double to signed int
     Cvtsi2sd(AssemblyType, Operand, Operand),
+    // load effective address
+    Lea(Operand, Operand),
 }
 
 // implement clone so our mapping of Tacky Var
@@ -115,8 +117,8 @@ pub enum Operand {
     Imm(usize),
     Reg(Register),
     Pseudo(String),
-    Stack(i32),
-    Data(String), // RIP-relative access to .data and .bss
+    Memory(Register, i32), // represents an address relative to some base register
+    Data(String),          // RIP-relative access to .data and .bss
 }
 
 #[allow(unused)]
@@ -132,6 +134,7 @@ pub enum Register {
     R10,
     R11,
     SP,
+    BP, // base pointer, which we can use for loads/stores
     // SSE registers for floating point
     XMM0,
     XMM1,
@@ -144,6 +147,16 @@ pub enum Register {
     // scratch registers for SSE
     XMM14,
     XMM15,
+}
+
+impl Register {
+    pub fn is_xmm(&self) -> bool {
+        use Register::*;
+        matches!(
+            self,
+            XMM0 | XMM1 | XMM2 | XMM3 | XMM4 | XMM5 | XMM6 | XMM7 | XMM14 | XMM15
+        )
+    }
 }
 
 // used for massaging func params for calling conv
@@ -352,7 +365,11 @@ impl Asm {
                 .try_into()
                 .expect("Overflow when mapping function params to stack offsets");
             let offset: i32 = 16 + (8 * idx);
-            base_insns.push(Instruction::Mov(assembly_type, Operand::Stack(offset), op));
+            base_insns.push(Instruction::Mov(
+                assembly_type,
+                Operand::Memory(Register::BP, offset),
+                op,
+            ));
         }
 
         let instructions = Self::parse_instructions(&instructions, generator, symbol_table);
@@ -928,7 +945,42 @@ impl Asm {
                         ]
                     }
                 }
-                TIns::GetAddress { .. } | TIns::Load { .. } | TIns::Store { .. } => todo!(),
+                TIns::Load { src_ptr, dst } => {
+                    // mov address of src into register, then move from 0(%rax) aka take what's at
+                    // that address and move into dst
+                    vec![
+                        Instruction::Mov(
+                            AssemblyType::Quadword,
+                            generator.val_to_operand(src_ptr),
+                            Operand::Reg(Register::AX),
+                        ),
+                        Instruction::Mov(
+                            get_assembly_type_from_val(dst, symbol_table),
+                            Operand::Memory(Register::AX, 0),
+                            generator.val_to_operand(dst),
+                        ),
+                    ]
+                }
+                TIns::Store { src, dst_ptr } => {
+                    // mov the address in dst into tmp register, mov src into the address found at
+                    // AX
+                    vec![
+                        Instruction::Mov(
+                            AssemblyType::Quadword,
+                            generator.val_to_operand(dst_ptr),
+                            Operand::Reg(Register::AX),
+                        ),
+                        Instruction::Mov(
+                            get_assembly_type_from_val(src, symbol_table),
+                            generator.val_to_operand(src),
+                            Operand::Memory(Register::AX, 0),
+                        ),
+                    ]
+                }
+                TIns::GetAddress { src, dst } => vec![Instruction::Lea(
+                    generator.val_to_operand(src),
+                    generator.val_to_operand(dst),
+                )],
             })
             .collect::<Vec<_>>()
     }
@@ -1282,6 +1334,10 @@ impl Asm {
                 *src = Self::replace_pseudo_in_op(src, generator, symbol_table);
                 *dst = Self::replace_pseudo_in_op(dst, generator, symbol_table);
             }
+            Instruction::Lea(src, dst) => {
+                *src = Self::replace_pseudo_in_op(src, generator, symbol_table);
+                *dst = Self::replace_pseudo_in_op(dst, generator, symbol_table);
+            }
             _ => {}
         })
     }
@@ -1315,7 +1371,7 @@ impl Asm {
                     .or_insert_with(|| {
                         let next_offset = Self::next_aligned_offset(generator.stack_offset, ty);
                         generator.stack_offset = next_offset;
-                        Operand::Stack(next_offset)
+                        Operand::Memory(Register::BP, next_offset)
                     })
                     .clone()
             }
@@ -1360,10 +1416,10 @@ impl Asm {
         let mut v = Vec::with_capacity(old_ins.len());
         for ins in old_ins.into_iter() {
             match ins {
-                Instruction::Mov(at, src @ Operand::Stack(_), dst @ Operand::Stack(_))
+                Instruction::Mov(at, src @ Operand::Memory(_, _), dst @ Operand::Memory(_, _))
                 | Instruction::Mov(at, src @ Operand::Data(_), dst @ Operand::Data(_))
-                | Instruction::Mov(at, src @ Operand::Stack(_), dst @ Operand::Data(_))
-                | Instruction::Mov(at, src @ Operand::Data(_), dst @ Operand::Stack(_)) => {
+                | Instruction::Mov(at, src @ Operand::Memory(_, _), dst @ Operand::Data(_))
+                | Instruction::Mov(at, src @ Operand::Data(_), dst @ Operand::Memory(_, _)) => {
                     // movl can't move from two memory addrs, so
                     // use a temporary variable along the way in %r10d or xmm14
                     if at == AssemblyType::Double {
@@ -1393,7 +1449,7 @@ impl Asm {
                 | Instruction::Mov(
                     AssemblyType::Quadword,
                     src @ Operand::Imm(i),
-                    dst @ Operand::Stack(_),
+                    dst @ Operand::Memory(_, _),
                 ) if i > i32::MAX as usize => {
                     // movq can't move big values into memory but needs an intermediate register
                     v.extend(vec![
@@ -1403,7 +1459,7 @@ impl Asm {
                 }
                 Instruction::Movsx(_, Operand::Imm(_))
                 | Instruction::Movsx(_, Operand::Pseudo(_)) => unreachable!(),
-                Instruction::Movsx(src @ Operand::Imm(_), dst @ Operand::Stack(_))
+                Instruction::Movsx(src @ Operand::Imm(_), dst @ Operand::Memory(_, _))
                 | Instruction::Movsx(src @ Operand::Imm(_), dst @ Operand::Data(_)) => {
                     // need to use two registers here, R10 and R11
                     // MOV src as a longword into R10, sign extend move into R11,
@@ -1424,7 +1480,7 @@ impl Asm {
                         Instruction::Movsx(Operand::Reg(Register::R10), dst),
                     ])
                 }
-                Instruction::Movsx(src, dst @ Operand::Stack(_))
+                Instruction::Movsx(src, dst @ Operand::Memory(_, _))
                 | Instruction::Movsx(src, dst @ Operand::Data(_)) => {
                     // MOVSX can't use a memory address as a destiation, so we movsx into a
                     // register and then MOV into the address.
@@ -1437,7 +1493,10 @@ impl Asm {
                     // if we're moving and zero extending into a register, just a movl is sufficient
                     v.push(Instruction::Mov(AssemblyType::Longword, src, dst))
                 }
-                Instruction::MovZeroExtend(src, dst @ (Operand::Data(_) | Operand::Stack(_))) => {
+                Instruction::MovZeroExtend(
+                    src,
+                    dst @ (Operand::Data(_) | Operand::Memory(_, _)),
+                ) => {
                     // if we're zero extending + moving into a memory address, we first movl into
                     // a register, THEN movq into the actual destination.
                     v.extend(vec![
@@ -1449,7 +1508,7 @@ impl Asm {
                     BinaryOp::Mult,
                     AssemblyType::Quadword,
                     src @ Operand::Imm(i),
-                    dst @ Operand::Stack(_),
+                    dst @ Operand::Memory(_, _),
                 )
                 | Instruction::Binary(
                     BinaryOp::Mult,
@@ -1485,7 +1544,7 @@ impl Asm {
                     | BinaryOp::Xor),
                     ty @ AssemblyType::Double,
                     src,
-                    dst @ (Operand::Stack(_) | Operand::Data(_)),
+                    dst @ (Operand::Memory(_, _) | Operand::Data(_)),
                 ) => {
                     // addsd, subsd, mulsd, divsd, xorsd require a register in dest. We'll shuffle into,
                     // XMM15
@@ -1495,7 +1554,7 @@ impl Asm {
                         Instruction::Mov(ty, Operand::Reg(Register::XMM15), dst),
                     ])
                 }
-                Instruction::Binary(BinaryOp::Mult, at, src, dst @ Operand::Stack(_))
+                Instruction::Binary(BinaryOp::Mult, at, src, dst @ Operand::Memory(_, _))
                 | Instruction::Binary(BinaryOp::Mult, at, src, dst @ Operand::Data(_)) => {
                     // imul cannot take an addr as a destination, regardless of src.
                     // Rewrite via register %r11d
@@ -1536,20 +1595,29 @@ impl Asm {
                 Instruction::Binary(
                     binop,
                     at,
-                    src @ Operand::Stack(_),
-                    dst @ Operand::Stack(_),
+                    src @ Operand::Memory(_, _),
+                    dst @ Operand::Memory(_, _),
                 )
                 | Instruction::Binary(binop, at, src @ Operand::Data(_), dst @ Operand::Data(_))
-                | Instruction::Binary(binop, at, src @ Operand::Stack(_), dst @ Operand::Data(_))
-                | Instruction::Binary(binop, at, src @ Operand::Data(_), dst @ Operand::Stack(_))
-                    if matches!(
-                        binop,
-                        BinaryOp::Add
-                            | BinaryOp::Sub
-                            | BinaryOp::BitwiseAnd
-                            | BinaryOp::Xor
-                            | BinaryOp::BitwiseOr
-                    ) =>
+                | Instruction::Binary(
+                    binop,
+                    at,
+                    src @ Operand::Memory(_, _),
+                    dst @ Operand::Data(_),
+                )
+                | Instruction::Binary(
+                    binop,
+                    at,
+                    src @ Operand::Data(_),
+                    dst @ Operand::Memory(_, _),
+                ) if matches!(
+                    binop,
+                    BinaryOp::Add
+                        | BinaryOp::Sub
+                        | BinaryOp::BitwiseAnd
+                        | BinaryOp::Xor
+                        | BinaryOp::BitwiseOr
+                ) =>
                 {
                     // some instructions can't operate from two memory addrs, so
                     // use a temporary variable along the way in %r10d
@@ -1564,7 +1632,7 @@ impl Asm {
                 Instruction::Binary(
                     binop @ (BinaryOp::ShiftRight | BinaryOp::ShiftLeft),
                     at,
-                    src @ (Operand::Stack(_) | Operand::Data(_)),
+                    src @ (Operand::Memory(_, _) | Operand::Data(_)),
                     dst,
                 ) => {
                     // shift left/right cannot use a memory address as a source.
@@ -1591,7 +1659,7 @@ impl Asm {
                 Instruction::Cmp(
                     at @ AssemblyType::Double,
                     src,
-                    dst @ (Operand::Stack(_) | Operand::Data(_)),
+                    dst @ (Operand::Memory(_, _) | Operand::Data(_)),
                 ) => {
                     // comisd requires dst is in a register, so we shuffle.
                     v.extend(vec![
@@ -1599,10 +1667,10 @@ impl Asm {
                         Instruction::Cmp(at, src, Operand::Reg(Register::XMM15)),
                     ])
                 }
-                Instruction::Cmp(at, src @ Operand::Stack(_), dst @ Operand::Stack(_))
+                Instruction::Cmp(at, src @ Operand::Memory(_, _), dst @ Operand::Memory(_, _))
                 | Instruction::Cmp(at, src @ Operand::Data(_), dst @ Operand::Data(_))
-                | Instruction::Cmp(at, src @ Operand::Stack(_), dst @ Operand::Data(_))
-                | Instruction::Cmp(at, src @ Operand::Data(_), dst @ Operand::Stack(_)) => {
+                | Instruction::Cmp(at, src @ Operand::Memory(_, _), dst @ Operand::Data(_))
+                | Instruction::Cmp(at, src @ Operand::Data(_), dst @ Operand::Memory(_, _)) => {
                     // cmpl can't move from two memory addrs, so
                     // use a temporary variable along the way in %r10d
                     v.push(Instruction::Mov(at, src, Operand::Reg(Register::R10)));
@@ -1654,7 +1722,11 @@ impl Asm {
                         Instruction::Push(Operand::Reg(Register::R10)),
                     ])
                 }
-                Instruction::Cvttsd2si(ty, src, dst @ (Operand::Stack(_) | Operand::Data(_))) => {
+                Instruction::Cvttsd2si(
+                    ty,
+                    src,
+                    dst @ (Operand::Memory(_, _) | Operand::Data(_)),
+                ) => {
                     // destination must be a register
                     v.extend(vec![
                         Instruction::Cvttsd2si(ty, src, Operand::Reg(Register::R11)),
@@ -1694,6 +1766,26 @@ impl Asm {
                         instructions.push(Instruction::Mov(AssemblyType::Double, convert_dst, dst));
                     }
                     v.extend(instructions)
+                }
+                Instruction::Lea(src, dst) if !matches!(dst, Operand::Reg(_)) => {
+                    // lea dst must be a register, so we'll move to r10
+                    v.extend(vec![
+                        Instruction::Lea(src, Operand::Reg(Register::R10)),
+                        Instruction::Mov(AssemblyType::Quadword, Operand::Reg(Register::R10), dst),
+                    ])
+                }
+                Instruction::Push(r @ Operand::Reg(reg)) if reg.is_xmm() => {
+                    // pushing an xmm register is disallowed, so instead subtract space on stack
+                    // and mov directly
+                    v.extend(vec![
+                        Instruction::Binary(
+                            BinaryOp::Sub,
+                            AssemblyType::Quadword,
+                            Operand::Imm(8),
+                            Operand::Reg(Register::SP),
+                        ),
+                        Instruction::Mov(AssemblyType::Double, r, Operand::Memory(Register::SP, 0)),
+                    ])
                 }
                 i => v.push(i),
             }
@@ -1750,7 +1842,7 @@ fn get_assembly_type_from_var_name(var: &str, symbol_table: &SymbolTable) -> Ass
         CType::Long | CType::ULong => AssemblyType::Quadword,
         CType::Double => AssemblyType::Double,
         CType::FunType { .. } => unreachable!(),
-        CType::Pointer(_) => todo!(),
+        CType::Pointer(_) => AssemblyType::Quadword,
     }
 }
 
@@ -1930,12 +2022,16 @@ mod tests {
                 Instruction::Mov(
                     AssemblyType::Longword,
                     Operand::Imm(100),
-                    Operand::Stack(-4),
+                    Operand::Memory(Register::BP, -4),
                 ),
-                Instruction::Unary(UnaryOp::Neg, AssemblyType::Longword, Operand::Stack(-4)),
+                Instruction::Unary(
+                    UnaryOp::Neg,
+                    AssemblyType::Longword,
+                    Operand::Memory(Register::BP, -4),
+                ),
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-4),
+                    Operand::Memory(Register::BP, -4),
                     Operand::Reg(Register::AX),
                 ),
                 Instruction::Ret,
@@ -1985,34 +2081,46 @@ mod tests {
                 Instruction::Mov(
                     AssemblyType::Longword,
                     Operand::Imm(100),
-                    Operand::Stack(-4),
+                    Operand::Memory(Register::BP, -4),
                 ),
-                Instruction::Unary(UnaryOp::Neg, AssemblyType::Longword, Operand::Stack(-4)),
+                Instruction::Unary(
+                    UnaryOp::Neg,
+                    AssemblyType::Longword,
+                    Operand::Memory(Register::BP, -4),
+                ),
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-4),
+                    Operand::Memory(Register::BP, -4),
                     Operand::Reg(Register::R10),
                 ),
                 Instruction::Mov(
                     AssemblyType::Longword,
                     Operand::Reg(Register::R10),
-                    Operand::Stack(-8),
+                    Operand::Memory(Register::BP, -8),
                 ),
-                Instruction::Unary(UnaryOp::Not, AssemblyType::Longword, Operand::Stack(-8)),
+                Instruction::Unary(
+                    UnaryOp::Not,
+                    AssemblyType::Longword,
+                    Operand::Memory(Register::BP, -8),
+                ),
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-8),
+                    Operand::Memory(Register::BP, -8),
                     Operand::Reg(Register::R10),
                 ),
                 Instruction::Mov(
                     AssemblyType::Longword,
                     Operand::Reg(Register::R10),
-                    Operand::Stack(-12),
+                    Operand::Memory(Register::BP, -12),
                 ),
-                Instruction::Unary(UnaryOp::Neg, AssemblyType::Longword, Operand::Stack(-12)),
+                Instruction::Unary(
+                    UnaryOp::Neg,
+                    AssemblyType::Longword,
+                    Operand::Memory(Register::BP, -12),
+                ),
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-12),
+                    Operand::Memory(Register::BP, -12),
                     Operand::Reg(Register::AX),
                 ),
                 Instruction::Ret,
@@ -2068,10 +2176,14 @@ mod tests {
                     Operand::Reg(Register::SP),
                 ),
                 // tmp0 = 1 * 2
-                Instruction::Mov(AssemblyType::Longword, Operand::Imm(1), Operand::Stack(-4)),
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-4),
+                    Operand::Imm(1),
+                    Operand::Memory(Register::BP, -4),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Memory(Register::BP, -4),
                     Operand::Reg(Register::R11),
                 ),
                 Instruction::Binary(
@@ -2083,15 +2195,19 @@ mod tests {
                 Instruction::Mov(
                     AssemblyType::Longword,
                     Operand::Reg(Register::R11),
-                    Operand::Stack(-4),
+                    Operand::Memory(Register::BP, -4),
                 ),
                 // tmp1 = 4 + 5
-                Instruction::Mov(AssemblyType::Longword, Operand::Imm(4), Operand::Stack(-8)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Imm(4),
+                    Operand::Memory(Register::BP, -8),
+                ),
                 Instruction::Binary(
                     BinaryOp::Add,
                     AssemblyType::Longword,
                     Operand::Imm(5),
-                    Operand::Stack(-8),
+                    Operand::Memory(Register::BP, -8),
                 ),
                 // tmp2 = 3 % tmp1
                 Instruction::Mov(
@@ -2100,29 +2216,29 @@ mod tests {
                     Operand::Reg(Register::AX),
                 ),
                 Instruction::Cdq(AssemblyType::Longword),
-                Instruction::Idiv(AssemblyType::Longword, Operand::Stack(-8)),
+                Instruction::Idiv(AssemblyType::Longword, Operand::Memory(Register::BP, -8)),
                 Instruction::Mov(
                     AssemblyType::Longword,
                     Operand::Reg(Register::DX),
-                    Operand::Stack(-12),
+                    Operand::Memory(Register::BP, -12),
                 ),
                 // tmp3 = tmp0 / tmp2
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-4),
+                    Operand::Memory(Register::BP, -4),
                     Operand::Reg(Register::AX),
                 ),
                 Instruction::Cdq(AssemblyType::Longword),
-                Instruction::Idiv(AssemblyType::Longword, Operand::Stack(-12)),
+                Instruction::Idiv(AssemblyType::Longword, Operand::Memory(Register::BP, -12)),
                 Instruction::Mov(
                     AssemblyType::Longword,
                     Operand::Reg(Register::AX),
-                    Operand::Stack(-16),
+                    Operand::Memory(Register::BP, -16),
                 ),
                 // return
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-16),
+                    Operand::Memory(Register::BP, -16),
                     Operand::Reg(Register::AX),
                 ),
                 Instruction::Ret,
@@ -2186,10 +2302,14 @@ mod tests {
                     Operand::Reg(Register::SP),
                 ),
                 // tmp0 = 5 * 4 = 20
-                Instruction::Mov(AssemblyType::Longword, Operand::Imm(5), Operand::Stack(-4)),
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-4),
+                    Operand::Imm(5),
+                    Operand::Memory(Register::BP, -4),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Memory(Register::BP, -4),
                     Operand::Reg(Register::R11),
                 ),
                 Instruction::Binary(
@@ -2201,12 +2321,12 @@ mod tests {
                 Instruction::Mov(
                     AssemblyType::Longword,
                     Operand::Reg(Register::R11),
-                    Operand::Stack(-4),
+                    Operand::Memory(Register::BP, -4),
                 ),
                 // tmp1 = tmp0 / 2 = 10
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-4),
+                    Operand::Memory(Register::BP, -4),
                     Operand::Reg(Register::AX),
                 ),
                 Instruction::Cdq(AssemblyType::Longword),
@@ -2219,15 +2339,19 @@ mod tests {
                 Instruction::Mov(
                     AssemblyType::Longword,
                     Operand::Reg(Register::AX),
-                    Operand::Stack(-8),
+                    Operand::Memory(Register::BP, -8),
                 ),
                 // tmp2 = 2 + 1  = 3
-                Instruction::Mov(AssemblyType::Longword, Operand::Imm(2), Operand::Stack(-12)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Imm(2),
+                    Operand::Memory(Register::BP, -12),
+                ),
                 Instruction::Binary(
                     BinaryOp::Add,
                     AssemblyType::Longword,
                     Operand::Imm(1),
-                    Operand::Stack(-12),
+                    Operand::Memory(Register::BP, -12),
                 ),
                 // tmp3 = 3 % tmp2 = 0
                 Instruction::Mov(
@@ -2236,38 +2360,38 @@ mod tests {
                     Operand::Reg(Register::AX),
                 ),
                 Instruction::Cdq(AssemblyType::Longword),
-                Instruction::Idiv(AssemblyType::Longword, Operand::Stack(-12)),
+                Instruction::Idiv(AssemblyType::Longword, Operand::Memory(Register::BP, -12)),
                 Instruction::Mov(
                     AssemblyType::Longword,
                     Operand::Reg(Register::DX),
-                    Operand::Stack(-16),
+                    Operand::Memory(Register::BP, -16),
                 ),
                 // tmp3 = tmp1 - tmp3 = 10
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-8),
+                    Operand::Memory(Register::BP, -8),
                     Operand::Reg(Register::R10),
                 ),
                 Instruction::Mov(
                     AssemblyType::Longword,
                     Operand::Reg(Register::R10),
-                    Operand::Stack(-20),
+                    Operand::Memory(Register::BP, -20),
                 ),
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-16),
+                    Operand::Memory(Register::BP, -16),
                     Operand::Reg(Register::R10),
                 ),
                 Instruction::Binary(
                     BinaryOp::Sub,
                     AssemblyType::Longword,
                     Operand::Reg(Register::R10),
-                    Operand::Stack(-20),
+                    Operand::Memory(Register::BP, -20),
                 ),
                 // return
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-20),
+                    Operand::Memory(Register::BP, -20),
                     Operand::Reg(Register::AX),
                 ),
                 Instruction::Ret,
@@ -2326,10 +2450,14 @@ mod tests {
                     Operand::Reg(Register::SP),
                 ),
                 // tmp0 = 5 * 4
-                Instruction::Mov(AssemblyType::Longword, Operand::Imm(5), Operand::Stack(-4)),
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-4),
+                    Operand::Imm(5),
+                    Operand::Memory(Register::BP, -4),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Memory(Register::BP, -4),
                     Operand::Reg(Register::R11),
                 ),
                 Instruction::Binary(
@@ -2341,59 +2469,63 @@ mod tests {
                 Instruction::Mov(
                     AssemblyType::Longword,
                     Operand::Reg(Register::R11),
-                    Operand::Stack(-4),
+                    Operand::Memory(Register::BP, -4),
                 ),
                 // tmp1 = 4 - 5
-                Instruction::Mov(AssemblyType::Longword, Operand::Imm(4), Operand::Stack(-8)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Imm(4),
+                    Operand::Memory(Register::BP, -8),
+                ),
                 Instruction::Binary(
                     BinaryOp::Sub,
                     AssemblyType::Longword,
                     Operand::Imm(5),
-                    Operand::Stack(-8),
+                    Operand::Memory(Register::BP, -8),
                 ),
                 // tmp2 = tmp1 & 6
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-8),
+                    Operand::Memory(Register::BP, -8),
                     Operand::Reg(Register::R10),
                 ),
                 Instruction::Mov(
                     AssemblyType::Longword,
                     Operand::Reg(Register::R10),
-                    Operand::Stack(-12),
+                    Operand::Memory(Register::BP, -12),
                 ),
                 Instruction::Binary(
                     BinaryOp::BitwiseAnd,
                     AssemblyType::Longword,
                     Operand::Imm(6),
-                    Operand::Stack(-12),
+                    Operand::Memory(Register::BP, -12),
                 ),
                 // tmp3 = tmp0 | tmp2
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-4),
+                    Operand::Memory(Register::BP, -4),
                     Operand::Reg(Register::R10),
                 ),
                 Instruction::Mov(
                     AssemblyType::Longword,
                     Operand::Reg(Register::R10),
-                    Operand::Stack(-16),
+                    Operand::Memory(Register::BP, -16),
                 ),
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-12),
+                    Operand::Memory(Register::BP, -12),
                     Operand::Reg(Register::R10),
                 ),
                 Instruction::Binary(
                     BinaryOp::BitwiseOr,
                     AssemblyType::Longword,
                     Operand::Reg(Register::R10),
-                    Operand::Stack(-16),
+                    Operand::Memory(Register::BP, -16),
                 ),
                 // return
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-16),
+                    Operand::Memory(Register::BP, -16),
                     Operand::Reg(Register::AX),
                 ),
                 Instruction::Ret,
@@ -2438,10 +2570,14 @@ mod tests {
                     Operand::Reg(Register::SP),
                 ),
                 // tmp0 = 5 * 4
-                Instruction::Mov(AssemblyType::Longword, Operand::Imm(5), Operand::Stack(-4)),
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-4),
+                    Operand::Imm(5),
+                    Operand::Memory(Register::BP, -4),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Memory(Register::BP, -4),
                     Operand::Reg(Register::R11),
                 ),
                 Instruction::Binary(
@@ -2453,30 +2589,30 @@ mod tests {
                 Instruction::Mov(
                     AssemblyType::Longword,
                     Operand::Reg(Register::R11),
-                    Operand::Stack(-4),
+                    Operand::Memory(Register::BP, -4),
                 ),
                 // tmp1 = tmp.0 << 2
                 // moves tmp.8 into tmp.1 via reg10
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-4),
+                    Operand::Memory(Register::BP, -4),
                     Operand::Reg(Register::R10),
                 ),
                 Instruction::Mov(
                     AssemblyType::Longword,
                     Operand::Reg(Register::R10),
-                    Operand::Stack(-8),
+                    Operand::Memory(Register::BP, -8),
                 ),
                 Instruction::Binary(
                     BinaryOp::ShiftLeft,
                     AssemblyType::Longword,
                     Operand::Imm(2),
-                    Operand::Stack(-8),
+                    Operand::Memory(Register::BP, -8),
                 ),
                 // return
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-8),
+                    Operand::Memory(Register::BP, -8),
                     Operand::Reg(Register::AX),
                 ),
                 Instruction::Ret,
@@ -2518,12 +2654,20 @@ mod tests {
                     Operand::Reg(Register::SP),
                 ),
                 // tmp0 = -5
-                Instruction::Mov(AssemblyType::Longword, Operand::Imm(5), Operand::Stack(-4)),
-                Instruction::Unary(UnaryOp::Neg, AssemblyType::Longword, Operand::Stack(-4)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Imm(5),
+                    Operand::Memory(Register::BP, -4),
+                ),
+                Instruction::Unary(
+                    UnaryOp::Neg,
+                    AssemblyType::Longword,
+                    Operand::Memory(Register::BP, -4),
+                ),
                 // tmp1 = tmp.0 >> 30
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-4),
+                    Operand::Memory(Register::BP, -4),
                     Operand::Reg(Register::AX),
                 ),
                 Instruction::Binary(
@@ -2535,12 +2679,12 @@ mod tests {
                 Instruction::Mov(
                     AssemblyType::Longword,
                     Operand::Reg(Register::AX),
-                    Operand::Stack(-8),
+                    Operand::Memory(Register::BP, -8),
                 ),
                 // return
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-8),
+                    Operand::Memory(Register::BP, -8),
                     Operand::Reg(Register::AX),
                 ),
                 Instruction::Ret,
@@ -2583,30 +2727,38 @@ mod tests {
                     Operand::Reg(Register::SP),
                 ),
                 // tmp0 = 1 + 2
-                Instruction::Mov(AssemblyType::Longword, Operand::Imm(1), Operand::Stack(-4)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Imm(1),
+                    Operand::Memory(Register::BP, -4),
+                ),
                 Instruction::Binary(
                     BinaryOp::Add,
                     AssemblyType::Longword,
                     Operand::Imm(2),
-                    Operand::Stack(-4),
+                    Operand::Memory(Register::BP, -4),
                 ),
                 // tmp1 = 5 << tmp.0
-                Instruction::Mov(AssemblyType::Longword, Operand::Imm(5), Operand::Stack(-8)),
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-4),
+                    Operand::Imm(5),
+                    Operand::Memory(Register::BP, -8),
+                ),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Memory(Register::BP, -4),
                     Operand::Reg(Register::CX),
                 ),
                 Instruction::Binary(
                     BinaryOp::ShiftLeft,
                     AssemblyType::Longword,
                     Operand::Reg(Register::CX),
-                    Operand::Stack(-8),
+                    Operand::Memory(Register::BP, -8),
                 ),
                 // return
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-8),
+                    Operand::Memory(Register::BP, -8),
                     Operand::Reg(Register::AX),
                 ),
                 Instruction::Ret,
@@ -2656,11 +2808,15 @@ mod tests {
                     Operand::Imm(0),
                     Operand::Reg(Register::R11),
                 ),
-                Instruction::Mov(AssemblyType::Longword, Operand::Imm(0), Operand::Stack(-4)),
-                Instruction::SetCC(CondCode::E, Operand::Stack(-4)),
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-4),
+                    Operand::Imm(0),
+                    Operand::Memory(Register::BP, -4),
+                ),
+                Instruction::SetCC(CondCode::E, Operand::Memory(Register::BP, -4)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Memory(Register::BP, -4),
                     Operand::Reg(Register::AX),
                 ),
                 Instruction::Ret,
@@ -2696,12 +2852,20 @@ mod tests {
                     Operand::Imm(16),
                     Operand::Reg(Register::SP),
                 ),
-                Instruction::Cmp(AssemblyType::Longword, Operand::Imm(2), Operand::Stack(-4)),
-                Instruction::Mov(AssemblyType::Longword, Operand::Imm(0), Operand::Stack(-8)),
-                Instruction::SetCC(CondCode::GE, Operand::Stack(-8)),
+                Instruction::Cmp(
+                    AssemblyType::Longword,
+                    Operand::Imm(2),
+                    Operand::Memory(Register::BP, -4),
+                ),
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-8),
+                    Operand::Imm(0),
+                    Operand::Memory(Register::BP, -8),
+                ),
+                Instruction::SetCC(CondCode::GE, Operand::Memory(Register::BP, -8)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Memory(Register::BP, -8),
                     Operand::Reg(Register::AX),
                 ),
                 Instruction::Ret,
@@ -2765,36 +2929,60 @@ mod tests {
                     Operand::Imm(16),
                     Operand::Reg(Register::SP),
                 ),
-                Instruction::Mov(AssemblyType::Longword, Operand::Imm(5), Operand::Stack(-4)),
-                Instruction::Cmp(AssemblyType::Longword, Operand::Imm(0), Operand::Stack(-4)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Imm(5),
+                    Operand::Memory(Register::BP, -4),
+                ),
+                Instruction::Cmp(
+                    AssemblyType::Longword,
+                    Operand::Imm(0),
+                    Operand::Memory(Register::BP, -4),
+                ),
                 Instruction::JmpCC(CondCode::E, "and_expr_false.0".into()),
-                Instruction::Mov(AssemblyType::Longword, Operand::Imm(1), Operand::Stack(-8)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Imm(1),
+                    Operand::Memory(Register::BP, -8),
+                ),
                 Instruction::Binary(
                     BinaryOp::Add,
                     AssemblyType::Longword,
                     Operand::Imm(2),
-                    Operand::Stack(-8),
+                    Operand::Memory(Register::BP, -8),
                 ),
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-8),
+                    Operand::Memory(Register::BP, -8),
                     Operand::Reg(Register::R10),
                 ),
                 Instruction::Mov(
                     AssemblyType::Longword,
                     Operand::Reg(Register::R10),
-                    Operand::Stack(-12),
+                    Operand::Memory(Register::BP, -12),
                 ),
-                Instruction::Cmp(AssemblyType::Longword, Operand::Imm(0), Operand::Stack(-12)),
+                Instruction::Cmp(
+                    AssemblyType::Longword,
+                    Operand::Imm(0),
+                    Operand::Memory(Register::BP, -12),
+                ),
                 Instruction::JmpCC(CondCode::E, "and_expr_false.0".into()),
-                Instruction::Mov(AssemblyType::Longword, Operand::Imm(1), Operand::Stack(-16)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Imm(1),
+                    Operand::Memory(Register::BP, -16),
+                ),
                 Instruction::Jmp("and_expr_end.1".into()),
                 Instruction::Label("and_expr_false.0".into()),
-                Instruction::Mov(AssemblyType::Longword, Operand::Imm(0), Operand::Stack(-16)),
+                Instruction::Mov(
+                    AssemblyType::Longword,
+                    Operand::Imm(0),
+                    Operand::Memory(Register::BP, -16),
+                ),
                 Instruction::Label("and_expr_end.1".into()),
                 Instruction::Mov(
                     AssemblyType::Longword,
-                    Operand::Stack(-16),
+                    Operand::Memory(Register::BP, -16),
                     Operand::Reg(Register::AX),
                 ),
                 Instruction::Ret,
@@ -2844,37 +3032,37 @@ mod tests {
                     Instruction::Mov(
                         AssemblyType::Longword,
                         Operand::Reg(Register::DI),
-                        Operand::Stack(-4),
+                        Operand::Memory(Register::BP, -4),
                     ),
                     Instruction::Mov(
                         AssemblyType::Longword,
                         Operand::Reg(Register::SI),
-                        Operand::Stack(-8),
+                        Operand::Memory(Register::BP, -8),
                     ),
                     Instruction::Mov(
                         AssemblyType::Longword,
-                        Operand::Stack(-4),
+                        Operand::Memory(Register::BP, -4),
                         Operand::Reg(Register::R10),
                     ),
                     Instruction::Mov(
                         AssemblyType::Longword,
                         Operand::Reg(Register::R10),
-                        Operand::Stack(-12),
+                        Operand::Memory(Register::BP, -12),
                     ),
                     Instruction::Mov(
                         AssemblyType::Longword,
-                        Operand::Stack(-8),
+                        Operand::Memory(Register::BP, -8),
                         Operand::Reg(Register::R10),
                     ),
                     Instruction::Binary(
                         BinaryOp::Add,
                         AssemblyType::Longword,
                         Operand::Reg(Register::R10),
-                        Operand::Stack(-12),
+                        Operand::Memory(Register::BP, -12),
                     ),
                     Instruction::Mov(
                         AssemblyType::Longword,
-                        Operand::Stack(-12),
+                        Operand::Memory(Register::BP, -12),
                         Operand::Reg(Register::AX),
                     ),
                     Instruction::Ret,
@@ -2910,27 +3098,27 @@ mod tests {
                     Instruction::Mov(
                         AssemblyType::Longword,
                         Operand::Reg(Register::AX),
-                        Operand::Stack(-4),
+                        Operand::Memory(Register::BP, -4),
                     ),
                     Instruction::Mov(
                         AssemblyType::Longword,
-                        Operand::Stack(-4),
+                        Operand::Memory(Register::BP, -4),
                         Operand::Reg(Register::R10),
                     ),
                     Instruction::Mov(
                         AssemblyType::Longword,
                         Operand::Reg(Register::R10),
-                        Operand::Stack(-8),
+                        Operand::Memory(Register::BP, -8),
                     ),
                     Instruction::Binary(
                         BinaryOp::Add,
                         AssemblyType::Longword,
                         Operand::Imm(3),
-                        Operand::Stack(-8),
+                        Operand::Memory(Register::BP, -8),
                     ),
                     Instruction::Mov(
                         AssemblyType::Longword,
-                        Operand::Stack(-8),
+                        Operand::Memory(Register::BP, -8),
                         Operand::Reg(Register::AX),
                     ),
                     Instruction::Ret,
@@ -2955,56 +3143,56 @@ mod tests {
                     Instruction::Mov(
                         AssemblyType::Longword,
                         Operand::Reg(Register::DI),
-                        Operand::Stack(-4),
+                        Operand::Memory(Register::BP, -4),
                     ),
                     Instruction::Mov(
                         AssemblyType::Longword,
                         Operand::Reg(Register::SI),
-                        Operand::Stack(-8),
+                        Operand::Memory(Register::BP, -8),
                     ),
                     Instruction::Mov(
                         AssemblyType::Longword,
                         Operand::Reg(Register::DX),
-                        Operand::Stack(-12),
+                        Operand::Memory(Register::BP, -12),
                     ),
                     Instruction::Mov(
                         AssemblyType::Longword,
                         Operand::Reg(Register::CX),
-                        Operand::Stack(-16),
+                        Operand::Memory(Register::BP, -16),
                     ),
                     Instruction::Mov(
                         AssemblyType::Longword,
                         Operand::Reg(Register::R8),
-                        Operand::Stack(-20),
+                        Operand::Memory(Register::BP, -20),
                     ),
                     Instruction::Mov(
                         AssemblyType::Longword,
                         Operand::Reg(Register::R9),
-                        Operand::Stack(-24),
+                        Operand::Memory(Register::BP, -24),
                     ),
                     Instruction::Mov(
                         AssemblyType::Longword,
-                        Operand::Stack(16),
+                        Operand::Memory(Register::BP, 16),
                         Operand::Reg(Register::R10),
                     ),
                     Instruction::Mov(
                         AssemblyType::Longword,
                         Operand::Reg(Register::R10),
-                        Operand::Stack(-28),
+                        Operand::Memory(Register::BP, -28),
                     ),
                     Instruction::Mov(
                         AssemblyType::Longword,
-                        Operand::Stack(24),
+                        Operand::Memory(Register::BP, 24),
                         Operand::Reg(Register::R10),
                     ),
                     Instruction::Mov(
                         AssemblyType::Longword,
                         Operand::Reg(Register::R10),
-                        Operand::Stack(-32),
+                        Operand::Memory(Register::BP, -32),
                     ),
                     Instruction::Mov(
                         AssemblyType::Longword,
-                        Operand::Stack(-4),
+                        Operand::Memory(Register::BP, -4),
                         Operand::Reg(Register::AX),
                     ),
                     Instruction::Ret,
@@ -3137,7 +3325,7 @@ mod tests {
                 Instruction::Mov(
                     AssemblyType::Double,
                     Operand::Reg(Register::XMM0),
-                    Operand::Stack(_)
+                    Operand::Memory(Register::BP, _)
                 )
             )),
             "expected first double param moved out of XMM0, got: {ins:?}"
@@ -3148,7 +3336,7 @@ mod tests {
                 Instruction::Mov(
                     AssemblyType::Double,
                     Operand::Reg(Register::XMM1),
-                    Operand::Stack(_)
+                    Operand::Memory(Register::BP, _)
                 )
             )),
             "expected second double param moved out of XMM1, got: {ins:?}"
@@ -3171,7 +3359,12 @@ mod tests {
         assert!(
             !ins.iter().any(|i| matches!(
                 i,
-                Instruction::Binary(BinaryOp::Add, AssemblyType::Double, _, Operand::Stack(_))
+                Instruction::Binary(
+                    BinaryOp::Add,
+                    AssemblyType::Double,
+                    _,
+                    Operand::Memory(Register::BP, _)
+                )
             )),
             "addsd cannot take a memory destination, got: {ins:?}"
         );
@@ -3248,9 +3441,9 @@ mod tests {
         assert!(
             ins.iter().any(|i| matches!(
                 i,
-                Instruction::Mov(AssemblyType::Double, Operand::Stack(16), _)
+                Instruction::Mov(AssemblyType::Double, Operand::Memory(Register::BP, 16), _)
             )),
-            "expected the ninth double param read from Stack(16), got: {ins:?}"
+            "expected the ninth double param read from Memory(Register::BP,16), got: {ins:?}"
         );
     }
 
@@ -3277,44 +3470,44 @@ mod tests {
         assert!(
             ins.iter().any(|i| matches!(
                 i,
-                Instruction::Mov(AssemblyType::Double, Operand::Stack(16), _)
+                Instruction::Mov(AssemblyType::Double, Operand::Memory(Register::BP, 16), _)
             )),
-            "expected ov_d0 read from Stack(16), got: {ins:?}"
+            "expected ov_d0 read from Memory(Register::BP,16), got: {ins:?}"
         );
         assert!(
             ins.iter().any(|i| matches!(
                 i,
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(24), _)
+                Instruction::Mov(AssemblyType::Longword, Operand::Memory(Register::BP, 24), _)
             )),
-            "expected ov_i0 read from Stack(24), got: {ins:?}"
+            "expected ov_i0 read from Memory(Register::BP,24), got: {ins:?}"
         );
         assert!(
             ins.iter().any(|i| matches!(
                 i,
-                Instruction::Mov(AssemblyType::Double, Operand::Stack(32), _)
+                Instruction::Mov(AssemblyType::Double, Operand::Memory(Register::BP, 32), _)
             )),
-            "expected ov_d1 read from Stack(32), got: {ins:?}"
+            "expected ov_d1 read from Memory(Register::BP,32), got: {ins:?}"
         );
         assert!(
             ins.iter().any(|i| matches!(
                 i,
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(40), _)
+                Instruction::Mov(AssemblyType::Longword, Operand::Memory(Register::BP, 40), _)
             )),
-            "expected ov_i1 read from Stack(40), got: {ins:?}"
+            "expected ov_i1 read from Memory(Register::BP,40), got: {ins:?}"
         );
         // guard against a type-grouped regression, which would instead put both overflow
         // doubles at 16/24 and both overflow ints at 32/40.
         assert!(
             !ins.iter().any(|i| matches!(
                 i,
-                Instruction::Mov(AssemblyType::Double, Operand::Stack(24), _)
+                Instruction::Mov(AssemblyType::Double, Operand::Memory(Register::BP, 24), _)
             )),
             "ov_i0's slot should never hold a double read, got: {ins:?}"
         );
         assert!(
             !ins.iter().any(|i| matches!(
                 i,
-                Instruction::Mov(AssemblyType::Longword, Operand::Stack(16), _)
+                Instruction::Mov(AssemblyType::Longword, Operand::Memory(Register::BP, 16), _)
             )),
             "ov_d0's slot should never hold an int read, got: {ins:?}"
         );
@@ -3432,7 +3625,7 @@ mod tests {
         assert!(
             !ins.iter().any(|i| matches!(
                 i,
-                Instruction::Cmp(AssemblyType::Double, _, Operand::Stack(_))
+                Instruction::Cmp(AssemblyType::Double, _, Operand::Memory(Register::BP, _))
             )),
             "comisd cannot compare against two memory operands, got: {ins:?}"
         );
@@ -3511,7 +3704,7 @@ mod tests {
                 Instruction::Mov(
                     AssemblyType::Double,
                     Operand::Reg(Register::XMM15),
-                    Operand::Stack(_)
+                    Operand::Memory(Register::BP, _)
                 )
             )),
             "expected the converted double moved from XMM15 into its stack slot, got: {ins:?}"
@@ -3542,15 +3735,111 @@ mod tests {
                 Instruction::Mov(
                     AssemblyType::Longword,
                     Operand::Reg(Register::R11),
-                    Operand::Stack(_)
+                    Operand::Memory(Register::BP, _)
                 )
             )),
             "expected the converted int moved from R11 into its stack slot, got: {ins:?}"
         );
         assert!(
-            !ins.iter()
-                .any(|i| matches!(i, Instruction::Cvttsd2si(_, _, Operand::Stack(_)))),
+            !ins.iter().any(|i| matches!(
+                i,
+                Instruction::Cvttsd2si(_, _, Operand::Memory(Register::BP, _))
+            )),
             "cvttsd2si cannot write directly to memory, got: {ins:?}"
+        );
+    }
+
+    #[test]
+    fn address_of_local_var_lowers_through_lea_and_scratch_register() {
+        let src = r#"
+            int *addr_of(void) {
+                int a = 5;
+                return &a;
+            }
+        "#;
+        let asm = compile(src);
+        let ins = func_instructions(&asm, "addr_of");
+
+        // GetAddress lowers to Lea, but lea can't write directly to a stack slot,
+        // so fixup must route the destination through R10 first.
+        assert!(
+            ins.iter().any(|i| matches!(
+                i,
+                Instruction::Lea(
+                    Operand::Memory(Register::BP, _),
+                    Operand::Reg(Register::R10)
+                )
+            )),
+            "expected lea computing &a into scratch R10, got: {ins:?}"
+        );
+        assert!(
+            ins.iter().any(|i| matches!(
+                i,
+                Instruction::Mov(
+                    AssemblyType::Quadword,
+                    Operand::Reg(Register::R10),
+                    Operand::Memory(Register::BP, _)
+                )
+            )),
+            "expected the computed address moved from R10 into its stack slot, got: {ins:?}"
+        );
+        assert!(
+            !ins.iter()
+                .any(|i| matches!(i, Instruction::Lea(_, Operand::Memory(_, _)))),
+            "lea cannot write directly to memory, got: {ins:?}"
+        );
+    }
+
+    #[test]
+    fn dereference_load_reads_through_ax() {
+        let src = r#"
+            int deref(int *p) {
+                return *p;
+            }
+        "#;
+        let asm = compile(src);
+        let ins = func_instructions(&asm, "deref");
+
+        assert!(
+            ins.iter().any(|i| matches!(
+                i,
+                Instruction::Mov(AssemblyType::Quadword, _, Operand::Reg(Register::AX))
+            )),
+            "expected the pointer value moved into AX before dereferencing, got: {ins:?}"
+        );
+        assert!(
+            ins.iter().any(|i| matches!(
+                i,
+                Instruction::Mov(AssemblyType::Longword, Operand::Memory(Register::AX, 0), _)
+            )),
+            "expected the pointee loaded from (%rax), got: {ins:?}"
+        );
+    }
+
+    #[test]
+    fn assignment_through_dereferenced_pointer_stores_through_ax() {
+        let src = r#"
+            int set_through_ptr(int *p, int v) {
+                *p = v;
+                return v;
+            }
+        "#;
+        let asm = compile(src);
+        let ins = func_instructions(&asm, "set_through_ptr");
+
+        assert!(
+            ins.iter().any(|i| matches!(
+                i,
+                Instruction::Mov(AssemblyType::Quadword, _, Operand::Reg(Register::AX))
+            )),
+            "expected the pointer value moved into AX before storing, got: {ins:?}"
+        );
+        assert!(
+            ins.iter().any(|i| matches!(
+                i,
+                Instruction::Mov(AssemblyType::Longword, _, Operand::Memory(Register::AX, 0))
+            )),
+            "expected v stored through (%rax), got: {ins:?}"
         );
     }
 
