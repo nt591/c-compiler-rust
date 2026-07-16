@@ -6,6 +6,7 @@ use crate::asm;
 use crate::symbol_table::BackendSymTableEntry;
 use crate::symbol_table::BackendSymbolTable;
 use crate::types;
+use crate::types::AssemblyType;
 use crate::types::StaticInit;
 use std::io::Write;
 
@@ -306,7 +307,13 @@ impl Emitter {
                 self.emit_op(dst, at.into(), output)?;
                 write!(output, "\n")?;
             }
-            asm::Instruction::Lea(_, _) => todo!(),
+            asm::Instruction::Lea(src, dst) => {
+                write!(output, "  leaq   ")?;
+                self.emit_op(src, (&AssemblyType::Quadword).into(), output)?;
+                write!(output, ", ")?;
+                self.emit_op(dst, (&AssemblyType::Quadword).into(), output)?;
+                write!(output, "\n")?;
+            }
         }
         Ok(())
     }
@@ -330,14 +337,14 @@ impl Emitter {
             asm::Operand::Imm(imm) => write!(output, "${}", imm)?,
             asm::Operand::Memory(reg, n) => {
                 // we need to write out the offset first, open paren, then register, then close
-                write!(output, "{}(", n)?;
-                if regsize == RegisterSize::FourByte {
-                    Self::emit_register(reg, output)?;
-                } else if regsize == RegisterSize::OneByte {
-                    Self::emit_register_one_byte(reg, output)?;
-                } else if regsize == RegisterSize::EightByte {
-                    Self::emit_register_eight_bytes(reg, output)?;
+                // omit offset if zero
+                if *n == 0 {
+                    write!(output, "(")?;
+                } else {
+                    write!(output, "{}(", n)?;
                 }
+                // always use 8-byte registers for memory operations
+                Self::emit_register_eight_bytes(reg, output)?;
                 write!(output, ")")?;
             }
             asm::Operand::Data(var) => {

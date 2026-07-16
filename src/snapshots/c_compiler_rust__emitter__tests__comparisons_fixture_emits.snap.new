@@ -1,0 +1,337 @@
+---
+source: src/emitter.rs
+assertion_line: 596
+expression: compile_to_asm_string(src)
+---
+  .globl _main
+  .text
+_main:
+                       # FUNCTION PROLOGUE
+  pushq  %rbp
+  movq   %rsp, %rbp
+  subq   $144, %rsp
+  movsd  _fifty_fiveE5(%rip), %xmm15
+  comisd _fifty_fourE4(%rip), %xmm15
+  movl   $0, %r10d
+  movl   $0, %r11d
+  setb       %r10b
+  setnp      %r11b
+  andl   %r10d, %r11d
+  movl   %r11d, -4(%ebp)
+  movl   -4(%ebp), %r10d
+  movl   %r10d, -8(%ebp)
+  cmpl   $0, -8(%ebp)
+  je          Lend_label.0
+  movl   $1, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+Lend_label.0:
+  movsd  _four(%rip), %xmm15
+  comisd L_const_label.4616189618054758400(%rip), %xmm15
+  movl   $0, %r10d
+  movl   $0, %r11d
+  seta       %r10b
+  setnp      %r11b
+  andl   %r10d, %r11d
+  movl   %r11d, -12(%ebp)
+  movl   -12(%ebp), %r10d
+  movl   %r10d, -16(%ebp)
+  cmpl   $0, -16(%ebp)
+  je          Lend_label.1
+  movl   $2, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+Lend_label.1:
+  movsd  _tiny(%rip), %xmm15
+  comisd L_const_label.0(%rip), %xmm15
+  movl   $0, %r10d
+  movl   $0, %r11d
+  setbe      %r10b
+  setnp      %r11b
+  andl   %r10d, %r11d
+  movl   %r11d, -20(%ebp)
+  movl   -20(%ebp), %r10d
+  movl   %r10d, -24(%ebp)
+  cmpl   $0, -24(%ebp)
+  je          Lend_label.2
+  movl   $3, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+Lend_label.2:
+  movsd  _fifty_fourE4(%rip), %xmm15
+  comisd _fifty_fiveE5(%rip), %xmm15
+  movl   $0, %r10d
+  movl   $0, %r11d
+  setae      %r10b
+  setnp      %r11b
+  andl   %r10d, %r11d
+  movl   %r11d, -28(%ebp)
+  movl   -28(%ebp), %r10d
+  movl   %r10d, -32(%ebp)
+  cmpl   $0, -32(%ebp)
+  je          Lend_label.3
+  movl   $4, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+Lend_label.3:
+  movsd  _tiny(%rip), %xmm15
+  comisd L_const_label.0(%rip), %xmm15
+  movl   $0, %r10d
+  movl   $0, %r11d
+  sete       %r10b
+  setnp      %r11b
+  andl   %r10d, %r11d
+  movl   %r11d, -36(%ebp)
+  movl   -36(%ebp), %r10d
+  movl   %r10d, -40(%ebp)
+  cmpl   $0, -40(%ebp)
+  je          Lend_label.4
+  movl   $5, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+Lend_label.4:
+  movsd  _point_one(%rip), %xmm15
+  comisd _point_one(%rip), %xmm15
+  movl   $0, %r10d
+  movl   $0, %r11d
+  setne      %r10b
+  setp       %r11b
+  orl    %r10d, %r11d
+  movl   %r11d, -44(%ebp)
+  movl   -44(%ebp), %r10d
+  movl   %r10d, -48(%ebp)
+  cmpl   $0, -48(%ebp)
+  je          Lend_label.5
+  movl   $6, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+Lend_label.5:
+  movsd  _tiny(%rip), %xmm15
+  comisd L_const_label.4527516983983565041(%rip), %xmm15
+  movl   $0, %r10d
+  movl   $0, %r11d
+  seta       %r10b
+  setnp      %r11b
+  andl   %r10d, %r11d
+  movl   %r11d, -52(%ebp)
+  cmpl   $0, -52(%ebp)
+  movl   $0, -56(%ebp)
+  sete       -56(%bp)
+  movl   -56(%ebp), %r10d
+  movl   %r10d, -60(%ebp)
+  cmpl   $0, -60(%ebp)
+  je          Lend_label.6
+  movl   $7, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+Lend_label.6:
+  movsd  L_const_label.4541027782865676529(%rip), %xmm14
+  movsd  %xmm14, -72(%rbp)
+  movsd  -72(%rbp), %xmm15
+  xorpd  L_const_label_16byte_neg_0_float.9223372036854775808(%rip), %xmm15
+  movsd  %xmm15, -72(%rbp)
+  movsd  -72(%rbp), %xmm15
+  comisd _four(%rip), %xmm15
+  movl   $0, %r10d
+  movl   $0, %r11d
+  setb       %r10b
+  setnp      %r11b
+  andl   %r10d, %r11d
+  movl   %r11d, -76(%ebp)
+  cmpl   $0, -76(%ebp)
+  movl   $0, -80(%ebp)
+  sete       -80(%bp)
+  movl   -80(%ebp), %r10d
+  movl   %r10d, -84(%ebp)
+  cmpl   $0, -84(%ebp)
+  je          Lend_label.7
+  movl   $8, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+Lend_label.7:
+  movsd  _tiny(%rip), %xmm15
+  comisd _tiny(%rip), %xmm15
+  movl   $0, %r10d
+  movl   $0, %r11d
+  setbe      %r10b
+  setnp      %r11b
+  andl   %r10d, %r11d
+  movl   %r11d, -88(%ebp)
+  cmpl   $0, -88(%ebp)
+  movl   $0, -92(%ebp)
+  sete       -92(%bp)
+  movl   -92(%ebp), %r10d
+  movl   %r10d, -96(%ebp)
+  cmpl   $0, -96(%ebp)
+  je          Lend_label.8
+  movl   $9, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+Lend_label.8:
+  movsd  _fifty_fiveE5(%rip), %xmm15
+  comisd _fifty_fiveE5(%rip), %xmm15
+  movl   $0, %r10d
+  movl   $0, %r11d
+  setae      %r10b
+  setnp      %r11b
+  andl   %r10d, %r11d
+  movl   %r11d, -100(%ebp)
+  cmpl   $0, -100(%ebp)
+  movl   $0, -104(%ebp)
+  sete       -104(%bp)
+  movl   -104(%ebp), %r10d
+  movl   %r10d, -108(%ebp)
+  cmpl   $0, -108(%ebp)
+  je          Lend_label.9
+  movl   $10, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+Lend_label.9:
+  movsd  L_const_label.4591870180066957722(%rip), %xmm15
+  comisd _point_one(%rip), %xmm15
+  movl   $0, %r10d
+  movl   $0, %r11d
+  sete       %r10b
+  setnp      %r11b
+  andl   %r10d, %r11d
+  movl   %r11d, -112(%ebp)
+  cmpl   $0, -112(%ebp)
+  movl   $0, -116(%ebp)
+  sete       -116(%bp)
+  movl   -116(%ebp), %r10d
+  movl   %r10d, -120(%ebp)
+  cmpl   $0, -120(%ebp)
+  je          Lend_label.10
+  movl   $11, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+Lend_label.10:
+  movsd  _tiny(%rip), %xmm15
+  comisd L_const_label.4539475662290099561(%rip), %xmm15
+  movl   $0, %r10d
+  movl   $0, %r11d
+  setne      %r10b
+  setp       %r11b
+  orl    %r10d, %r11d
+  movl   %r11d, -124(%ebp)
+  cmpl   $0, -124(%ebp)
+  movl   $0, -128(%ebp)
+  sete       -128(%bp)
+  movl   -128(%ebp), %r10d
+  movl   %r10d, -132(%ebp)
+  cmpl   $0, -132(%ebp)
+  je          Lend_label.11
+  movl   $12, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+Lend_label.11:
+  movsd  L_const_label.4539475662290099561(%rip), %xmm15
+  comisd L_const_label.4434466073940909850(%rip), %xmm15
+  movl   $0, %r10d
+  movl   $0, %r11d
+  setb       %r10b
+  setnp      %r11b
+  andl   %r10d, %r11d
+  movl   %r11d, -136(%ebp)
+  movl   -136(%ebp), %r10d
+  movl   %r10d, -140(%ebp)
+  cmpl   $0, -140(%ebp)
+  je          Lend_label.12
+  movl   $13, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+Lend_label.12:
+  movl   $0, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+  movl   $0, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+  .globl _fifty_fiveE5
+  .data
+  .balign 8
+_fifty_fiveE5:
+  .double 5500000.0
+  .globl _fifty_fourE4
+  .data
+  .balign 8
+_fifty_fourE4:
+  .double 540000.0
+  .globl _four
+  .data
+  .balign 8
+_four:
+  .double 4.0
+  .globl _point_one
+  .data
+  .balign 8
+_point_one:
+  .double 0.1
+  .globl _tiny
+  .data
+  .balign 8
+_tiny:
+  .double 4e-5
+  .literal8
+  .balign 8
+L_const_label.0:
+  .double 0.0
+  .literal8
+  .balign 8
+L_const_label.4434466073940909850:
+  .double 3e-12
+  .literal8
+  .balign 8
+L_const_label.4527516983983565041:
+  .double 5e-6
+  .literal8
+  .balign 8
+L_const_label.4539475662290099561:
+  .double 3e-5
+  .literal8
+  .balign 8
+L_const_label.4541027782865676529:
+  .double 4e-5
+  .literal8
+  .balign 8
+L_const_label.4591870180066957722:
+  .double 0.1
+  .literal8
+  .balign 8
+L_const_label.4616189618054758400:
+  .double 4.0
+  .literal16
+  .balign 16
+L_const_label_16byte_neg_0_float.9223372036854775808:
+  .double -0.0
+  .quad 0

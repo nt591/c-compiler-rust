@@ -1,0 +1,32 @@
+---
+source: src/emitter.rs
+assertion_line: 1315
+expression: compile_to_asm_string(src)
+---
+  .globl _cmp_d
+  .text
+_cmp_d:
+                       # FUNCTION PROLOGUE
+  pushq  %rbp
+  movq   %rsp, %rbp
+  subq   $32, %rsp
+  movsd  %xmm0, -8(%rbp)
+  movsd  %xmm1, -16(%rbp)
+  movsd  -8(%rbp), %xmm15
+  comisd -16(%rbp), %xmm15
+  movl   $0, %r10d
+  movl   $0, %r11d
+  seta       %r10b
+  setnp      %r11b
+  andl   %r10d, %r11d
+  movl   %r11d, -20(%ebp)
+  movl   -20(%ebp), %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
+  movl   $0, %eax
+                       # RESET REGISTERS
+  movq   %rbp, %rsp
+  popq   %rbp
+  ret
