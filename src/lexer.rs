@@ -100,6 +100,8 @@ pub enum Token<'a> {
     // ch 13
     Double,
     FloatingPointConstant(&'a str), // converted to f64 in parser
+    OpenBracket,
+    CloseBracket,
 }
 
 impl<'a> Token<'a> {
@@ -175,6 +177,8 @@ impl<'a> Token<'a> {
             Unsigned => format!("Unsigned"),
             Double => format!("Double"),
             FloatingPointConstant(c) => format!("FloatingPointConstant {c}"),
+            OpenBracket => format!("OpenBracket ["),
+            CloseBracket => format!("CloseBracket ]"),
         }
     }
 }
@@ -223,6 +227,8 @@ impl<'a> Lexer<'a> {
                 b'}' => tokens.push(Token::RightBrace),
                 b'(' => tokens.push(Token::LeftParen),
                 b')' => tokens.push(Token::RightParen),
+                b'[' => tokens.push(Token::OpenBracket),
+                b']' => tokens.push(Token::CloseBracket),
                 b';' => tokens.push(Token::Semicolon),
                 b'~' => tokens.push(Token::Tilde),
                 b'?' => tokens.push(Token::QuestionMark),
