@@ -1843,6 +1843,7 @@ fn get_assembly_type_from_var_name(var: &str, symbol_table: &SymbolTable) -> Ass
         CType::Double => AssemblyType::Double,
         CType::FunType { .. } => unreachable!(),
         CType::Pointer(_) => AssemblyType::Quadword,
+        CType::Array(_, _) => todo!(),
     }
 }
 

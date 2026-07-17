@@ -17,6 +17,7 @@ pub enum Declaration<T> {
 pub enum AbstractDeclarator {
     Base,
     Pointer(Box<AbstractDeclarator>),
+    Array(Box<AbstractDeclarator>, usize),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -24,6 +25,7 @@ pub enum Declarator {
     Ident(String),
     Pointer(Box<Declarator>), // int *x -> ptr("x")
     Func(Vec<ParamInfo>, Box<Declarator>),
+    Array(Box<Declarator>, usize), // foo[3] -> Array(Ident("foo"), 3)
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -65,7 +67,7 @@ impl<T> FunctionDeclaration<T> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct VariableDeclaration<T> {
     pub name: String,
-    pub init: Option<Expression<T>>,
+    pub init: Option<Initializer<T>>,
     pub storage_class: Option<StorageClass>,
     pub vtype: CType,
 }
@@ -165,8 +167,16 @@ pub enum ExprKind<T> {
         args: Vec<Expression<T>>,
     },
     Cast(CType, Box<Expression<T>>),
-    Dereference(Box<Expression<T>>), // *x
-    AddressOf(Box<Expression<T>>),   // &x
+    Dereference(Box<Expression<T>>),                   // *x
+    AddressOf(Box<Expression<T>>),                     // &x
+    Subscript(Box<Expression<T>>, Box<Expression<T>>), // pointer LHS, index RHS
+}
+
+// variable initializers: single aka 1 vs compound { 1, 2 } or even { 4 }
+#[derive(Debug, PartialEq, Clone)]
+pub enum Initializer<T> {
+    Single(Expression<T>),
+    Compound(Vec<Initializer<T>>),
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]

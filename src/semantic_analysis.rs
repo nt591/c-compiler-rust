@@ -23,6 +23,7 @@ pub type VariableDeclaration = crate::ast::VariableDeclaration<()>;
 pub type ForInit = crate::ast::ForInit<()>;
 pub type BlockItem = crate::ast::BlockItem<()>;
 pub type Block = crate::ast::Block<()>;
+pub type Initializer = crate::ast::Initializer<()>;
 
 pub type TypedAST = crate::ast::AST<CType>;
 pub type TypedDeclaration = crate::ast::Declaration<CType>;
@@ -34,6 +35,7 @@ pub type TypedVariableDeclaration = crate::ast::VariableDeclaration<CType>;
 pub type TypedForInit = crate::ast::ForInit<CType>;
 pub type TypedBlockItem = crate::ast::BlockItem<CType>;
 pub type TypedBlock = crate::ast::Block<CType>;
+pub type TypedInitializer = crate::ast::Initializer<CType>;
 
 #[derive(Debug, Error, PartialEq)]
 pub enum SemanticAnalysisError {
@@ -370,7 +372,7 @@ fn typecheck_file_scope_variable_declaration(
     let mut initial_value = match &var.init {
         None if var.storage_class == Some(StorageClass::Extern) => InitialValue::NoInitializer,
         None => InitialValue::Tentative,
-        Some(expr) => match *expr.kind {
+        Some(Initializer::Single(expr)) => match *expr.kind {
             ExprKind::Constant(c) => {
                 let converted = const_eval::convert_const(c, &var.vtype);
                 if matches!(&var.vtype, CType::Pointer(_))
@@ -382,6 +384,7 @@ fn typecheck_file_scope_variable_declaration(
             }
             _ => return Err(SemanticAnalysisError::NonConstantInitializer),
         },
+        Some(Initializer::Compound(_)) => todo!(),
     };
 
     // is this variable global?
@@ -429,7 +432,11 @@ fn typecheck_file_scope_variable_declaration(
             _ => {}
         }
     }
-    let typed_init = typed_expr_for_initial_value(var.init.as_ref(), &initial_value);
+    let init = var.init.as_ref().and_then(|init| match init {
+        Initializer::Single(e) => Some(e),
+        Initializer::Compound(_) => todo!(),
+    });
+    let typed_init = typed_expr_for_initial_value(init, &initial_value);
     ctx.symbol_table.insert(
         var.name.clone(),
         (
@@ -440,6 +447,11 @@ fn typecheck_file_scope_variable_declaration(
             },
         ),
     );
+    let typed_init = typed_init.and_then(|typed_e| match &var.init {
+        None => None,
+        Some(Initializer::Single(_)) => Some(TypedInitializer::Single(typed_e)),
+        Some(Initializer::Compound(_)) => todo!(),
+    });
     Ok(TypedVariableDeclaration {
         name: var.name.clone(),
         init: typed_init,
@@ -523,7 +535,7 @@ fn typecheck_local_var_decl(
                 None => {
                     InitialValue::Initial(const_eval::convert_const(Const::Int(0), &decl.vtype))
                 }
-                Some(expr) => match *expr.kind {
+                Some(Initializer::Single(expr)) => match *expr.kind {
                     ExprKind::Constant(c) => {
                         let converted_const = const_eval::convert_const(c, &decl.vtype);
                         if matches!(&decl.vtype, CType::Pointer(_))
@@ -535,9 +547,14 @@ fn typecheck_local_var_decl(
                     }
                     _ => return Err(SemanticAnalysisError::NonConstInitOnLocalStaticVar),
                 },
+                Some(Initializer::Compound(_)) => todo!(),
             };
             // book says to just re-build here instead of typechecking.
-            let typed_init = typed_expr_for_initial_value(init.as_ref(), &new_init);
+            let initializer_expr = init.as_ref().and_then(|init| match init {
+                Initializer::Single(e) => Some(e),
+                Initializer::Compound(_) => todo!(),
+            });
+            let typed_init = typed_expr_for_initial_value(initializer_expr, &new_init);
             ctx.symbol_table.insert(
                 name.clone(),
                 (
@@ -548,9 +565,15 @@ fn typecheck_local_var_decl(
                     },
                 ),
             );
+            let rewrapped_typed_init = typed_init.and_then(|e| {
+                init.as_ref().and_then(|init| match init {
+                    Initializer::Single(_) => Some(TypedInitializer::Single(e)),
+                    Initializer::Compound(_) => todo!(),
+                })
+            });
             TypedVariableDeclaration {
                 name: name.clone(),
-                init: typed_init,
+                init: rewrapped_typed_init,
                 storage_class: Some(StorageClass::Static),
                 vtype: decl.vtype.clone(),
             }
@@ -562,15 +585,24 @@ fn typecheck_local_var_decl(
                 (decl.vtype.clone(), IdentifierAttrs::LocalAttr),
             );
             let typed_init = if let Some(init) = init {
-                let e1 = typecheck_expr(init, ctx)?;
+                let Initializer::Single(init_expr) = init else {
+                    todo!();
+                };
+                let e1 = typecheck_expr(init_expr, ctx)?;
                 let converted = convert_by_assignment(e1, decl.vtype.clone())?;
                 Some(converted)
             } else {
                 None
             };
+            let rewrapped_typed_init = typed_init.and_then(|e| {
+                init.as_ref().and_then(|init| match init {
+                    Initializer::Single(_) => Some(TypedInitializer::Single(e)),
+                    Initializer::Compound(_) => todo!(),
+                })
+            });
             TypedVariableDeclaration {
                 name: name.clone(),
-                init: typed_init,
+                init: rewrapped_typed_init,
                 storage_class: None,
                 vtype: decl.vtype.clone(),
             }
@@ -904,6 +936,7 @@ fn typecheck_expr(
                 CType::Pointer(Box::new(inner_ty)),
             )
         }
+        ExprKind::Subscript(_, _) => todo!(),
     };
     Ok(TypedExpression {
         kind: Box::new(expr_kind),
@@ -1027,7 +1060,10 @@ fn resolve_local_variable_declaration(
     } else {
         resolve_param(name, resolver)?;
         if let Some(init) = init {
-            resolve_expr(init, resolver)?;
+            let Initializer::Single(init_expr) = init else {
+                todo!();
+            };
+            resolve_expr(init_expr, resolver)?;
         };
     }
     Ok(())
@@ -1166,6 +1202,7 @@ fn resolve_expr(
         ExprKind::Cast(_, expr) => resolve_expr(expr, resolver)?,
         ExprKind::AddressOf(expr) => resolve_expr(expr, resolver)?,
         ExprKind::Dereference(expr) => resolve_expr(expr, resolver)?,
+        ExprKind::Subscript(_, _) => todo!(),
     };
     Ok(())
 }
@@ -1399,13 +1436,13 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(Const::Int(1))))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(Const::Int(1))))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -1432,7 +1469,7 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::new(ExprKind::Var("c".into()))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Var("c".into())))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -1459,13 +1496,13 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(Const::Int(1))))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b".into(),
-                    init: Some(Expression::new(ExprKind::Var("a".into()))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Var("a".into())))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -1488,13 +1525,13 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a.0.decl".into(),
-                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(Const::Int(1))))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b.1.decl".into(),
-                    init: Some(Expression::new(ExprKind::Var("a.0.decl".into()))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Var("a.0.decl".into())))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -1521,23 +1558,23 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(Const::Int(1))))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b".into(),
-                    init: Some(Expression::new(ExprKind::Var("a".into()))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Var("a".into())))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "c".into(),
-                    init: Some(Expression::new(ExprKind::Binary(
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Binary(
                         BinaryOp::Add,
                         Box::new(Expression::new(ExprKind::Var("a".into()))),
                         Box::new(Expression::new(ExprKind::Var("b".into()))),
-                    ))),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -1560,23 +1597,23 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a.0.decl".into(),
-                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(Const::Int(1))))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b.1.decl".into(),
-                    init: Some(Expression::new(ExprKind::Var("a.0.decl".into()))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Var("a.0.decl".into())))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "c.2.decl".into(),
-                    init: Some(Expression::new(ExprKind::Binary(
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Binary(
                         BinaryOp::Add,
                         Box::new(Expression::new(ExprKind::Var("a.0.decl".into()))),
                         Box::new(Expression::new(ExprKind::Var("b.1.decl".into()))),
-                    ))),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -1687,7 +1724,7 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "x.0.decl".into(),
-                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(Const::Int(1))))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -1697,7 +1734,9 @@ mod tests {
                         // since we want to ensure any label is pinned to one value
                         Declaration::VarDecl(VariableDeclaration {
                             name: "x.1.decl".into(),
-                            init: Some(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                            init: Some(Initializer::Single(Expression::new(ExprKind::Constant(
+                                Const::Int(2),
+                            )))),
                             storage_class: None,
                             vtype: CType::Int,
                         }),
@@ -1946,7 +1985,7 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(Const::Int(1))))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -2113,7 +2152,7 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "p".into(),
-                    init: Some(Expression::new(ExprKind::Constant(Const::Int(0)))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(Const::Int(0))))),
                     storage_class: None,
                     vtype: CType::Pointer(Box::new(CType::Int)),
                 })),
@@ -2137,7 +2176,7 @@ mod tests {
     fn non_zero_pointer_initializer_at_file_scope_fails() {
         let mut before = AST::Program(vec![Declaration::VarDecl(VariableDeclaration {
             name: "p".into(),
-            init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
+            init: Some(Initializer::Single(Expression::new(ExprKind::Constant(Const::Int(1))))),
             storage_class: None,
             vtype: CType::Pointer(Box::new(CType::Int)),
         })]);

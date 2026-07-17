@@ -1,6 +1,5 @@
 ---
 source: src/semantic_analysis.rs
-assertion_line: 1234
 expression: typed_ast
 ---
 Program(
@@ -9,14 +8,16 @@ Program(
             VariableDeclaration {
                 name: "d1",
                 init: Some(
-                    Expression {
-                        ty: Double,
-                        kind: Constant(
-                            Double(
-                                2147483647.0,
+                    Single(
+                        Expression {
+                            ty: Double,
+                            kind: Constant(
+                                Double(
+                                    2147483647.0,
+                                ),
                             ),
-                        ),
-                    },
+                        },
+                    ),
                 ),
                 storage_class: None,
                 vtype: Double,
@@ -26,14 +27,16 @@ Program(
             VariableDeclaration {
                 name: "d2",
                 init: Some(
-                    Expression {
-                        ty: Double,
-                        kind: Constant(
-                            Double(
-                                4294967295.0,
+                    Single(
+                        Expression {
+                            ty: Double,
+                            kind: Constant(
+                                Double(
+                                    4294967295.0,
+                                ),
                             ),
-                        ),
-                    },
+                        },
+                    ),
                 ),
                 storage_class: None,
                 vtype: Double,
@@ -43,14 +46,16 @@ Program(
             VariableDeclaration {
                 name: "d3",
                 init: Some(
-                    Expression {
-                        ty: Double,
-                        kind: Constant(
-                            Double(
-                                4.61168601842739e18,
+                    Single(
+                        Expression {
+                            ty: Double,
+                            kind: Constant(
+                                Double(
+                                    4.61168601842739e18,
+                                ),
                             ),
-                        ),
-                    },
+                        },
+                    ),
                 ),
                 storage_class: None,
                 vtype: Double,
@@ -68,14 +73,16 @@ Program(
             VariableDeclaration {
                 name: "i",
                 init: Some(
-                    Expression {
-                        ty: Int,
-                        kind: Constant(
-                            Int(
-                                4,
+                    Single(
+                        Expression {
+                            ty: Int,
+                            kind: Constant(
+                                Int(
+                                    4,
+                                ),
                             ),
-                        ),
-                    },
+                        },
+                    ),
                 ),
                 storage_class: Some(
                     Static,
@@ -87,14 +94,16 @@ Program(
             VariableDeclaration {
                 name: "u",
                 init: Some(
-                    Expression {
-                        ty: UInt,
-                        kind: Constant(
-                            UInt(
-                                4294967292,
+                    Single(
+                        Expression {
+                            ty: UInt,
+                            kind: Constant(
+                                UInt(
+                                    4294967292,
+                                ),
                             ),
-                        ),
-                    },
+                        },
+                    ),
                 ),
                 storage_class: None,
                 vtype: UInt,
@@ -104,14 +113,16 @@ Program(
             VariableDeclaration {
                 name: "l",
                 init: Some(
-                    Expression {
-                        ty: Long,
-                        kind: Constant(
-                            Long(
-                                4611686018427389952,
+                    Single(
+                        Expression {
+                            ty: Long,
+                            kind: Constant(
+                                Long(
+                                    4611686018427389952,
+                                ),
                             ),
-                        ),
-                    },
+                        },
+                    ),
                 ),
                 storage_class: None,
                 vtype: Long,
@@ -121,14 +132,16 @@ Program(
             VariableDeclaration {
                 name: "ul",
                 init: Some(
-                    Expression {
-                        ty: ULong,
-                        kind: Constant(
-                            ULong(
-                                18446744073709549568,
+                    Single(
+                        Expression {
+                            ty: ULong,
+                            kind: Constant(
+                                ULong(
+                                    18446744073709549568,
+                                ),
                             ),
-                        ),
-                    },
+                        },
+                    ),
                 ),
                 storage_class: None,
                 vtype: ULong,

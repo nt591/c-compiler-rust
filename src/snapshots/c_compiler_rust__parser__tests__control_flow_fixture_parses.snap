@@ -92,14 +92,16 @@ Program(
                                     VariableDeclaration {
                                         name: "total",
                                         init: Some(
-                                            Expression {
-                                                ty: (),
-                                                kind: Constant(
-                                                    Int(
-                                                        0,
+                                            Single(
+                                                Expression {
+                                                    ty: (),
+                                                    kind: Constant(
+                                                        Int(
+                                                            0,
+                                                        ),
                                                     ),
-                                                ),
-                                            },
+                                                },
+                                            ),
                                         ),
                                         storage_class: None,
                                         vtype: Int,
@@ -111,14 +113,16 @@ Program(
                                     VariableDeclaration {
                                         name: "i",
                                         init: Some(
-                                            Expression {
-                                                ty: (),
-                                                kind: Constant(
-                                                    Int(
-                                                        0,
+                                            Single(
+                                                Expression {
+                                                    ty: (),
+                                                    kind: Constant(
+                                                        Int(
+                                                            0,
+                                                        ),
                                                     ),
-                                                ),
-                                            },
+                                                },
+                                            ),
                                         ),
                                         storage_class: None,
                                         vtype: Int,
@@ -368,14 +372,16 @@ Program(
                                         VariableDeclaration {
                                             name: "j",
                                             init: Some(
-                                                Expression {
-                                                    ty: (),
-                                                    kind: Constant(
-                                                        Int(
-                                                            0,
+                                                Single(
+                                                    Expression {
+                                                        ty: (),
+                                                        kind: Constant(
+                                                            Int(
+                                                                0,
+                                                            ),
                                                         ),
-                                                    ),
-                                                },
+                                                    },
+                                                ),
                                             ),
                                             storage_class: None,
                                             vtype: Int,

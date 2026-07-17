@@ -15,6 +15,7 @@ use crate::semantic_analysis::TypedExprKind;
 use crate::semantic_analysis::TypedExpression;
 use crate::semantic_analysis::TypedForInit;
 use crate::semantic_analysis::TypedFunctionDeclaration;
+use crate::semantic_analysis::TypedInitializer;
 use crate::semantic_analysis::TypedStatement;
 use crate::semantic_analysis::TypedVariableDeclaration;
 use crate::types::CType;
@@ -270,6 +271,7 @@ impl<'a> Tacky {
                             CType::UInt => StaticInit::UIntInit(0),
                             CType::Double => StaticInit::DoubleInit(0.0),
                             CType::Pointer(_) => StaticInit::ULongInit(0),
+                            CType::Array(_, _) => todo!(),
                         };
                         defs.push(TopLevel::StaticVariable {
                             identifier: name.clone(),
@@ -465,6 +467,7 @@ impl<'a> Tacky {
                             unreachable!("Should never cast a double to a funtype")
                         }
                         CType::Pointer(_) => unreachable!("Cannot cast double to a pointer type"),
+                        CType::Array(_, _) => todo!(),
                     }
                 } else if inner_ty == CType::Double {
                     // casting a double to something else, use specialized instructions
@@ -484,6 +487,7 @@ impl<'a> Tacky {
                             unreachable!("Should never cast a funtype to a double")
                         }
                         CType::Pointer(_) => unreachable!("Cannot cast pointer to a double"),
+                        CType::Array(_, _) => todo!(),
                     }
                 } else if target_size == expr_size {
                     Instruction::Copy {
@@ -533,6 +537,7 @@ impl<'a> Tacky {
                     ExprResult::DereferencedPointer(obj) => Ok(ExprResult::PlainOperand(obj)),
                 }
             }
+            TypedExprKind::Subscript(_, _) => todo!(),
         }
     }
 
@@ -1134,7 +1139,10 @@ impl<'a> Tacky {
         } = decl
         {
             // emit instructions for rhs, then copy into lhs
-            let result = self.parse_expression_and_convert(init, ctx)?;
+            let TypedInitializer::Single(e) = init else {
+                todo!("Did not yet implement compound initializers in tacky");
+            };
+            let result = self.parse_expression_and_convert(e, ctx)?;
             ctx.push(Instruction::Copy {
                 src: result,
                 dst: Val::Var(name.clone()),
@@ -1195,6 +1203,10 @@ mod tests {
             ty: CType::Long,
             kind: Box::new(kind),
         }
+    }
+
+    fn single_init(expr: TypedExpression) -> TypedInitializer {
+        TypedInitializer::Single(expr)
     }
 
     fn main_symbol_table() -> semantic_analysis::SymbolTable {
@@ -1823,23 +1835,25 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 TypedBlockItem::Decl(TypedDeclaration::VarDecl(TypedVariableDeclaration {
                     name: "a.0.decl".into(),
-                    init: Some(typed_int(TypedExprKind::Constant(Const::Int(1)))),
+                    init: Some(single_init(typed_int(TypedExprKind::Constant(Const::Int(1))))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
                 TypedBlockItem::Decl(TypedDeclaration::VarDecl(TypedVariableDeclaration {
                     name: "b.1.decl".into(),
-                    init: Some(typed_int(TypedExprKind::Var("a.0.decl".into()))),
+                    init: Some(single_init(typed_int(TypedExprKind::Var(
+                        "a.0.decl".into(),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
                 TypedBlockItem::Decl(TypedDeclaration::VarDecl(TypedVariableDeclaration {
                     name: "c.2.decl".into(),
-                    init: Some(typed_int(TypedExprKind::Binary(
+                    init: Some(single_init(typed_int(TypedExprKind::Binary(
                         ParserBinaryOp::Add,
                         Box::new(typed_int(TypedExprKind::Var("a.0.decl".into()))),
                         Box::new(typed_int(TypedExprKind::Var("b.1.decl".into()))),
-                    ))),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -1896,7 +1910,7 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 TypedBlockItem::Decl(TypedDeclaration::VarDecl(TypedVariableDeclaration {
                     name: "a".into(),
-                    init: Some(typed_int(TypedExprKind::Constant(Const::Int(1)))),
+                    init: Some(single_init(typed_int(TypedExprKind::Constant(Const::Int(1))))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -2015,7 +2029,7 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 TypedBlockItem::Decl(TypedDeclaration::VarDecl(TypedVariableDeclaration {
                     name: "a".into(),
-                    init: Some(typed_int(TypedExprKind::Constant(Const::Int(10)))),
+                    init: Some(single_init(typed_int(TypedExprKind::Constant(Const::Int(10))))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -2055,18 +2069,18 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 TypedBlockItem::Decl(TypedDeclaration::VarDecl(TypedVariableDeclaration {
                     name: "a".into(),
-                    init: Some(typed_int(TypedExprKind::Constant(Const::Int(10)))),
+                    init: Some(single_init(typed_int(TypedExprKind::Constant(Const::Int(10))))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
                 TypedBlockItem::Decl(TypedDeclaration::VarDecl(TypedVariableDeclaration {
                     name: "p".into(),
-                    init: Some(TypedExpression {
+                    init: Some(single_init(TypedExpression {
                         ty: typed_ptr_int.clone(),
                         kind: Box::new(TypedExprKind::AddressOf(Box::new(typed_int(
                             TypedExprKind::Var("a".into()),
                         )))),
-                    }),
+                    })),
                     storage_class: None,
                     vtype: typed_ptr_int.clone(),
                 })),

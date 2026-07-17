@@ -11,6 +11,7 @@ pub enum CType {
         ret: Box<CType>, // TODO: intern CType and carry a u32 everywhere.
     },
     Pointer(Box<CType>),
+    Array(Box<CType>, usize), // type and number of element in array
 }
 
 #[derive(PartialEq, Debug, Copy, Clone)]
@@ -79,6 +80,7 @@ impl CType {
             CType::Long | CType::ULong | CType::Double => 64,
             CType::FunType { .. } => todo!(), // not sure what goes here.
             CType::Pointer(_) => 64,          // generally treat as unsigned long
+            CType::Array(_, _) => todo!(),
         }
     }
 
@@ -87,6 +89,7 @@ impl CType {
             CType::Int | CType::Long | CType::Double => true,
             CType::UInt | CType::ULong | CType::FunType { .. } => false,
             CType::Pointer(_) => false,
+            CType::Array(_, _) => false,
         }
     }
 

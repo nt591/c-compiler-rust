@@ -1,3 +1,4 @@
+use crate::ast::AbstractDeclarator;
 pub use crate::ast::{BinaryOp, Const, StorageClass, UnaryOp};
 use crate::lexer::Token;
 use crate::types::CType;
@@ -15,8 +16,9 @@ pub type VariableDeclaration = crate::ast::VariableDeclaration<()>;
 pub type ForInit = crate::ast::ForInit<()>;
 pub type BlockItem = crate::ast::BlockItem<()>;
 pub type Block = crate::ast::Block<()>;
-pub type Declarator = crate::ast::Declarator;
-pub type AbstractDeclarator = crate::ast::AbstractDeclarator;
+use crate::ast::Declarator;
+pub type Initializer = crate::ast::Initializer<()>;
+
 pub use crate::ast::ParamInfo;
 
 #[derive(Debug, Error, PartialEq)]
@@ -241,9 +243,36 @@ impl<'a> Parser<'a> {
             if let Some(Token::LeftParen) = self.tokens.peek() {
                 let func = self.parse_function_declarator(simple_declarator)?;
                 Ok(func)
+            } else if let Some(Token::OpenBracket) = self.tokens.peek() {
+                let arr = self.parse_array_declarator(simple_declarator)?;
+                Ok(arr)
             } else {
                 Ok(simple_declarator)
             }
+        }
+    }
+
+    fn parse_initializer(&mut self) -> Result<Initializer, ParserError> {
+        if let Some(Token::LeftBrace) = self.tokens.peek() {
+            // "{" <initializer> { "," <initializer> } [","] "}"
+            self.expect(Token::LeftBrace)?;
+            let mut initializers = vec![];
+            loop {
+                initializers.push(self.parse_initializer()?);
+
+                if let Some(Token::RightBrace) = self.tokens.peek() {
+                    break;
+                } else {
+                    self.expect(Token::Comma)?;
+                    if let Some(Token::RightBrace) = self.tokens.peek() {
+                        break;
+                    }
+                }
+            }
+            self.expect(Token::RightBrace)?;
+            Ok(Initializer::Compound(initializers))
+        } else {
+            Ok(Initializer::Single(self.parse_expression(0)?))
         }
     }
 
@@ -255,16 +284,57 @@ impl<'a> Parser<'a> {
             self.tokens.next(); // throw away star
             let inner = self.parse_abstract_declarator()?;
             let declarator = inner.unwrap_or(AbstractDeclarator::Base);
-            Ok(Some(AbstractDeclarator::Pointer(Box::new(declarator))))
-        } else if let Some(Token::LeftParen) = self.tokens.peek() {
-            self.tokens.next(); // throw away parens
-            let inner = self.parse_abstract_declarator()?;
-            self.expect(Token::RightParen)?;
-            Ok(inner)
-        } else {
-            // we let parse_factor handle errors for malformed tokens
-            Ok(None)
+            return Ok(Some(AbstractDeclarator::Pointer(Box::new(declarator))));
         }
+        // grammar allows EITHER
+        // a parenthezised abstract decl followed by zero-or-more [const]
+        // one-or-more [const]
+        let mut decl = match self.tokens.peek() {
+            Some(Token::LeftParen) => {
+                self.tokens.next(); // throw away parens
+                let inner = self.parse_abstract_declarator()?;
+                self.expect(Token::RightParen)?;
+                match inner {
+                    None => return Ok(None), // malformed inside parens
+                    Some(decl) => decl,
+                }
+            }
+            Some(Token::OpenBracket) => AbstractDeclarator::Base,
+            _ => return Ok(None), // caller handles malformed token stream
+        };
+
+        // since we returned if we saw no open brackets, this covers EITHER
+        // zero-or-more (first arm of match handles this)
+        // one-or-more (second arm just ensures its there)
+        while let Some(Token::OpenBracket) = self.tokens.peek() {
+            decl = self.parse_abstract_array_declarator(decl)?;
+        }
+        Ok(Some(decl))
+    }
+
+    fn parse_abstract_array_declarator(
+        &mut self,
+        inner_decl: AbstractDeclarator,
+    ) -> Result<AbstractDeclarator, ParserError> {
+        // abstract array declarator, ex `int [3]`
+        self.expect(Token::OpenBracket)?;
+        let const_size = match self.tokens.next() {
+            Some(
+                Token::Constant(c)
+                | Token::LongConstant(c)
+                | Token::UnsignedIntConstant(c)
+                | Token::UnsignedLongConstant(c),
+            ) => c,
+            Some(c) => {
+                return Err(ParserError::UnexpectedToken(
+                    format!("{c:?}"),
+                    "any constant".to_string(),
+                ));
+            }
+            None => return Err(ParserError::OutOfTokens),
+        };
+        self.expect(Token::CloseBracket)?;
+        Ok(AbstractDeclarator::Array(Box::new(inner_decl), *const_size))
     }
 
     // takes the identifier right before open paren for function declarator
@@ -301,6 +371,58 @@ impl<'a> Parser<'a> {
             // need to ensure this is the only valid type
             Box::new(declarator),
         ))
+    }
+
+    fn parse_array_declarator(
+        &mut self,
+        declarator: Declarator,
+    ) -> Result<Declarator, ParserError> {
+        // assumes first token in the stream is an open bracket.
+        // Tries to turn declarator array[1][2]
+        // into ArrayDeclarator(ArrayDeclarator(Ident("array"), 1), 2).
+        // Assume input declarator is that ident in the example above.
+        // Since we need to wrap inside-out, we could use recursion but
+        // lazy man's way is to parse nested constants into a stack.
+        // Then it's a matter of popping from the stack to assemble.
+        assert_eq!(
+            self.tokens.peek(),
+            Some(&&Token::OpenBracket),
+            "Expected parse_array_declarator to start with an open bracket"
+        );
+        let mut consts = vec![];
+        loop {
+            if !matches!(self.tokens.peek(), Some(&&Token::OpenBracket)) {
+                break;
+            }
+            self.tokens.next();
+            // next token MUST be some kind of non-floating-point-constant
+            let const_size = match self.tokens.next() {
+                Some(
+                    Token::Constant(c)
+                    | Token::LongConstant(c)
+                    | Token::UnsignedIntConstant(c)
+                    | Token::UnsignedLongConstant(c),
+                ) => c,
+                Some(c) => {
+                    return Err(ParserError::UnexpectedToken(
+                        format!("{c:?}"),
+                        "any constant".to_string(),
+                    ));
+                }
+                None => return Err(ParserError::OutOfTokens),
+            };
+            consts.push(const_size);
+            self.expect(Token::CloseBracket)?;
+        }
+
+        // at this point our vector has all sizes, so we can wrap in reverse
+        let mut decl = declarator;
+        while consts.len() > 0 {
+            let c = consts.pop().unwrap();
+            decl = Declarator::Array(Box::new(decl), *c);
+        }
+
+        Ok(decl)
     }
 
     fn parse_identifier(&mut self) -> Result<String, ParserError> {
@@ -343,7 +465,7 @@ impl<'a> Parser<'a> {
         } else {
             let init = if let Some(Token::Equal) = self.tokens.peek() {
                 self.tokens.next();
-                let init = self.parse_expression(0)?;
+                let init = self.parse_initializer()?;
                 self.expect(Token::Semicolon)?;
                 Some(init)
             } else {
@@ -422,7 +544,7 @@ impl<'a> Parser<'a> {
                 // if we have a colon after this, maybe we treat this as a label. Else, parse expr.
                 // we've peeked at the identifier, so index = 1 is
                 // second element
-                // crate::ast HACKY CLONE! TODO - fix!
+                // HACKY CLONE! TODO - fix!
                 let mut it = multipeek::multipeek(self.tokens.clone());
                 match it.peek_nth(1) {
                     Some(Token::Colon) => {
@@ -666,7 +788,86 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_factor(&mut self) -> Result<Expression, ParserError> {
+    fn parse_unary(&mut self) -> Result<Expression, ParserError> {
+        match self.tokens.peek() {
+            Some(Token::Hyphen) => {
+                self.tokens.next(); // consume the binop
+                let inner_exp = self.parse_unary()?;
+                Ok(Expression::new(ExprKind::Unary(
+                    UnaryOp::Negate,
+                    Box::new(inner_exp),
+                )))
+            }
+            Some(Token::Tilde) => {
+                self.tokens.next(); // consume the binop
+                let inner_exp = self.parse_unary()?;
+                Ok(Expression::new(ExprKind::Unary(
+                    UnaryOp::Complement,
+                    Box::new(inner_exp),
+                )))
+            }
+            Some(Token::Bang) => {
+                self.tokens.next(); // consume the binop
+                let inner_exp = self.parse_unary()?;
+                Ok(Expression::new(ExprKind::Unary(
+                    UnaryOp::Not,
+                    Box::new(inner_exp),
+                )))
+            }
+            Some(Token::Ampersand) => {
+                self.tokens.next(); // consume the binop
+                let inner_exp = self.parse_unary()?;
+                Ok(Expression::new(ExprKind::AddressOf(Box::new(inner_exp))))
+            }
+            Some(Token::Star) => {
+                self.tokens.next(); // consume the binop
+                let inner_exp = self.parse_unary()?;
+                Ok(Expression::new(ExprKind::Dereference(Box::new(inner_exp))))
+            }
+            Some(Token::LeftParen) => {
+                // if the inside is a valid type specifier, we'll scoop up
+                // specifiers and turn this into a Cast expression. Else,
+                // throw away parens and use just inner expression
+                let mut it = multipeek::multipeek(self.tokens.clone());
+                it.next(); // toss the left paren
+                if token_is_valid_specifier(it.peek().copied()) {
+                    drop(it);
+                    self.tokens.next(); // throw away left paren here
+                    let (type_, storage_class) = self.parse_type_and_storage_class()?;
+                    if storage_class.is_some() {
+                        return Err(ParserError::InvalidStorageClass);
+                    }
+                    let optional_abstract_declarator = self.parse_abstract_declarator()?;
+                    self.expect(Token::RightParen)?;
+                    let expr = self.parse_unary()?;
+                    let casted_type = match optional_abstract_declarator {
+                        Some(abstract_decl) => process_abstract_declarator(abstract_decl, type_),
+                        None => type_,
+                    };
+                    Ok(Expression::new(ExprKind::Cast(casted_type, Box::new(expr))))
+                } else {
+                    // we see a left paren that does not begin a type specifier,
+                    // so drop into lower-precedence grammar rule explicitly
+                    // TODO: this whole thing is ugly. We need to index into token stream
+                    self.parse_postfix_expr()
+                }
+            }
+            _ => self.parse_postfix_expr(),
+        }
+    }
+
+    fn parse_postfix_expr(&mut self) -> Result<Expression, ParserError> {
+        let mut primary = self.parse_primary_expr()?;
+        while let Some(Token::OpenBracket) = self.tokens.peek() {
+            self.tokens.next();
+            let postfix = self.parse_expression(0)?;
+            self.expect(Token::CloseBracket)?;
+            primary = Expression::new(ExprKind::Subscript(Box::new(primary), Box::new(postfix)));
+        }
+        Ok(primary)
+    }
+
+    fn parse_primary_expr(&mut self) -> Result<Expression, ParserError> {
         match self.tokens.next() {
             Some(
                 t @ (Token::Constant(_)
@@ -678,57 +879,10 @@ impl<'a> Parser<'a> {
                 let constant = Self::parse_constant(*t)?;
                 Ok(Expression::new(ExprKind::Constant(constant)))
             }
-            Some(Token::Hyphen) => {
-                let inner_exp = self.parse_factor()?;
-                Ok(Expression::new(ExprKind::Unary(
-                    UnaryOp::Negate,
-                    Box::new(inner_exp),
-                )))
-            }
-            Some(Token::Tilde) => {
-                let inner_exp = self.parse_factor()?;
-                Ok(Expression::new(ExprKind::Unary(
-                    UnaryOp::Complement,
-                    Box::new(inner_exp),
-                )))
-            }
-            Some(Token::Bang) => {
-                let inner_exp = self.parse_factor()?;
-                Ok(Expression::new(ExprKind::Unary(
-                    UnaryOp::Not,
-                    Box::new(inner_exp),
-                )))
-            }
-            Some(Token::Ampersand) => {
-                let inner_exp = self.parse_factor()?;
-                Ok(Expression::new(ExprKind::AddressOf(Box::new(inner_exp))))
-            }
-            Some(Token::Star) => {
-                let inner_exp = self.parse_factor()?;
-                Ok(Expression::new(ExprKind::Dereference(Box::new(inner_exp))))
-            }
             Some(Token::LeftParen) => {
-                // if the inside is a valid type specifier, we'll scoop up
-                // specifiers and turn this into a Cast expression. Else,
-                // throw away parens and use just inner expression
-                if token_is_valid_specifier(self.tokens.peek().copied()) {
-                    let (type_, storage_class) = self.parse_type_and_storage_class()?;
-                    if storage_class.is_some() {
-                        return Err(ParserError::InvalidStorageClass);
-                    }
-                    let optional_abstract_declarator = self.parse_abstract_declarator()?;
-                    self.expect(Token::RightParen)?;
-                    let expr = self.parse_factor()?;
-                    let casted_type = match optional_abstract_declarator {
-                        Some(abstract_decl) => process_abstract_declarator(abstract_decl, type_),
-                        None => type_,
-                    };
-                    Ok(Expression::new(ExprKind::Cast(casted_type, Box::new(expr))))
-                } else {
-                    let inner_expr = self.parse_expression(0)?;
-                    self.expect(Token::RightParen)?;
-                    Ok(inner_expr)
-                }
+                let inner_expr = self.parse_expression(0)?;
+                self.expect(Token::RightParen)?;
+                Ok(inner_expr)
             }
             Some(Token::Identifier(ident)) => {
                 if let Some(Token::LeftParen) = self.tokens.peek() {
@@ -764,6 +918,10 @@ impl<'a> Parser<'a> {
             Some(t) => Err(ParserError::UnexpectedExpressionToken(t.into_string())),
             None => Err(ParserError::OutOfTokens),
         }
+    }
+
+    fn parse_factor(&mut self) -> Result<Expression, ParserError> {
+        self.parse_unary()
     }
 
     fn expect(&mut self, expected: Token<'a>) -> Result<(), ParserError> {
@@ -878,6 +1036,10 @@ fn process_declarator(
             };
             Ok((name, derived_ty, names))
         }
+        Declarator::Array(decl, size) => {
+            let derived_ty = CType::Array(Box::new(base_type), size);
+            process_declarator(*decl, derived_ty)
+        }
     }
 }
 
@@ -886,6 +1048,9 @@ fn process_abstract_declarator(declarator: AbstractDeclarator, base_type: CType)
         AbstractDeclarator::Base => base_type,
         AbstractDeclarator::Pointer(decl) => {
             process_abstract_declarator(*decl, CType::Pointer(Box::new(base_type)))
+        }
+        AbstractDeclarator::Array(decl, size) => {
+            process_abstract_declarator(*decl, CType::Array(Box::new(base_type), size))
         }
     }
 }
@@ -907,6 +1072,11 @@ mod tests {
     #[test]
     fn control_flow_fixture_parses() {
         let src = include_str!("../fixtures/control_flow.c");
+        insta::assert_debug_snapshot!(parse_source(src));
+    }
+    #[test]
+    fn array_operations_fixture_parses() {
+        let src = include_str!("../fixtures/array_operations.c");
         insta::assert_debug_snapshot!(parse_source(src));
     }
 
@@ -1501,7 +1671,7 @@ mod tests {
         ];
         let parse = Parser::new(&tokens);
         let ast = parse.into_ast();
-        assert!(ast.is_ok());
+        assert!(ast.is_ok(), "Expected okay but got {ast:?}");
         let actual = ast.unwrap();
         let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
             "main".into(),
@@ -1509,7 +1679,9 @@ mod tests {
             Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(
+                        Const::Int(1),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -1688,7 +1860,9 @@ mod tests {
             Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(
+                        Const::Int(1),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -1784,19 +1958,25 @@ mod tests {
             Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(
+                        Const::Int(1),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b".into(),
-                    init: Some(Expression::new(ExprKind::Constant(Const::Int(0)))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(
+                        Const::Int(0),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "c".into(),
-                    init: Some(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(
+                        Const::Int(2),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -1863,7 +2043,9 @@ mod tests {
             Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::new(ExprKind::Constant(Const::Int(10)))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(
+                        Const::Int(10),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -2064,7 +2246,9 @@ mod tests {
                     then: Box::new(Statement::Compound(crate::ast::Block(vec![
                         BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                             name: "x".into(),
-                            init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                            init: Some(Initializer::Single(Expression::new(ExprKind::Constant(
+                                Const::Int(1),
+                            )))),
                             storage_class: None,
                             vtype: CType::Int,
                         })),
@@ -2077,7 +2261,9 @@ mod tests {
                 BlockItem::Stmt(Statement::Compound(crate::ast::Block(vec![
                     BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                         name: "b".into(),
-                        init: Some(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                        init: Some(Initializer::Single(Expression::new(ExprKind::Constant(
+                            Const::Int(2),
+                        )))),
                         storage_class: None,
                         vtype: CType::Int,
                     })),
@@ -2123,14 +2309,18 @@ mod tests {
             Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(
+                        Const::Int(1),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
                 BlockItem::Stmt(Statement::For {
                     init: ForInit::InitDecl(VariableDeclaration {
                         name: "b".into(),
-                        init: Some(Expression::new(ExprKind::Constant(Const::Int(1)))),
+                        init: Some(Initializer::Single(Expression::new(ExprKind::Constant(
+                            Const::Int(1),
+                        )))),
                         storage_class: None,
                         vtype: CType::Int,
                     }),
@@ -2247,7 +2437,9 @@ mod tests {
             )),
             Declaration::VarDecl(VariableDeclaration {
                 name: "a".into(),
-                init: Some(Expression::new(ExprKind::Constant(Const::Int(3)))),
+                init: Some(Initializer::Single(Expression::new(ExprKind::Constant(
+                    Const::Int(3),
+                )))),
                 storage_class: Some(StorageClass::Static),
                 vtype: CType::Int,
             }),
@@ -2616,8 +2808,11 @@ mod tests {
             panic!("expected VarDecl as first block item");
         };
         assert_eq!(var.vtype, CType::Double, "wrong var type");
-        let Some(init_expr) = &var.init else {
+        let Some(init) = &var.init else {
             panic!("expected initializer");
+        };
+        let Initializer::Single(init_expr) = init else {
+            panic!("wrong initializer type")
         };
         assert_eq!(
             *init_expr.kind,
@@ -2702,8 +2897,13 @@ mod tests {
             panic!("expected VarDecl for i_ptr, got {:?}", items[1]);
         };
         assert_eq!(i_ptr.vtype, CType::Pointer(Box::new(CType::Int)));
+        let Initializer::Single(ref init) =
+            *i_ptr.init.as_ref().expect("Got a None initializer somehow")
+        else {
+            panic!("Got compound initializer but expected single");
+        };
         assert_eq!(
-            *i_ptr.init.as_ref().unwrap().kind,
+            *init.kind,
             ExprKind::AddressOf(Box::new(Expression::new(ExprKind::Var("i".into()))))
         );
 
@@ -2714,8 +2914,16 @@ mod tests {
             ptr_to_iptr.vtype,
             CType::Pointer(Box::new(CType::Pointer(Box::new(CType::Int))))
         );
+        let Initializer::Single(ref init) = *ptr_to_iptr
+            .init
+            .as_ref()
+            .expect("Got a None initializer somehow")
+        else {
+            panic!("Got compound initializer but expected single");
+        };
+
         assert_eq!(
-            *ptr_to_iptr.init.as_ref().unwrap().kind,
+            *init.kind,
             ExprKind::AddressOf(Box::new(Expression::new(ExprKind::Var("i_ptr".into()))))
         );
     }
@@ -2918,5 +3126,60 @@ mod tests {
                 "Identifier a".into()
             ))
         );
+    }
+
+    #[test]
+    fn array_subscript_parses() {
+        let src = r#"
+        int main(void) {
+            int foo[2] = { 0, 2 };
+            return foo[0];
+        }"#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let ast = Parser::new(&tokens).into_ast().unwrap();
+        let expected = AST::Program(vec![Declaration::FunDecl(FunctionDeclaration::new(
+            "main".into(),
+            vec![],
+            Some(crate::ast::Block(vec![
+                BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
+                    name: "foo".into(),
+                    init: Some(Initializer::Compound(vec![
+                        Initializer::Single(Expression::new(ExprKind::Constant(Const::Int(0)))),
+                        Initializer::Single(Expression::new(ExprKind::Constant(Const::Int(2)))),
+                    ])),
+                    storage_class: None,
+                    vtype: CType::Array(Box::new(CType::Int), 2),
+                })),
+                BlockItem::Stmt(Statement::Return(Expression::new(ExprKind::Subscript(
+                    Box::new(Expression::new(ExprKind::Var("foo".into()))),
+                    Box::new(Expression::new(ExprKind::Constant(Const::Int(0)))),
+                )))),
+            ])),
+            None,
+            CType::Int,
+        ))]);
+        assert_eq!(expected, ast);
+    }
+
+    #[test]
+    fn pointer_to_array_cast_repro() {
+        // full repro from writing-a-c-compiler-tests
+        // chapter_15/valid/casts/multi_dim_casts.c
+        let src = r#"
+        int main(void) {
+            int multi_dim[2][3] = {{0, 1, 2}, {3, 4, 5}};
+            int (*array_pointer)[2][3] = &multi_dim;
+            int (*row_pointer)[3] = (int (*)[3]) array_pointer;
+            
+            if ((int (*)[2][3]) row_pointer != array_pointer) {
+                return 5;
+            }
+            return 0;
+        }"#;
+        let lexer = crate::lexer::Lexer::lex(src).unwrap();
+        let tokens = lexer.as_syntactic_tokens();
+        let ast = Parser::new(&tokens).into_ast();
+        assert!(ast.is_ok(), "expected ok, got {ast:?}");
     }
 }

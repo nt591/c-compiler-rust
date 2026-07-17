@@ -1,0 +1,297 @@
+---
+source: src/parser.rs
+expression: parse_source(src)
+---
+Program(
+    [
+        FunDecl(
+            FunctionDeclaration {
+                name: "main",
+                params: [],
+                block: Some(
+                    Block(
+                        [
+                            Decl(
+                                VarDecl(
+                                    VariableDeclaration {
+                                        name: "foo",
+                                        init: Some(
+                                            Compound(
+                                                [
+                                                    Single(
+                                                        Expression {
+                                                            ty: (),
+                                                            kind: Constant(
+                                                                Int(
+                                                                    0,
+                                                                ),
+                                                            ),
+                                                        },
+                                                    ),
+                                                    Single(
+                                                        Expression {
+                                                            ty: (),
+                                                            kind: Constant(
+                                                                Int(
+                                                                    2,
+                                                                ),
+                                                            ),
+                                                        },
+                                                    ),
+                                                ],
+                                            ),
+                                        ),
+                                        storage_class: None,
+                                        vtype: Array(
+                                            Int,
+                                            2,
+                                        ),
+                                    },
+                                ),
+                            ),
+                            Decl(
+                                VarDecl(
+                                    VariableDeclaration {
+                                        name: "a",
+                                        init: Some(
+                                            Single(
+                                                Expression {
+                                                    ty: (),
+                                                    kind: Subscript(
+                                                        Expression {
+                                                            ty: (),
+                                                            kind: Var(
+                                                                "foo",
+                                                            ),
+                                                        },
+                                                        Expression {
+                                                            ty: (),
+                                                            kind: Constant(
+                                                                Int(
+                                                                    0,
+                                                                ),
+                                                            ),
+                                                        },
+                                                    ),
+                                                },
+                                            ),
+                                        ),
+                                        storage_class: None,
+                                        vtype: Int,
+                                    },
+                                ),
+                            ),
+                            Decl(
+                                VarDecl(
+                                    VariableDeclaration {
+                                        name: "bar",
+                                        init: Some(
+                                            Compound(
+                                                [
+                                                    Compound(
+                                                        [
+                                                            Single(
+                                                                Expression {
+                                                                    ty: (),
+                                                                    kind: Constant(
+                                                                        Int(
+                                                                            1,
+                                                                        ),
+                                                                    ),
+                                                                },
+                                                            ),
+                                                            Single(
+                                                                Expression {
+                                                                    ty: (),
+                                                                    kind: Constant(
+                                                                        Int(
+                                                                            2,
+                                                                        ),
+                                                                    ),
+                                                                },
+                                                            ),
+                                                            Single(
+                                                                Expression {
+                                                                    ty: (),
+                                                                    kind: Constant(
+                                                                        Int(
+                                                                            3,
+                                                                        ),
+                                                                    ),
+                                                                },
+                                                            ),
+                                                        ],
+                                                    ),
+                                                    Compound(
+                                                        [
+                                                            Single(
+                                                                Expression {
+                                                                    ty: (),
+                                                                    kind: Constant(
+                                                                        Int(
+                                                                            4,
+                                                                        ),
+                                                                    ),
+                                                                },
+                                                            ),
+                                                            Single(
+                                                                Expression {
+                                                                    ty: (),
+                                                                    kind: Constant(
+                                                                        Int(
+                                                                            5,
+                                                                        ),
+                                                                    ),
+                                                                },
+                                                            ),
+                                                            Single(
+                                                                Expression {
+                                                                    ty: (),
+                                                                    kind: Constant(
+                                                                        Int(
+                                                                            6,
+                                                                        ),
+                                                                    ),
+                                                                },
+                                                            ),
+                                                        ],
+                                                    ),
+                                                    Compound(
+                                                        [
+                                                            Single(
+                                                                Expression {
+                                                                    ty: (),
+                                                                    kind: Constant(
+                                                                        Int(
+                                                                            7,
+                                                                        ),
+                                                                    ),
+                                                                },
+                                                            ),
+                                                            Single(
+                                                                Expression {
+                                                                    ty: (),
+                                                                    kind: Constant(
+                                                                        Int(
+                                                                            8,
+                                                                        ),
+                                                                    ),
+                                                                },
+                                                            ),
+                                                            Single(
+                                                                Expression {
+                                                                    ty: (),
+                                                                    kind: Constant(
+                                                                        Int(
+                                                                            9,
+                                                                        ),
+                                                                    ),
+                                                                },
+                                                            ),
+                                                        ],
+                                                    ),
+                                                    Compound(
+                                                        [
+                                                            Single(
+                                                                Expression {
+                                                                    ty: (),
+                                                                    kind: Constant(
+                                                                        Int(
+                                                                            10,
+                                                                        ),
+                                                                    ),
+                                                                },
+                                                            ),
+                                                            Single(
+                                                                Expression {
+                                                                    ty: (),
+                                                                    kind: Constant(
+                                                                        Int(
+                                                                            11,
+                                                                        ),
+                                                                    ),
+                                                                },
+                                                            ),
+                                                            Single(
+                                                                Expression {
+                                                                    ty: (),
+                                                                    kind: Constant(
+                                                                        Int(
+                                                                            12,
+                                                                        ),
+                                                                    ),
+                                                                },
+                                                            ),
+                                                        ],
+                                                    ),
+                                                ],
+                                            ),
+                                        ),
+                                        storage_class: None,
+                                        vtype: Array(
+                                            Array(
+                                                Int,
+                                                3,
+                                            ),
+                                            4,
+                                        ),
+                                    },
+                                ),
+                            ),
+                            Decl(
+                                VarDecl(
+                                    VariableDeclaration {
+                                        name: "b",
+                                        init: Some(
+                                            Single(
+                                                Expression {
+                                                    ty: (),
+                                                    kind: Subscript(
+                                                        Expression {
+                                                            ty: (),
+                                                            kind: Subscript(
+                                                                Expression {
+                                                                    ty: (),
+                                                                    kind: Var(
+                                                                        "bar",
+                                                                    ),
+                                                                },
+                                                                Expression {
+                                                                    ty: (),
+                                                                    kind: Constant(
+                                                                        Int(
+                                                                            1,
+                                                                        ),
+                                                                    ),
+                                                                },
+                                                            ),
+                                                        },
+                                                        Expression {
+                                                            ty: (),
+                                                            kind: Constant(
+                                                                Int(
+                                                                    3,
+                                                                ),
+                                                            ),
+                                                        },
+                                                    ),
+                                                },
+                                            ),
+                                        ),
+                                        storage_class: None,
+                                        vtype: Int,
+                                    },
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+                storage_class: None,
+                ftype: FunType {
+                    params: [],
+                    ret: Int,
+                },
+            },
+        ),
+    ],
+)

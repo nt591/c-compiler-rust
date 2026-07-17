@@ -32,6 +32,7 @@ pub fn convert_const(c: Const, target: &CType) -> StaticInit {
         }
         // rely on semantic analysis to ensure we pass in a valid bits
         CType::Pointer(_) => StaticInit::ULongInit(bits as u64),
+        CType::Array(_, _) => todo!(),
     }
 }
 
@@ -57,6 +58,7 @@ fn double_to_const(c: Const, target: &CType) -> StaticInit {
         CType::Double => StaticInit::DoubleInit(bits),
         CType::FunType { .. } => panic!("Cannot convert double to funtype"),
         CType::Pointer(_) => unreachable!(),
+        CType::Array(_, _) => todo!(),
     }
 }
 
