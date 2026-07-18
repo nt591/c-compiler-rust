@@ -32,7 +32,7 @@ pub fn convert_const(c: Const, target: &CType) -> StaticInit {
         }
         // rely on semantic analysis to ensure we pass in a valid bits
         CType::Pointer(_) => StaticInit::ULongInit(bits as u64),
-        CType::Array(_, _) => todo!(),
+        CType::Array(_, _) => unreachable!(),
     }
 }
 

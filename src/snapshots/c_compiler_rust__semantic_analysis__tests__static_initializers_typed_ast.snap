@@ -7,18 +7,7 @@ Program(
         VarDecl(
             VariableDeclaration {
                 name: "d1",
-                init: Some(
-                    Single(
-                        Expression {
-                            ty: Double,
-                            kind: Constant(
-                                Double(
-                                    2147483647.0,
-                                ),
-                            ),
-                        },
-                    ),
-                ),
+                init: None,
                 storage_class: None,
                 vtype: Double,
             },
@@ -26,18 +15,7 @@ Program(
         VarDecl(
             VariableDeclaration {
                 name: "d2",
-                init: Some(
-                    Single(
-                        Expression {
-                            ty: Double,
-                            kind: Constant(
-                                Double(
-                                    4294967295.0,
-                                ),
-                            ),
-                        },
-                    ),
-                ),
+                init: None,
                 storage_class: None,
                 vtype: Double,
             },
@@ -45,18 +23,7 @@ Program(
         VarDecl(
             VariableDeclaration {
                 name: "d3",
-                init: Some(
-                    Single(
-                        Expression {
-                            ty: Double,
-                            kind: Constant(
-                                Double(
-                                    4.61168601842739e18,
-                                ),
-                            ),
-                        },
-                    ),
-                ),
+                init: None,
                 storage_class: None,
                 vtype: Double,
             },
@@ -72,18 +39,7 @@ Program(
         VarDecl(
             VariableDeclaration {
                 name: "i",
-                init: Some(
-                    Single(
-                        Expression {
-                            ty: Int,
-                            kind: Constant(
-                                Int(
-                                    4,
-                                ),
-                            ),
-                        },
-                    ),
-                ),
+                init: None,
                 storage_class: Some(
                     Static,
                 ),
@@ -93,18 +49,7 @@ Program(
         VarDecl(
             VariableDeclaration {
                 name: "u",
-                init: Some(
-                    Single(
-                        Expression {
-                            ty: UInt,
-                            kind: Constant(
-                                UInt(
-                                    4294967292,
-                                ),
-                            ),
-                        },
-                    ),
-                ),
+                init: None,
                 storage_class: None,
                 vtype: UInt,
             },
@@ -112,18 +57,7 @@ Program(
         VarDecl(
             VariableDeclaration {
                 name: "l",
-                init: Some(
-                    Single(
-                        Expression {
-                            ty: Long,
-                            kind: Constant(
-                                Long(
-                                    4611686018427389952,
-                                ),
-                            ),
-                        },
-                    ),
-                ),
+                init: None,
                 storage_class: None,
                 vtype: Long,
             },
@@ -131,18 +65,7 @@ Program(
         VarDecl(
             VariableDeclaration {
                 name: "ul",
-                init: Some(
-                    Single(
-                        Expression {
-                            ty: ULong,
-                            kind: Constant(
-                                ULong(
-                                    18446744073709549568,
-                                ),
-                            ),
-                        },
-                    ),
-                ),
+                init: None,
                 storage_class: None,
                 vtype: ULong,
             },

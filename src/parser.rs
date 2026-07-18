@@ -415,10 +415,12 @@ impl<'a> Parser<'a> {
             self.expect(Token::CloseBracket)?;
         }
 
-        // at this point our vector has all sizes, so we can wrap in reverse
+        // at this point we have a stack of ex [1, 2] for array[1][2].
+        // Remember that array[1][2] means an array of one element, and that
+        // element itself is an array of two elements.
+        // So that should become here Array(Array(name, 1), 2)
         let mut decl = declarator;
-        while consts.len() > 0 {
-            let c = consts.pop().unwrap();
+        for c in consts {
             decl = Declarator::Array(Box::new(decl), *c);
         }
 

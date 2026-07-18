@@ -5,7 +5,7 @@ use std::collections::HashMap;
 #[derive(PartialEq, Debug)]
 pub enum InitialValue {
     Tentative,
-    Initial(StaticInit),
+    Initial(Vec<StaticInit>),
     NoInitializer, // extern variable declarations are not tentative
 }
 

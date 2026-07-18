@@ -83,14 +83,14 @@ pub enum SemanticAnalysisError {
     ConflictingFileScopeVarDecl,
     #[error("Initializer on local extern variable declaration")]
     InitializerOnLocalExternVarDecl,
-    #[error("Non-constant initializer on local static variable declaration")]
-    NonConstInitOnLocalStaticVar,
     #[error("Storage class specifier not allowed in for-loop init declaration")]
     StorageClassInForInit,
     #[error("Redeclared local var from {0:?} to {1:?}")]
     VariableDeclaredWithNewType(CType, CType),
     #[error("Invalid operator: {0:?}")]
     InvalidOperator(String),
+    #[error("Invalid operands for op: {0:?} - {1:?}, {2:?}")]
+    InvalidOperands(String, String, String),
     #[error("Got unexpected expression {0:?} in AddressOf operator")]
     UnexpectedExpressionInAddressOf(Expression),
     #[error("Got unexpected type {0:?} in Dereference operator")]
@@ -103,6 +103,10 @@ pub enum SemanticAnalysisError {
     InvalidConversionOfDoublesAndPtrs,
     #[error("Non-zero pointer initializer")]
     NonZeroPointerInitializer,
+    #[error("Cannot cast to array type")]
+    CannotCastToArrayType,
+    #[error("Invalid initializer: {0}")]
+    InvalidInitializer(String),
 }
 
 #[derive(Debug, Clone)]
@@ -261,7 +265,7 @@ pub fn resolve(ast: &mut AST) -> Result<(SymbolTable, TypedAST), SemanticAnalysi
     Ok((table, typed_ast))
 }
 
-fn typecheck_ast(ast: &AST, ctx: &mut Ctx) -> Result<TypedAST, SemanticAnalysisError> {
+fn typecheck_ast(ast: &mut AST, ctx: &mut Ctx) -> Result<TypedAST, SemanticAnalysisError> {
     let AST::Program(decls) = ast;
     let mut typed_decls = Vec::with_capacity(decls.len());
     for decl in decls {
@@ -279,12 +283,35 @@ fn typecheck_ast(ast: &AST, ctx: &mut Ctx) -> Result<TypedAST, SemanticAnalysisE
 }
 
 fn typecheck_function_declaration(
-    decl: &FunctionDeclaration,
+    decl: &mut FunctionDeclaration,
     ctx: &mut Ctx,
 ) -> Result<TypedFunctionDeclaration, SemanticAnalysisError> {
+    {
+        // block scope to shorted lifetime of mutable borrow
+        let CType::FunType { params, ret } = &mut decl.ftype else {
+            unreachable!();
+        };
+        if matches!(*ret.as_ref(), CType::Array(_, _)) {
+            return Err(SemanticAnalysisError::InvalidOperator(format!(
+                "Cannot return array type {ret:?} from function"
+            )));
+        }
+        // rewrite params to replace array types with a pointer to the underlying type.
+        // This is just the normal implicit conversion for array params.
+        // Gotta juggle here to manage rust ownership lifetimes.
+        // Gotta find a cleaner API here.
+        for param in params.iter_mut() {
+            let CType::Array(_, _) = param else { continue };
+            let CType::Array(elem_ty, _) = std::mem::replace(param, CType::Int) else {
+                unreachable!()
+            };
+            *param = CType::Pointer(elem_ty)
+        }
+    }
     let CType::FunType { params, ret } = &decl.ftype else {
         unreachable!();
     };
+
     let has_body = decl.block.is_some();
     let mut already_defined = false;
     let mut global = decl.storage_class != Some(StorageClass::Static);
@@ -336,7 +363,7 @@ fn typecheck_function_declaration(
             },
         ),
     );
-    let typed_block = if let Some(block) = &decl.block {
+    let typed_block = if let Some(ref mut block) = decl.block {
         for (param, ty) in decl.params.iter().zip(params) {
             ctx.symbol_table
                 .insert(param.clone(), (ty.clone(), IdentifierAttrs::LocalAttr));
@@ -361,6 +388,74 @@ fn typecheck_function_declaration(
     })
 }
 
+fn convert_compound_initializer_to_static_init(
+    target_type: &CType,
+    init: &Initializer,
+    ctx: &mut Ctx,
+) -> Result<Vec<StaticInit>, SemanticAnalysisError> {
+    match init {
+        Initializer::Single(expr) => match *expr.kind {
+            ExprKind::Constant(c) => {
+                // if target is array, can't convert a scalar to it
+                if matches!(target_type, CType::Array(_, _)) {
+                    return Err(SemanticAnalysisError::InvalidInitializer(format!(
+                        "Can't convert {expr:?} (scalar) to array"
+                    )));
+                }
+                let converted = const_eval::convert_const(c, target_type);
+                if matches!(target_type, CType::Pointer(_))
+                    && !types::static_init_is_zeroed(&converted)
+                {
+                    return Err(SemanticAnalysisError::NonZeroPointerInitializer);
+                }
+                // use zero_init when possible here
+                let converted = match converted {
+                    StaticInit::IntInit(0) => StaticInit::ZeroInit(4),
+                    StaticInit::UIntInit(0) => StaticInit::ZeroInit(4),
+                    StaticInit::LongInit(0) => StaticInit::ZeroInit(8),
+                    StaticInit::ULongInit(0) => StaticInit::ZeroInit(8),
+                    StaticInit::DoubleInit(0.0) => StaticInit::ZeroInit(8),
+                    c => c,
+                };
+                Ok(vec![converted])
+            }
+            _ => return Err(SemanticAnalysisError::NonConstantInitializer),
+        },
+        Initializer::Compound(inits) => match target_type {
+            CType::Array(array_ty, size) => {
+                if inits.len() > *size {
+                    return Err(SemanticAnalysisError::InvalidInitializer(format!(
+                        "Too many initializers in {init:?} for declared length {size:}"
+                    )));
+                }
+                let mut converted_inits = Vec::with_capacity(*size);
+                for init in inits {
+                    let converted_nested =
+                        convert_compound_initializer_to_static_init(array_ty, init, ctx)?;
+                    converted_inits.extend(converted_nested)
+                }
+
+                // we need to pad the end with a combined ZeroInit, ex the book says
+                // static int nested[3][2] = {{100}, {200, 300}};
+                // will have this initializer:
+                // Initial([IntInit(100),
+                //   ZeroInit(4),
+                //   IntInit(200),
+                //   IntInit(300),
+                //   ZeroInit(8)])
+                let pad_length = *size - inits.len();
+                if pad_length > 0 {
+                    converted_inits.push(StaticInit::ZeroInit((array_ty.size() / 8) * pad_length));
+                }
+                Ok(converted_inits)
+            }
+            _ => Err(SemanticAnalysisError::InvalidInitializer(format!(
+                "Invalid scalar ctype {target_type:?} for compound initializer {init:?}"
+            ))),
+        },
+    }
+}
+
 fn typecheck_file_scope_variable_declaration(
     var: &VariableDeclaration,
     ctx: &mut Ctx,
@@ -369,23 +464,14 @@ fn typecheck_file_scope_variable_declaration(
     // Can either be a known constant value,
     // Tentative if the storage class is Static or unknown,
     // or explicitly no initializer for an extern variable
-    let mut initial_value = match &var.init {
-        None if var.storage_class == Some(StorageClass::Extern) => InitialValue::NoInitializer,
-        None => InitialValue::Tentative,
-        Some(Initializer::Single(expr)) => match *expr.kind {
-            ExprKind::Constant(c) => {
-                let converted = const_eval::convert_const(c, &var.vtype);
-                if matches!(&var.vtype, CType::Pointer(_))
-                    && !types::static_init_is_zeroed(&converted)
-                {
-                    return Err(SemanticAnalysisError::NonZeroPointerInitializer);
-                }
-                InitialValue::Initial(converted)
-            }
-            _ => return Err(SemanticAnalysisError::NonConstantInitializer),
-        },
-        Some(Initializer::Compound(_)) => todo!(),
-    };
+    let mut initial_value =
+        match &var.init {
+            None if var.storage_class == Some(StorageClass::Extern) => InitialValue::NoInitializer,
+            None => InitialValue::Tentative,
+            Some(initializer) => InitialValue::Initial(
+                convert_compound_initializer_to_static_init(&var.vtype, initializer, ctx)?,
+            ),
+        };
 
     // is this variable global?
     // Yes IF it isn't explicitly static
@@ -418,11 +504,11 @@ fn typecheck_file_scope_variable_declaration(
         // Else if we're checking a declaration with no initial value,
         // and we've already called it Tentative, keep it tentative.
         match old_init {
-            InitialValue::Initial(c) => {
+            InitialValue::Initial(v) => {
                 if let InitialValue::Initial(_) = initial_value {
                     return Err(SemanticAnalysisError::ConflictingFileScopeVarDecl);
                 }
-                initial_value = InitialValue::Initial(*c);
+                initial_value = InitialValue::Initial(v.clone());
             }
             InitialValue::Tentative => {
                 if !matches!(initial_value, InitialValue::Initial(_)) {
@@ -432,11 +518,6 @@ fn typecheck_file_scope_variable_declaration(
             _ => {}
         }
     }
-    let init = var.init.as_ref().and_then(|init| match init {
-        Initializer::Single(e) => Some(e),
-        Initializer::Compound(_) => todo!(),
-    });
-    let typed_init = typed_expr_for_initial_value(init, &initial_value);
     ctx.symbol_table.insert(
         var.name.clone(),
         (
@@ -447,23 +528,18 @@ fn typecheck_file_scope_variable_declaration(
             },
         ),
     );
-    let typed_init = typed_init.and_then(|typed_e| match &var.init {
-        None => None,
-        Some(Initializer::Single(_)) => Some(TypedInitializer::Single(typed_e)),
-        Some(Initializer::Compound(_)) => todo!(),
-    });
     Ok(TypedVariableDeclaration {
         name: var.name.clone(),
-        init: typed_init,
+        init: None, // never read so we drop it to avoid wrestling with zeroinit stuff
         storage_class: var.storage_class,
         vtype: var.vtype.clone(),
     })
 }
 
-fn typecheck_block(decl: &Block, ctx: &mut Ctx) -> Result<TypedBlock, SemanticAnalysisError> {
+fn typecheck_block(decl: &mut Block, ctx: &mut Ctx) -> Result<TypedBlock, SemanticAnalysisError> {
     let crate::ast::Block(body) = decl;
     let mut typed_body = Vec::with_capacity(body.len());
-    for body_item in body.iter() {
+    for body_item in body.iter_mut() {
         let block_item = match body_item {
             BlockItem::Decl(Declaration::VarDecl(declaration)) => TypedBlockItem::Decl(
                 TypedDeclaration::VarDecl(typecheck_local_var_decl(declaration, ctx)?),
@@ -533,28 +609,16 @@ fn typecheck_local_var_decl(
             // Any non-constant initializer is a type error.
             let new_init = match init {
                 None => {
-                    InitialValue::Initial(const_eval::convert_const(Const::Int(0), &decl.vtype))
+                    let initializer = match &decl.vtype {
+                        t @ CType::Array(_, _) => StaticInit::ZeroInit(t.size() / 8),
+                        t => const_eval::convert_const(Const::Int(0), &t),
+                    };
+                    InitialValue::Initial(vec![initializer])
                 }
-                Some(Initializer::Single(expr)) => match *expr.kind {
-                    ExprKind::Constant(c) => {
-                        let converted_const = const_eval::convert_const(c, &decl.vtype);
-                        if matches!(&decl.vtype, CType::Pointer(_))
-                            && !types::static_init_is_zeroed(&converted_const)
-                        {
-                            return Err(SemanticAnalysisError::NonZeroPointerInitializer);
-                        }
-                        InitialValue::Initial(converted_const)
-                    }
-                    _ => return Err(SemanticAnalysisError::NonConstInitOnLocalStaticVar),
-                },
-                Some(Initializer::Compound(_)) => todo!(),
+                Some(initializer) => InitialValue::Initial(
+                    convert_compound_initializer_to_static_init(&decl.vtype, initializer, ctx)?,
+                ),
             };
-            // book says to just re-build here instead of typechecking.
-            let initializer_expr = init.as_ref().and_then(|init| match init {
-                Initializer::Single(e) => Some(e),
-                Initializer::Compound(_) => todo!(),
-            });
-            let typed_init = typed_expr_for_initial_value(initializer_expr, &new_init);
             ctx.symbol_table.insert(
                 name.clone(),
                 (
@@ -565,15 +629,9 @@ fn typecheck_local_var_decl(
                     },
                 ),
             );
-            let rewrapped_typed_init = typed_init.and_then(|e| {
-                init.as_ref().and_then(|init| match init {
-                    Initializer::Single(_) => Some(TypedInitializer::Single(e)),
-                    Initializer::Compound(_) => todo!(),
-                })
-            });
             TypedVariableDeclaration {
                 name: name.clone(),
-                init: rewrapped_typed_init,
+                init: None, // we don't use this in tacky generation so I can drop it
                 storage_class: Some(StorageClass::Static),
                 vtype: decl.vtype.clone(),
             }
@@ -585,24 +643,14 @@ fn typecheck_local_var_decl(
                 (decl.vtype.clone(), IdentifierAttrs::LocalAttr),
             );
             let typed_init = if let Some(init) = init {
-                let Initializer::Single(init_expr) = init else {
-                    todo!();
-                };
-                let e1 = typecheck_expr(init_expr, ctx)?;
-                let converted = convert_by_assignment(e1, decl.vtype.clone())?;
+                let converted = typecheck_initializer(&decl.vtype, init, ctx)?;
                 Some(converted)
             } else {
                 None
             };
-            let rewrapped_typed_init = typed_init.and_then(|e| {
-                init.as_ref().and_then(|init| match init {
-                    Initializer::Single(_) => Some(TypedInitializer::Single(e)),
-                    Initializer::Compound(_) => todo!(),
-                })
-            });
             TypedVariableDeclaration {
                 name: name.clone(),
-                init: rewrapped_typed_init,
+                init: typed_init,
                 storage_class: None,
                 vtype: decl.vtype.clone(),
             }
@@ -612,14 +660,14 @@ fn typecheck_local_var_decl(
 }
 
 fn typecheck_statement(
-    statement: &Statement,
+    statement: &mut Statement,
     ctx: &mut Ctx,
 ) -> Result<TypedStatement, SemanticAnalysisError> {
     let stmt = match statement {
         Statement::Null => TypedStatement::Null,
-        Statement::Expr(expr) => TypedStatement::Expr(typecheck_expr(expr, ctx)?),
+        Statement::Expr(expr) => TypedStatement::Expr(typecheck_and_convert(expr, ctx)?),
         Statement::Return(expr) => {
-            let inner_expr = typecheck_expr(expr, ctx)?;
+            let inner_expr = typecheck_and_convert(expr, ctx)?;
             let Some(ref ret_ty) = ctx.enclosing_func_ret_ty else {
                 panic!(
                     "Got a return statement without setting the enclosing function's return type"
@@ -638,7 +686,7 @@ fn typecheck_statement(
                 None => None,
             };
             TypedStatement::If {
-                condition: typecheck_expr(condition, ctx)?,
+                condition: typecheck_and_convert(condition, ctx)?,
                 then: Box::new(typecheck_statement(then, ctx)?),
                 else_: else_stmt,
             }
@@ -656,7 +704,7 @@ fn typecheck_statement(
             body,
             label,
         } => TypedStatement::DoWhile {
-            condition: typecheck_expr(condition, ctx)?,
+            condition: typecheck_and_convert(condition, ctx)?,
             body: Box::new(typecheck_statement(body, ctx)?),
             label: label.clone(),
         },
@@ -665,7 +713,7 @@ fn typecheck_statement(
             body,
             label,
         } => TypedStatement::While {
-            condition: typecheck_expr(condition, ctx)?,
+            condition: typecheck_and_convert(condition, ctx)?,
             body: Box::new(typecheck_statement(body, ctx)?),
             label: label.clone(),
         },
@@ -704,11 +752,117 @@ fn typecheck_optional_expr(
     ctx: &mut Ctx,
 ) -> Result<Option<TypedExpression>, SemanticAnalysisError> {
     let inner_expr = if let Some(expression) = expr {
-        Some(typecheck_expr(expression, ctx)?)
+        Some(typecheck_and_convert(expression, ctx)?)
     } else {
         None
     };
     Ok(inner_expr)
+}
+
+// take declared type of LHS of initializer,
+// type the RHS and make sure they match
+fn typecheck_initializer(
+    target_type: &CType,
+    init: &Initializer,
+    ctx: &mut Ctx,
+) -> Result<TypedInitializer, SemanticAnalysisError> {
+    match (&target_type, init) {
+        (_, Initializer::Single(e)) => {
+            // simple case: typecheck and convert to Ptr as needed,
+            // cast to type of LHS, then return.
+            let e = typecheck_and_convert(e, ctx)?;
+            let cast = convert_by_assignment(e, target_type.clone())?;
+            Ok(TypedInitializer::Single(TypedExpression {
+                kind: Box::new(TypedExprKind::Cast(target_type.clone(), Box::new(cast))),
+                ty: target_type.clone(),
+            }))
+        }
+        (CType::Array(array_ty, size), Initializer::Compound(inits)) => {
+            // make sure we don't have too many initializer values,
+            // then typecheck each initializer in the list,
+            // then we'll pad the remainder with zero-initialized remaining values
+            if inits.len() > *size {
+                return Err(SemanticAnalysisError::InvalidInitializer(format!(
+                    "Too many initializers in {init:?} for declared length {size:}"
+                )));
+            }
+            let mut typechecked_exprs = Vec::with_capacity(*size);
+            typechecked_exprs.extend(
+                inits
+                    .into_iter()
+                    .map(|initializer| typecheck_initializer(array_ty, initializer, ctx))
+                    .collect::<Result<Vec<_>, SemanticAnalysisError>>()?,
+            );
+            while typechecked_exprs.len() < *size {
+                typechecked_exprs.push(zero_initializer(array_ty.as_ref()))
+            }
+            Ok(TypedInitializer::Compound(typechecked_exprs))
+        }
+        (ctype, Initializer::Compound(_)) => Err(SemanticAnalysisError::InvalidInitializer(
+            format!("Invalid scalar ctype {ctype:?} for compound initializer {init:?}"),
+        )),
+    }
+}
+
+fn zero_initializer(ctype: &CType) -> TypedInitializer {
+    match ctype {
+        CType::Int => TypedInitializer::Single(TypedExpression {
+            kind: Box::new(TypedExprKind::Constant(Const::Int(0))),
+            ty: CType::Int,
+        }),
+        CType::UInt => TypedInitializer::Single(TypedExpression {
+            kind: Box::new(TypedExprKind::Constant(Const::UInt(0))),
+            ty: CType::UInt,
+        }),
+        CType::Long => TypedInitializer::Single(TypedExpression {
+            kind: Box::new(TypedExprKind::Constant(Const::Long(0))),
+            ty: CType::Long,
+        }),
+        CType::ULong => TypedInitializer::Single(TypedExpression {
+            kind: Box::new(TypedExprKind::Constant(Const::ULong(0))),
+            ty: CType::ULong,
+        }),
+        CType::Double => TypedInitializer::Single(TypedExpression {
+            kind: Box::new(TypedExprKind::Constant(Const::Double(0.0))),
+            ty: CType::Double,
+        }),
+        CType::Array(ty, size) => {
+            // I bet there's a neat std::iter::repeat trick here
+            let mut nested = Vec::with_capacity(*size);
+            while nested.len() < *size {
+                nested.push(zero_initializer(ty))
+            }
+            TypedInitializer::Compound(nested)
+        }
+        CType::FunType { .. } | CType::Pointer(_) => {
+            unreachable!("Tried to initialize an array with type {ctype:?}")
+        }
+    }
+}
+
+// helper function to wrap arrays as pointers (addressof)
+// Note that the returned TypedExpression wraps the type of what
+// the array contains, NOT the CType::Array. This means that
+// the type of int foo[2] gets converted to
+// a pointer to int, NOT a pointer to array. This is unlike
+// all other pointers. However, &foo WOULD be the type int (*)[2]
+// since the address of the array is a pointer to an array of two ints
+fn typecheck_and_convert(
+    expr: &Expression,
+    ctx: &mut Ctx,
+) -> Result<TypedExpression, SemanticAnalysisError> {
+    //
+    let typed = typecheck_expr(expr, ctx)?;
+    match typed.get_type() {
+        CType::Array(elem, _size) => {
+            let kind = Box::new(TypedExprKind::AddressOf(Box::new(typed)));
+            Ok(TypedExpression {
+                kind,
+                ty: CType::Pointer(elem),
+            })
+        }
+        _ => Ok(typed),
+    }
 }
 
 fn typecheck_expr(
@@ -738,7 +892,7 @@ fn typecheck_expr(
             (TypedExprKind::Constant(c.clone()), CType::Double)
         }
         ExprKind::Unary(op, expr) => {
-            let inner = typecheck_expr(expr, ctx)?;
+            let inner = typecheck_and_convert(expr, ctx)?;
             let inner_ty = inner.get_type(); // todo: make sure we only clone when we need
             // can't take bitwise complement of a double
             if *op == UnaryOp::Complement && inner_ty == CType::Double {
@@ -765,15 +919,131 @@ fn typecheck_expr(
         }
         ExprKind::Binary(o @ BinaryOp::BinAnd, lhs, rhs)
         | ExprKind::Binary(o @ BinaryOp::BinOr, lhs, rhs) => {
-            let e1 = typecheck_expr(lhs, ctx)?;
-            let e2 = typecheck_expr(rhs, ctx)?;
+            let e1 = typecheck_and_convert(lhs, ctx)?;
+            let e2 = typecheck_and_convert(rhs, ctx)?;
             // AND and OR operations convert to an integer
             let ty = CType::Int;
             (TypedExprKind::Binary(*o, Box::new(e1), Box::new(e2)), ty)
         }
+        ExprKind::Binary(BinaryOp::Add, lhs, rhs) => {
+            let e1 = typecheck_and_convert(lhs, ctx)?;
+            let e2 = typecheck_and_convert(rhs, ctx)?;
+            let t1 = e1.get_type();
+            let t2 = e2.get_type();
+
+            // if both exprs are arithmetic, we have simple logic: cast to common type
+            if t1.is_arithmetic() && t2.is_arithmetic() {
+                let common_type = CType::get_common_type(t1, t2);
+                // we now need to see if each expression needs to be potentially
+                // cast to the common type
+                let converted_e1 = convert_to(e1, common_type.clone());
+                let converted_e2 = convert_to(e2, common_type.clone());
+                let bin_expr = TypedExprKind::Binary(
+                    BinaryOp::Add,
+                    Box::new(converted_e1),
+                    Box::new(converted_e2),
+                );
+                (bin_expr, common_type)
+            } else if t1.is_pointer() && t2.is_integer_type() {
+                // convert integer-type to a long, then we can add.
+                // This just allows us to use 8 bytes everywhere.
+                let converted_e2 = convert_to(e2, CType::Long);
+                let bin_expr =
+                    TypedExprKind::Binary(BinaryOp::Add, Box::new(e1), Box::new(converted_e2));
+                (bin_expr, t1)
+            } else if t1.is_integer_type() && t2.is_pointer() {
+                // ditto - convert integer to long, add new long + pointer,
+                // return type of pointer
+                let converted_e1 = convert_to(e1, CType::Long);
+                let bin_expr =
+                    TypedExprKind::Binary(BinaryOp::Add, Box::new(converted_e1), Box::new(e2));
+                (bin_expr, t2)
+            } else {
+                return Err(SemanticAnalysisError::InvalidOperands(
+                    format!("{:?}", BinaryOp::Add),
+                    format!("{e1:?}"),
+                    format!("{e2:?}"),
+                ));
+            }
+        }
+        ExprKind::Binary(BinaryOp::Subtract, lhs, rhs) => {
+            let e1 = typecheck_and_convert(lhs, ctx)?;
+            let e2 = typecheck_and_convert(rhs, ctx)?;
+            let t1 = e1.get_type();
+            let t2 = e2.get_type();
+
+            // if both exprs are arithmetic, we have simple logic: cast to common type
+            if t1.is_arithmetic() && t2.is_arithmetic() {
+                let common_type = CType::get_common_type(t1, t2);
+                // we now need to see if each expression needs to be potentially
+                // cast to the common type
+                let converted_e1 = convert_to(e1, common_type.clone());
+                let converted_e2 = convert_to(e2, common_type.clone());
+                let bin_expr = TypedExprKind::Binary(
+                    BinaryOp::Subtract,
+                    Box::new(converted_e1),
+                    Box::new(converted_e2),
+                );
+                (bin_expr, common_type)
+            } else if t1.is_pointer() && t2.is_integer_type() {
+                // we're allowed to subtract an int from a pointer, but not the other way around
+                let converted_e2 = convert_to(e2, CType::Long);
+                let bin_expr =
+                    TypedExprKind::Binary(BinaryOp::Subtract, Box::new(e1), Box::new(converted_e2));
+                (bin_expr, t1)
+            } else if t1.is_pointer() && t1 == t2 {
+                // we CAN subtract pointers from one another IFF they have the same type, so that
+                // includes the underlying type
+                // Note that the return type must be some 8byte integer type to effectively tell us
+                // the distance between the two addresses, so we use a long here
+                let bin_expr =
+                    TypedExprKind::Binary(BinaryOp::Subtract, Box::new(e1), Box::new(e2));
+                (bin_expr, CType::Long)
+            } else {
+                return Err(SemanticAnalysisError::InvalidOperands(
+                    format!("{:?}", BinaryOp::Subtract),
+                    format!("{e1:?}"),
+                    format!("{e2:?}"),
+                ));
+            }
+        }
+        ExprKind::Binary(
+            op @ (BinaryOp::LessThan
+            | BinaryOp::LessOrEqual
+            | BinaryOp::GreaterThan
+            | BinaryOp::GreaterOrEqual),
+            lhs,
+            rhs,
+        ) => {
+            // special case these relational ops since we CAN compare pointers IFF they are of the
+            // same type. Note that the return type is always an int for these relational
+            // comparison operations.
+            let e1 = typecheck_and_convert(lhs, ctx)?;
+            let e2 = typecheck_and_convert(rhs, ctx)?;
+            let t1 = e1.get_type();
+            let t2 = e2.get_type();
+
+            if t1.is_arithmetic() && t2.is_arithmetic() {
+                let common_type = CType::get_common_type(t1, t2);
+                let converted_e1 = convert_to(e1, common_type.clone());
+                let converted_e2 = convert_to(e2, common_type.clone());
+                let bin_expr =
+                    TypedExprKind::Binary(*op, Box::new(converted_e1), Box::new(converted_e2));
+                (bin_expr, CType::Int)
+            } else if t1.is_pointer() && t1 == t2 {
+                let bin_expr = TypedExprKind::Binary(*op, Box::new(e1), Box::new(e2));
+                (bin_expr, CType::Int)
+            } else {
+                return Err(SemanticAnalysisError::InvalidOperands(
+                    format!("{:?}", op),
+                    format!("{e1:?}"),
+                    format!("{e2:?}"),
+                ));
+            }
+        }
         ExprKind::Binary(op, lhs, rhs) => {
-            let e1 = typecheck_expr(lhs, ctx)?;
-            let e2 = typecheck_expr(rhs, ctx)?;
+            let e1 = typecheck_and_convert(lhs, ctx)?;
+            let e2 = typecheck_and_convert(rhs, ctx)?;
             let t1 = e1.get_type();
             let t2 = e2.get_type();
             // can't take remainder with double operands
@@ -814,22 +1084,21 @@ fn typecheck_expr(
                 TypedExprKind::Binary(*op, Box::new(converted_e1), Box::new(converted_e2));
             // some binops return an int
             let t = match op {
-                BinaryOp::Add
-                | BinaryOp::Subtract
-                | BinaryOp::Multiply
-                | BinaryOp::Divide
-                | BinaryOp::Remainder => common_type,
+                BinaryOp::Add | BinaryOp::Subtract => {
+                    unreachable!("should have handled adds and subtracts in another arm")
+                }
+                BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Remainder => common_type,
                 _ => CType::Int,
             };
             (bin_expr, t)
         }
         ExprKind::Assignment(lhs, rhs) => {
-            if !is_lvalue(lhs.kind.as_ref()) {
+            let e1 = typecheck_and_convert(lhs, ctx)?;
+            if !is_lvalue(e1.kind.as_ref()) {
                 return Err(SemanticAnalysisError::InvalidLhsAssignmentNode);
             };
 
-            let e1 = typecheck_expr(lhs, ctx)?;
-            let e2 = typecheck_expr(rhs, ctx)?;
+            let e2 = typecheck_and_convert(rhs, ctx)?;
             let ty = e1.get_type();
             let converted_rhs = convert_by_assignment(e2, ty.clone())?;
             (
@@ -842,9 +1111,9 @@ fn typecheck_expr(
             then,
             else_,
         } => {
-            let cond = typecheck_expr(condition, ctx)?;
-            let e1 = typecheck_expr(then, ctx)?;
-            let e2 = typecheck_expr(else_, ctx)?;
+            let cond = typecheck_and_convert(condition, ctx)?;
+            let e1 = typecheck_and_convert(then, ctx)?;
+            let e2 = typecheck_and_convert(else_, ctx)?;
             let t1 = e1.get_type();
             let t2 = e2.get_type();
             // again, if either type is a pointer type: cast to common ptr
@@ -870,7 +1139,11 @@ fn typecheck_expr(
         }
 
         ExprKind::Cast(ty, expr) => {
-            let expr = typecheck_expr(expr, ctx)?;
+            // cannot cast to an array type.
+            if matches!(ty, CType::Array(_, _)) {
+                return Err(SemanticAnalysisError::CannotCastToArrayType);
+            }
+            let expr = typecheck_and_convert(expr, ctx)?;
             // illegal to cast double-to-ptr or ptr-to-double
             match (ty, expr.get_type()) {
                 (CType::Double, CType::Pointer(_)) | (CType::Pointer(_), CType::Double) => {
@@ -900,7 +1173,7 @@ fn typecheck_expr(
             }
             let mut converted_args = vec![];
             for (arg, param_ty) in args.iter().zip(params) {
-                let expr = typecheck_expr(arg, ctx)?;
+                let expr = typecheck_and_convert(arg, ctx)?;
                 let converted_expr = convert_by_assignment(expr, param_ty.clone())?;
                 converted_args.push(converted_expr);
             }
@@ -914,7 +1187,7 @@ fn typecheck_expr(
         }
         ExprKind::Dereference(expr) => {
             // make sure inner type is a pointer, else type error.
-            let inner = typecheck_expr(expr, ctx)?;
+            let inner = typecheck_and_convert(expr, ctx)?;
             let inner_ty = inner.get_type();
             let CType::Pointer(referenced_ty) = inner_ty else {
                 return Err(SemanticAnalysisError::UnexpectedTypeInDereference(
@@ -929,6 +1202,7 @@ fn typecheck_expr(
                     *expr.clone(),
                 ));
             };
+            // don't convert address of via the typecheck_and_convert helper
             let inner = typecheck_expr(expr, ctx)?;
             let inner_ty = inner.get_type();
             (
@@ -936,7 +1210,40 @@ fn typecheck_expr(
                 CType::Pointer(Box::new(inner_ty)),
             )
         }
-        ExprKind::Subscript(_, _) => todo!(),
+        ExprKind::Subscript(lhs, rhs) => {
+            // note that it is valid to subscript the array foo both as
+            // foo[2] AND 2[foo] which is totally cursed but valid C.
+            let e1 = typecheck_and_convert(lhs, ctx)?;
+            let e2 = typecheck_and_convert(rhs, ctx)?;
+            let t1 = e1.get_type();
+            let t2 = e2.get_type();
+
+            if t1.is_pointer() && t2.is_integer_type() {
+                // return type is the thing the pointer references,
+                // convert the integer to a long for easy indexing
+                // then wrap as subscript and return the subscript expression + the inner type of
+                // the pointer
+                let CType::Pointer(return_ty) = t1 else {
+                    panic!()
+                };
+                let converted_e2 = convert_to(e2, CType::Long);
+                let bin_expr = TypedExprKind::Subscript(Box::new(e1), Box::new(converted_e2));
+                (bin_expr, *return_ty)
+            } else if t1.is_integer_type() && t2.is_pointer() {
+                let CType::Pointer(return_ty) = t2 else {
+                    panic!()
+                };
+                let converted_e1 = convert_to(e1, CType::Long);
+                let bin_expr = TypedExprKind::Subscript(Box::new(converted_e1), Box::new(e2));
+                (bin_expr, *return_ty)
+            } else {
+                return Err(SemanticAnalysisError::InvalidOperands(
+                    "Subscript".to_string(),
+                    format!("{e1:?}"),
+                    format!("{e2:?}"),
+                ));
+            }
+        }
     };
     Ok(TypedExpression {
         kind: Box::new(expr_kind),
@@ -1060,13 +1367,25 @@ fn resolve_local_variable_declaration(
     } else {
         resolve_param(name, resolver)?;
         if let Some(init) = init {
-            let Initializer::Single(init_expr) = init else {
-                todo!();
-            };
-            resolve_expr(init_expr, resolver)?;
+            resolve_initializer(init, resolver)?
         };
     }
     Ok(())
+}
+
+fn resolve_initializer(
+    initializer: &mut Initializer,
+    resolver: &mut Resolver,
+) -> Result<(), SemanticAnalysisError> {
+    match initializer {
+        Initializer::Single(init_expr) => resolve_expr(init_expr, resolver),
+        Initializer::Compound(inits) => {
+            for init in inits {
+                resolve_initializer(init, resolver)?
+            }
+            Ok(())
+        }
+    }
 }
 
 fn resolve_statement(
@@ -1202,7 +1521,10 @@ fn resolve_expr(
         ExprKind::Cast(_, expr) => resolve_expr(expr, resolver)?,
         ExprKind::AddressOf(expr) => resolve_expr(expr, resolver)?,
         ExprKind::Dereference(expr) => resolve_expr(expr, resolver)?,
-        ExprKind::Subscript(_, _) => todo!(),
+        ExprKind::Subscript(lhs, rhs) => {
+            resolve_expr(lhs, resolver)?;
+            resolve_expr(rhs, resolver)?;
+        }
     };
     Ok(())
 }
@@ -1303,42 +1625,15 @@ fn convert_to(e: TypedExpression, t: CType) -> TypedExpression {
     }
 }
 
-fn typed_expr_for_initial_value(
-    init: Option<&Expression>,
-    iv: &InitialValue,
-) -> Option<TypedExpression> {
-    if init.is_none() {
-        return None;
-    }
-    match iv {
-        InitialValue::Initial(StaticInit::IntInit(v)) => Some(TypedExpression {
-            ty: CType::Int,
-            kind: Box::new(TypedExprKind::Constant(Const::Int(*v))),
-        }),
-        InitialValue::Initial(StaticInit::LongInit(v)) => Some(TypedExpression {
-            ty: CType::Long,
-            kind: Box::new(TypedExprKind::Constant(Const::Long(*v))),
-        }),
-        InitialValue::Initial(StaticInit::UIntInit(v)) => Some(TypedExpression {
-            ty: CType::UInt,
-            kind: Box::new(TypedExprKind::Constant(Const::UInt(*v))),
-        }),
-        InitialValue::Initial(StaticInit::ULongInit(v)) => Some(TypedExpression {
-            ty: CType::ULong,
-            kind: Box::new(TypedExprKind::Constant(Const::ULong(*v))),
-        }),
-        InitialValue::Initial(StaticInit::DoubleInit(f)) => Some(TypedExpression {
-            ty: CType::Double,
-            kind: Box::new(TypedExprKind::Constant(Const::Double(*f))),
-        }),
-        _ => unreachable!(),
-    }
-}
-
 // we'll say that an lvalue can be anything assignable to, either
-// a variable or a deferenced pointer.
-fn is_lvalue(expr: &ExprKind) -> bool {
-    matches!(expr, ExprKind::Var(_) | ExprKind::Dereference(_))
+// a variable or a deferenced pointer or an array subscript
+fn is_lvalue<T>(expr: &crate::ast::ExprKind<T>) -> bool {
+    matches!(
+        expr,
+        crate::ast::ExprKind::Var(_)
+            | crate::ast::ExprKind::Dereference(_)
+            | crate::ast::ExprKind::Subscript(_, _)
+    )
 }
 
 // C standard also allows for an expression cast to void*
@@ -1436,13 +1731,17 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(Const::Int(1))))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(
+                        Const::Int(1),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(Const::Int(1))))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(
+                        Const::Int(1),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -1469,7 +1768,9 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Initializer::Single(Expression::new(ExprKind::Var("c".into())))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Var(
+                        "c".into(),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -1496,13 +1797,17 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(Const::Int(1))))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(
+                        Const::Int(1),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b".into(),
-                    init: Some(Initializer::Single(Expression::new(ExprKind::Var("a".into())))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Var(
+                        "a".into(),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -1525,13 +1830,17 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a.0.decl".into(),
-                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(Const::Int(1))))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(
+                        Const::Int(1),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b.1.decl".into(),
-                    init: Some(Initializer::Single(Expression::new(ExprKind::Var("a.0.decl".into())))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Var(
+                        "a.0.decl".into(),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -1558,13 +1867,17 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(Const::Int(1))))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(
+                        Const::Int(1),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b".into(),
-                    init: Some(Initializer::Single(Expression::new(ExprKind::Var("a".into())))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Var(
+                        "a".into(),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -1597,13 +1910,17 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a.0.decl".into(),
-                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(Const::Int(1))))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(
+                        Const::Int(1),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "b.1.decl".into(),
-                    init: Some(Initializer::Single(Expression::new(ExprKind::Var("a.0.decl".into())))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Var(
+                        "a.0.decl".into(),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -1724,7 +2041,9 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "x.0.decl".into(),
-                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(Const::Int(1))))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(
+                        Const::Int(1),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -1900,7 +2219,7 @@ mod tests {
         "#;
         assert_eq!(
             resolve_src(src),
-            Err(SemanticAnalysisError::NonConstInitOnLocalStaticVar)
+            Err(SemanticAnalysisError::NonConstantInitializer)
         );
     }
 
@@ -1985,7 +2304,9 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "a".into(),
-                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(Const::Int(1))))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(
+                        Const::Int(1),
+                    )))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -2152,7 +2473,9 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 BlockItem::Decl(Declaration::VarDecl(VariableDeclaration {
                     name: "p".into(),
-                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(Const::Int(0))))),
+                    init: Some(Initializer::Single(Expression::new(ExprKind::Constant(
+                        Const::Int(0),
+                    )))),
                     storage_class: None,
                     vtype: CType::Pointer(Box::new(CType::Int)),
                 })),
@@ -2176,7 +2499,9 @@ mod tests {
     fn non_zero_pointer_initializer_at_file_scope_fails() {
         let mut before = AST::Program(vec![Declaration::VarDecl(VariableDeclaration {
             name: "p".into(),
-            init: Some(Initializer::Single(Expression::new(ExprKind::Constant(Const::Int(1))))),
+            init: Some(Initializer::Single(Expression::new(ExprKind::Constant(
+                Const::Int(1),
+            )))),
             storage_class: None,
             vtype: CType::Pointer(Box::new(CType::Int)),
         })]);

@@ -257,7 +257,9 @@ impl<'a> Tacky {
                     InitialValue::Initial(i) => defs.push(TopLevel::StaticVariable {
                         identifier: name.clone(),
                         global: *global,
-                        init: *i,
+                        init: *i
+                            .get(0)
+                            .expect("Should have a single item, TODO to rewrite"),
                         t: ctype.clone(),
                     }),
                     InitialValue::Tentative => {
@@ -1835,7 +1837,9 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 TypedBlockItem::Decl(TypedDeclaration::VarDecl(TypedVariableDeclaration {
                     name: "a.0.decl".into(),
-                    init: Some(single_init(typed_int(TypedExprKind::Constant(Const::Int(1))))),
+                    init: Some(single_init(typed_int(TypedExprKind::Constant(Const::Int(
+                        1,
+                    ))))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -1910,7 +1914,9 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 TypedBlockItem::Decl(TypedDeclaration::VarDecl(TypedVariableDeclaration {
                     name: "a".into(),
-                    init: Some(single_init(typed_int(TypedExprKind::Constant(Const::Int(1))))),
+                    init: Some(single_init(typed_int(TypedExprKind::Constant(Const::Int(
+                        1,
+                    ))))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -2029,7 +2035,9 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 TypedBlockItem::Decl(TypedDeclaration::VarDecl(TypedVariableDeclaration {
                     name: "a".into(),
-                    init: Some(single_init(typed_int(TypedExprKind::Constant(Const::Int(10))))),
+                    init: Some(single_init(typed_int(TypedExprKind::Constant(Const::Int(
+                        10,
+                    ))))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),
@@ -2069,7 +2077,9 @@ mod tests {
             block: Some(crate::ast::Block(vec![
                 TypedBlockItem::Decl(TypedDeclaration::VarDecl(TypedVariableDeclaration {
                     name: "a".into(),
-                    init: Some(single_init(typed_int(TypedExprKind::Constant(Const::Int(10))))),
+                    init: Some(single_init(typed_int(TypedExprKind::Constant(Const::Int(
+                        10,
+                    ))))),
                     storage_class: None,
                     vtype: CType::Int,
                 })),

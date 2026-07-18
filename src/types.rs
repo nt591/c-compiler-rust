@@ -21,6 +21,7 @@ pub enum StaticInit {
     UIntInit(u32),
     ULongInit(u64),
     DoubleInit(f64),
+    ZeroInit(usize), // bytes to pad
 }
 
 impl CType {
@@ -80,7 +81,7 @@ impl CType {
             CType::Long | CType::ULong | CType::Double => 64,
             CType::FunType { .. } => todo!(), // not sure what goes here.
             CType::Pointer(_) => 64,          // generally treat as unsigned long
-            CType::Array(_, _) => todo!(),
+            CType::Array(elem_ty, size) => elem_ty.size() * size,
         }
     }
 
@@ -97,11 +98,11 @@ impl CType {
         self == &CType::Double
     }
 
+    pub fn is_integer_type(&self) -> bool {
+        matches!(&self, CType::Int | CType::UInt | CType::Long | CType::ULong)
+    }
     pub fn is_arithmetic(&self) -> bool {
-        matches!(
-            &self,
-            CType::Int | CType::UInt | CType::Long | CType::ULong | CType::Double
-        )
+        self.is_integer_type() || self.is_double()
     }
 
     pub fn is_pointer(&self) -> bool {
@@ -116,6 +117,7 @@ pub fn static_init_as_usize(si: &StaticInit) -> usize {
         StaticInit::UIntInit(i) => *i as usize,
         StaticInit::ULongInit(i) => *i as usize,
         StaticInit::DoubleInit(f) => *f as usize,
+        StaticInit::ZeroInit(_) => todo!(),
     }
 }
 

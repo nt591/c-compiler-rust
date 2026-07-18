@@ -231,9 +231,9 @@ Program(
                                         vtype: Array(
                                             Array(
                                                 Int,
-                                                3,
+                                                4,
                                             ),
-                                            4,
+                                            3,
                                         ),
                                     },
                                 ),

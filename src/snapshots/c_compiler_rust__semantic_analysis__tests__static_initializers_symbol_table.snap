@@ -9,9 +9,11 @@ expression: symbol_table
             Double,
             StaticAttr {
                 init: Initial(
-                    DoubleInit(
-                        2147483647.0,
-                    ),
+                    [
+                        DoubleInit(
+                            2147483647.0,
+                        ),
+                    ],
                 ),
                 global: true,
             },
@@ -23,9 +25,11 @@ expression: symbol_table
             Double,
             StaticAttr {
                 init: Initial(
-                    DoubleInit(
-                        4294967295.0,
-                    ),
+                    [
+                        DoubleInit(
+                            4294967295.0,
+                        ),
+                    ],
                 ),
                 global: true,
             },
@@ -37,9 +41,11 @@ expression: symbol_table
             Double,
             StaticAttr {
                 init: Initial(
-                    DoubleInit(
-                        4.61168601842739e18,
-                    ),
+                    [
+                        DoubleInit(
+                            4.61168601842739e18,
+                        ),
+                    ],
                 ),
                 global: true,
             },
@@ -51,9 +57,11 @@ expression: symbol_table
             Int,
             StaticAttr {
                 init: Initial(
-                    IntInit(
-                        4,
-                    ),
+                    [
+                        IntInit(
+                            4,
+                        ),
+                    ],
                 ),
                 global: false,
             },
@@ -65,9 +73,11 @@ expression: symbol_table
             Long,
             StaticAttr {
                 init: Initial(
-                    LongInit(
-                        4611686018427389952,
-                    ),
+                    [
+                        LongInit(
+                            4611686018427389952,
+                        ),
+                    ],
                 ),
                 global: true,
             },
@@ -92,9 +102,11 @@ expression: symbol_table
             UInt,
             StaticAttr {
                 init: Initial(
-                    UIntInit(
-                        4294967292,
-                    ),
+                    [
+                        UIntInit(
+                            4294967292,
+                        ),
+                    ],
                 ),
                 global: true,
             },
@@ -106,9 +118,11 @@ expression: symbol_table
             ULong,
             StaticAttr {
                 init: Initial(
-                    ULongInit(
-                        18446744073709549568,
-                    ),
+                    [
+                        ULongInit(
+                            18446744073709549568,
+                        ),
+                    ],
                 ),
                 global: true,
             },
